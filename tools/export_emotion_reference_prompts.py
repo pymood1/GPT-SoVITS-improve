@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
 from TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
+from TTS_infer_pack.text_segmentation_method import splits  # noqa: E402
 
 
 class ReferenceExportError(RuntimeError):
@@ -105,19 +106,51 @@ def main() -> int:
             item,
         )
         tts.set_ref_audio(str(audio_path))
-        prompt = tts.prompt_cache["prompt_semantic"]
-        if prompt is None or prompt.numel() == 0:
+        prompt_semantic = tts.prompt_cache["prompt_semantic"]
+        if prompt_semantic is None or prompt_semantic.numel() == 0:
             raise ReferenceExportError(
                 f"empty prompt semantic for {name!r}"
             )
-        references[name] = prompt.detach().cpu().long()
+
+        prompt_text = str(item["text"]).strip("\n")
+        if not prompt_text:
+            raise ReferenceExportError(
+                f"empty prompt text for {name!r}"
+            )
+        prompt_lang = str(item["language"])
+        if prompt_text[-1] not in splits:
+            prompt_text += "。" if prompt_lang != "en" else "."
+        phones, bert_features, norm_text = (
+            tts.text_preprocessor.segment_and_extract_feature_for_text(
+                prompt_text,
+                prompt_lang,
+                tts.configs.version,
+            )
+        )
+        if phones is None or len(phones) == 0:
+            raise ReferenceExportError(
+                f"empty prompt phones for {name!r}"
+            )
+        if bert_features is None:
+            bert_features = torch.zeros(
+                1024, len(phones), dtype=torch.float32
+            )
+
+        references[name] = {
+            "semantic": prompt_semantic.detach().cpu().long(),
+            "phones": torch.as_tensor(phones).reshape(-1).cpu().long(),
+            "bert": bert_features.detach().cpu().float(),
+            "prompt_text": prompt_text,
+            "norm_text": norm_text,
+        }
         print(
             f"[OK] {speaker_uid}: {name} -> "
-            f"{references[name].numel()} semantic tokens"
+            f"{references[name]['semantic'].numel()} semantic tokens, "
+            f"{references[name]['phones'].numel()} phones"
         )
 
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "tts_version": config.version,
         "references": references,
     }
