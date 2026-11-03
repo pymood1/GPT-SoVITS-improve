@@ -300,6 +300,33 @@ def build_dataset(args: argparse.Namespace) -> None:
             f"{staged_path.as_posix()}|{speaker}|{language}|{text}"
         )
 
+    pair_consistency: Dict[str, set] = defaultdict(set)
+    pair_emotions: Dict[str, set] = defaultdict(set)
+    for item in records:
+        pair_group_id = item.get("pair_group_id")
+        if not pair_group_id:
+            continue
+        pair_consistency[str(pair_group_id)].add(
+            (
+                item["speaker_uid"],
+                item["language"],
+                item["canonical_text"],
+            )
+        )
+        if item.get("emotion_intended"):
+            pair_emotions[str(pair_group_id)].add(item["emotion_intended"])
+
+    invalid_pair_groups = [
+        pair_group_id
+        for pair_group_id, identities in pair_consistency.items()
+        if len(identities) != 1
+    ]
+    if invalid_pair_groups:
+        raise DatasetError(
+            "pair_group_id must refer to one speaker/language/exact text only: "
+            + ", ".join(invalid_pair_groups[:20])
+        )
+
     leakage = check_split_leakage(records)
     if leakage:
         formatted = "\n  - ".join(leakage[:50])
@@ -340,6 +367,10 @@ def build_dataset(args: argparse.Namespace) -> None:
         ),
         "emotion_pair_usable": sum(
             bool(item["emotion_pair_usable"]) for item in records
+        ),
+        "pair_groups": len(pair_consistency),
+        "pair_groups_with_multiple_emotions": sum(
+            len(emotions) >= 2 for emotions in pair_emotions.values()
         ),
         "lineage_known": sum(
             bool(item["lineage_known"]) for item in records
