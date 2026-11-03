@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
-from AR.models.emotion_control import load_emotion_controller_checkpoint
+from AR.models.emotion_control import load_emotion_controller_checkpoint, sha256_file
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from BigVGAN.bigvgan import BigVGAN
 from feature_extractor.cnhubert import CNHubert
@@ -1096,6 +1096,18 @@ class TTS:
         controller, metadata = load_emotion_controller_checkpoint(
             checkpoint_path, map_location="cpu"
         )
+        expected_s1_hash = metadata.get("extra", {}).get("s1_sha256")
+        if not expected_s1_hash:
+            raise ValueError(
+                "Emotion controller checkpoint has no bound S1 hash; "
+                "retrain/regenerate it with the current trainer."
+            )
+        current_s1_hash = sha256_file(self.configs.t2s_weights_path)
+        if current_s1_hash != expected_s1_hash:
+            raise ValueError(
+                "Emotion controller was trained for a different S1 checkpoint. "
+                "Refusing to attach it to the current GPT model."
+            )
         if controller.hidden_dim != self.t2s_model.model.model_dim:
             raise ValueError(
                 "Emotion controller hidden_dim does not match the loaded S1 model: "
