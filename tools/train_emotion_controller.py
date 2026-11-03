@@ -36,6 +36,7 @@ from AR.models.emotion_control import (  # noqa: E402
     EmotionSamplingState,
     LowRankEmotionPreference,
     save_emotion_controller_checkpoint,
+    sha256_file,
 )
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule  # noqa: E402
 from AR.models.utils import logits_to_probs  # noqa: E402
@@ -229,9 +230,9 @@ def load_reference_map(
 
 def load_reference_prompt_cache(
     path: Optional[Path],
-) -> Dict[str, dict]:
+) -> Tuple[Dict[str, dict], dict]:
     if path is None:
-        return {}
+        return {}, {}
     payload = torch.load(
         path,
         map_location="cpu",
@@ -285,7 +286,13 @@ def load_reference_prompt_cache(
             "phones": phones,
             "bert": bert,
         }
-    return result
+    cache_metadata = {
+        "format_version": payload.get("format_version"),
+        "tts_version": payload.get("tts_version"),
+        "s2_sha256": payload.get("s2_sha256"),
+        "s2_checkpoint": payload.get("s2_checkpoint"),
+    }
+    return result, cache_metadata
 
 
 def build_groups(
@@ -621,6 +628,7 @@ def save_checkpoint(
             "s1_checkpoint": str(
                 Path(args.s1_checkpoint).resolve()
             ),
+            "s1_sha256": args.s1_sha256,
             "feature_dir": str(Path(args.feature_dir).resolve()),
             "metadata": str(Path(args.metadata).resolve()),
             "reference_prompt_cache": (
@@ -643,6 +651,13 @@ def main() -> int:
     parser.add_argument("--feature-dir", required=True)
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--reference-map", required=True)
+    parser.add_argument(
+        "--semantic-s2-checkpoint",
+        help=(
+            "Exact V5 S2 checkpoint used to generate 6-name2semantic.tsv. "
+            "Required when using an inference-exact reference prompt cache."
+        ),
+    )
     parser.add_argument(
         "--reference-prompt-cache",
         "--reference-semantics",
@@ -732,10 +747,12 @@ def main() -> int:
         Path(args.reference_map).resolve(),
         store,
     )
-    reference_prompt_cache = load_reference_prompt_cache(
-        Path(args.reference_prompt_cache).resolve()
-        if args.reference_prompt_cache
-        else None
+    reference_prompt_cache, reference_cache_metadata = (
+        load_reference_prompt_cache(
+            Path(args.reference_prompt_cache).resolve()
+            if args.reference_prompt_cache
+            else None
+        )
     )
     if not reference_prompt_cache:
         print(
@@ -756,12 +773,36 @@ def main() -> int:
                 "reference prompt cache is missing fixed references: "
                 + ", ".join(missing_reference_prompts[:20])
             )
+        expected_s2_hash = reference_cache_metadata.get("s2_sha256")
+        if not expected_s2_hash:
+            raise TrainingDataError(
+                "reference prompt cache has no S2 identity hash; regenerate it "
+                "with the current exporter"
+            )
+        if not args.semantic_s2_checkpoint:
+            raise TrainingDataError(
+                "--semantic-s2-checkpoint is required with "
+                "--reference-prompt-cache so target/reference semantic spaces "
+                "can be verified"
+            )
+        actual_s2_hash = sha256_file(
+            str(Path(args.semantic_s2_checkpoint).resolve())
+        )
+        if actual_s2_hash != expected_s2_hash:
+            raise TrainingDataError(
+                "S2 checkpoint mismatch: reference prompt cache and "
+                "6-name2semantic.tsv are not proven to use the same semantic "
+                "tokenizer"
+            )
     groups = build_groups(
         store,
         emotion_to_id,
         reference_map,
     )
 
+    args.s1_sha256 = sha256_file(
+        str(Path(args.s1_checkpoint).resolve())
+    )
     checkpoint = torch.load(
         args.s1_checkpoint,
         map_location="cpu",
