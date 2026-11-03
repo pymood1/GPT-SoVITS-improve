@@ -680,6 +680,9 @@ class TTS:
 
 
     def init_t2s_weights(self, weights_path: str):
+        # A controller is tied to one S1 hidden/readout geometry. Replacing S1
+        # implicitly detaches it; clear stale metadata at the same time.
+        self.emotion_controller_metadata = None
         if self.t2s_accel is not None:
             self.t2s_accel.close()
             self.t2s_accel = None
