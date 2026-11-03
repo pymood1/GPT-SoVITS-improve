@@ -242,7 +242,11 @@ def build_dataset(args: argparse.Namespace) -> None:
             "speaker_uid": speaker_uid,
             "language": language,
             "text": text,
+            "split": split,
+            "source_id": source_id,
+            "session_id": metadata.get("session_id"),
             "pair_group_id": pair_group_id,
+            "pair_source": pair_source,
             "emotion_intended": emotion_intended,
         }
         previous = by_audio_hash.get(file_hash)
