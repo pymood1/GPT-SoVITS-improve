@@ -140,6 +140,8 @@ class T2SEngine(T2SEngineProtocol):
         """Blocking generate that consumes the streaming queue until finished."""
         final_result = empty_result
         for response in self.stream_generate(request, show_progress=show_progress):
+            if response.ready_event is not None:
+                response.ready_event.wait(torch.cuda.current_stream(self.device))
             if response.finished:
                 final_result = response.result or T2SResult(
                     status="Error",
