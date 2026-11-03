@@ -72,7 +72,7 @@ def git_head() -> str:
         ) from exc
 
 
-def validate_list(path: Path) -> None:
+def validate_list(path: Path) -> str:
     if not path.is_file():
         raise PreprocessError(f"train list not found: {path}")
     basenames: Dict[str, str] = {}
@@ -101,6 +101,15 @@ def validate_list(path: Path) -> None:
                 f"basename collision before official preprocessing: {basename}"
             )
         basenames[basename] = str(wav_path)
+
+    audio_digest = hashlib.sha256()
+    for basename, wav_path_text in sorted(basenames.items()):
+        wav_path = Path(wav_path_text)
+        audio_digest.update(basename.encode("utf-8"))
+        audio_digest.update(b"\0")
+        audio_digest.update(sha256_file(wav_path).encode("ascii"))
+        audio_digest.update(b"\n")
+    return audio_digest.hexdigest()
 
 
 def run_script(script: str, env: Dict[str, str]) -> None:
@@ -195,7 +204,8 @@ def main() -> int:
     if not s2_config.is_absolute():
         s2_config = (ROOT / s2_config).resolve()
 
-    validate_list(train_list)
+    print("[fingerprint] referenced audio files")
+    audio_manifest_hash = validate_list(train_list)
     if not s2_path.is_file():
         raise PreprocessError(f"S2 checkpoint not found: {s2_path}")
     if not s2_config.is_file():
@@ -214,6 +224,7 @@ def main() -> int:
 
     identity = {
         "train_list_sha256": list_hash,
+        "audio_manifest_sha256": audio_manifest_hash,
         "s2_sha256": s2_hash,
         "bert_sha256": bert_hash,
         "cnhubert_sha256": cnhubert_hash,
