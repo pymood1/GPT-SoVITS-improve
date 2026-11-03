@@ -39,6 +39,8 @@ POST:
     "seed": -1,                   # int. random seed for reproducibility.
     "parallel_infer": True,       # bool. whether to use parallel inference.
     "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
+    "emotion_id": null,           # int.(optional) target emotion index.
+    "emotion_strength": 1.0,      # float.(optional) non-negative steering strength.
     "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
     "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
     "streaming_mode": False,      # bool or int. return audio chunk by chunk.T he available options are: 0,1,2,3 or True/False (0/False: Disabled | 1/True: Best Quality, Slowest response speed (old version streaming_mode) | 2: Medium Quality, Slow response speed | 3: Lower Quality, Faster response speed )
@@ -199,6 +201,8 @@ class TTS_Request(BaseModel):
     parallel_infer: bool = True
     use_cuda_graph: bool = True
     repetition_penalty: float = 1.35
+    emotion_id: Optional[int] = None
+    emotion_strength: float = 1.0
     sample_steps: Optional[int] = None
     cfg_rate: Optional[float] = None
     super_sampling: bool = False
@@ -439,6 +443,8 @@ async def tts_handle(req: dict, raw_streaming_mode=None):
                 "seed": -1,                   # int. random seed for reproducibility.
                 "parallel_infer": True,       # bool. whether to use parallel inference.
                 "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
+                "emotion_id": None,           # int.(optional) target emotion index.
+                "emotion_strength": 1.0,      # float.(optional) non-negative steering strength.
                 "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
                 "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
                 "streaming_mode": False,      # bool or int. return audio chunk by chunk.T he available options are: 0,1,2,3 or True/False (0/False: Disabled | 1/True: Best Quality, Slowest response speed (old version streaming_mode) | 2: Medium Quality, Slow response speed | 3: Lower Quality, Faster response speed )
@@ -611,6 +617,8 @@ async def tts_get_endpoint(
     parallel_infer: bool = True,
     use_cuda_graph: bool = True,
     repetition_penalty: float = 1.35,
+    emotion_id: Optional[int] = None,
+    emotion_strength: float = 1.0,
     sample_steps: Optional[int] = None,
     cfg_rate: Optional[float] = None,
     super_sampling: bool = False,
@@ -647,6 +655,8 @@ async def tts_get_endpoint(
         "parallel_infer": parallel_infer,
         "use_cuda_graph": use_cuda_graph,
         "repetition_penalty": float(repetition_penalty),
+        "emotion_id": None if emotion_id is None else int(emotion_id),
+        "emotion_strength": float(emotion_strength),
         "sample_steps": None if sample_steps is None else int(sample_steps),
         "cfg_rate": None if cfg_rate is None else float(cfg_rate),
         "super_sampling": super_sampling,
@@ -672,6 +682,54 @@ async def tts_post_endpoint(request: TTS_Request, raw_request: Request):
     request_body = await raw_request.json()
     raw_streaming_mode = request_body.get("streaming_mode", request.streaming_mode)
     return await tts_handle(req, raw_streaming_mode=raw_streaming_mode)
+
+
+@APP.get("/set_emotion_controller")
+async def set_emotion_controller(weights_path: str = None):
+    if weights_path in ["", None]:
+        return JSONResponse(
+            status_code=400,
+            content={"message": "emotion controller path is required"},
+        )
+    try:
+        async with _tts_pipeline_lock:
+            metadata = await _run_in_threadpool_shielded(
+                tts_pipeline.load_emotion_controller, weights_path
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "message": "load emotion controller failed",
+                "Exception": str(e),
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "success",
+            "emotion_names": metadata.get("emotion_names"),
+            "config": metadata.get("config"),
+        },
+    )
+
+
+@APP.get("/unload_emotion_controller")
+async def unload_emotion_controller():
+    try:
+        async with _tts_pipeline_lock:
+            await _run_in_threadpool_shielded(
+                tts_pipeline.unload_emotion_controller
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "message": "unload emotion controller failed",
+                "Exception": str(e),
+            },
+        )
+    return JSONResponse(status_code=200, content={"message": "success"})
 
 
 @APP.get("/set_refer_audio")

@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
+from AR.models.emotion_control import load_emotion_controller_checkpoint, sha256_file
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from BigVGAN.bigvgan import BigVGAN
 from feature_extractor.cnhubert import CNHubert
@@ -512,6 +513,7 @@ class TTS:
 
         self.t2s_model: Text2SemanticLightningModule = None
         self.t2s_accel = None
+        self.emotion_controller_metadata = None
         self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
         self.bert_tokenizer: AutoTokenizer = None
         self.bert_model: AutoModelForMaskedLM = None
@@ -678,6 +680,9 @@ class TTS:
 
 
     def init_t2s_weights(self, weights_path: str):
+        # A controller is tied to one S1 hidden/readout geometry. Replacing S1
+        # implicitly detaches it; clear stale metadata at the same time.
+        self.emotion_controller_metadata = None
         if self.t2s_accel is not None:
             self.t2s_accel.close()
             self.t2s_accel = None
@@ -1086,6 +1091,58 @@ class TTS:
                 _data[index] = data[i][j]
         return _data
 
+    def load_emotion_controller(self, checkpoint_path: str):
+        """Attach a trained V5 emotion controller without replacing GPT-SoVITS weights."""
+        if self.configs.version not in V5_VERSIONS:
+            raise ValueError(
+                "Emotion controller is currently supported only for "
+                f"GPT-SoVITS V5, got {self.configs.version!r}"
+            )
+        controller, metadata = load_emotion_controller_checkpoint(
+            checkpoint_path, map_location="cpu"
+        )
+        expected_s1_hash = metadata.get("extra", {}).get("s1_sha256")
+        if not expected_s1_hash:
+            raise ValueError(
+                "Emotion controller checkpoint has no bound S1 hash; "
+                "retrain/regenerate it with the current trainer."
+            )
+        current_s1_hash = sha256_file(self.configs.t2s_weights_path)
+        if current_s1_hash != expected_s1_hash:
+            raise ValueError(
+                "Emotion controller was trained for a different S1 checkpoint. "
+                "Refusing to attach it to the current GPT model."
+            )
+        expected_s2_hash = metadata.get("extra", {}).get("s2_sha256")
+        if not expected_s2_hash:
+            raise ValueError(
+                "Emotion controller checkpoint has no bound S2 hash; "
+                "retrain/regenerate it with the current trainer."
+            )
+        current_s2_hash = sha256_file(self.configs.vits_weights_path)
+        if current_s2_hash != expected_s2_hash:
+            raise ValueError(
+                "Emotion controller was trained for a different V5 S2 semantic "
+                "tokenizer. Refusing to attach it to the current SoVITS model."
+            )
+        if controller.hidden_dim != self.t2s_model.model.model_dim:
+            raise ValueError(
+                "Emotion controller hidden_dim does not match the loaded S1 model: "
+                f"{controller.hidden_dim} != {self.t2s_model.model.model_dim}"
+            )
+        controller = controller.to(
+            device=self.configs.device,
+            dtype=self.precision,
+        ).eval()
+        self.t2s_model.model.set_emotion_controller(controller)
+        self.emotion_controller_metadata = metadata
+        return metadata
+
+    def unload_emotion_controller(self):
+        """Detach emotion control and return to the original GPT-SoVITS sampler."""
+        self.t2s_model.model.clear_emotion_controller()
+        self.emotion_controller_metadata = None
+
     def stop(
         self,
     ):
@@ -1119,7 +1176,7 @@ class TTS:
                     "fragment_interval":0.3,      # float. to control the interval of the audio fragment.
                     "seed": -1,                   # int. random seed for reproducibility.
                     "parallel_infer": True,       # bool. whether to use parallel inference.
-                    "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
+                    "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.\n                    "emotion_id": None,           # int.(optional) target emotion index for patched S1.\n                    "emotion_strength": 1.0,      # float.(optional) bounded preference strength.
                     "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
                     "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
                     "return_fragment": False,     # bool. step by step return the audio fragment. (Best Quality, Slowest response speed. old version of streaming mode)
@@ -1156,6 +1213,27 @@ class TTS:
         use_cuda_graph = inputs.get("use_cuda_graph", True)
         use_flash_attention = inputs.get("use_flash_attention", True)
         repetition_penalty = inputs.get("repetition_penalty", 1.35)
+        emotion_id = inputs.get("emotion_id", None)
+        emotion_id = None if emotion_id in ["", None] else int(emotion_id)
+        emotion_strength = float(inputs.get("emotion_strength", 1.0))
+        if not math.isfinite(emotion_strength) or emotion_strength < 0:
+            raise ValueError(
+                "emotion_strength must be a finite non-negative number"
+            )
+        emotion_controller = getattr(self.t2s_model.model, "emotion_controller", None)
+        if emotion_controller is not None and emotion_id is not None:
+            if emotion_id < 0 or emotion_id >= emotion_controller.num_emotions:
+                raise ValueError(
+                    f"emotion_id out of range: {emotion_id}; "
+                    f"controller supports 0..{emotion_controller.num_emotions - 1}"
+                )
+        emotion_enabled = (
+            emotion_controller is not None
+            and emotion_id is not None
+            and emotion_strength != 0.0
+        )
+        if emotion_id is not None and emotion_controller is None:
+            print("[Emotion] controller not attached; using base GPT-SoVITS inference.")
         sample_steps = inputs.get("sample_steps")
         cfg_rate = inputs.get("cfg_rate")
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
@@ -1370,7 +1448,7 @@ class TTS:
                     if self.t2s_accel is not None and self.t2s_accel.max_batch_size != accel_batch_size:
                         self.t2s_accel.close()
                         self.t2s_accel = None
-                    if self.t2s_accel is None:
+                    if self.t2s_accel is None and not emotion_enabled:
                         self.t2s_accel = create_acceleration(
                             self.configs.t2s_weights_path,
                             device=torch.device(self.configs.device),
@@ -1379,8 +1457,13 @@ class TTS:
                             use_cuda_graph=use_cuda_graph,
                             use_flash_attention=use_flash_attention,
                         )
-                    use_accel = self.t2s_accel is not None and self.t2s_accel.prepare(
-                        use_cuda_graph, use_flash_attention
+                    # The acceleration backend owns a separate sampler, so it
+                    # would bypass the S1 emotion tilt. Only emotion-enabled
+                    # requests fall back to the ordinary infer_panel path.
+                    use_accel = (
+                        not emotion_enabled
+                        and self.t2s_accel is not None
+                        and self.t2s_accel.prepare(use_cuda_graph, use_flash_attention)
                     )
                     if use_accel:
                         pred_semantic_list, idx_list = [], []
@@ -1414,6 +1497,8 @@ class TTS:
                             early_stop_num=self.configs.hz * self.configs.max_sec,
                             max_len=max_len,
                             repetition_penalty=repetition_penalty,
+                            emotion_id=emotion_id if emotion_enabled else None,
+                            emotion_strength=emotion_strength,
                         )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
@@ -1506,6 +1591,8 @@ class TTS:
                         early_stop_num=self.configs.hz * self.configs.max_sec,
                         max_len=max_len,
                         repetition_penalty=repetition_penalty,
+                        emotion_id=emotion_id if emotion_enabled else None,
+                        emotion_strength=emotion_strength,
                         streaming_mode=True,
                         chunk_length=min_chunk_length,
                         mute_emb_sim_matrix=self.configs.mute_emb_sim_matrix if not fixed_length_chunk else None,

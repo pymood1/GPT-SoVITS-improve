@@ -20,6 +20,13 @@ def validate_streaming_options(req, version, api_mode=False):
         raise ValueError("gpt_streaming requires batch_size=1")
     if req.get("if_freeze", False):
         raise ValueError("gpt_streaming cannot freeze semantic tokens")
+    emotion_id = req.get("emotion_id")
+    emotion_strength = float(req.get("emotion_strength", 1.0))
+    if emotion_id is not None and emotion_strength != 0.0:
+        raise ValueError(
+            "gpt_streaming does not yet support the S1 emotion preference "
+            "controller; disable gpt_streaming or set emotion_strength=0"
+        )
     if req.get("streaming_window_mode", "fixed") not in {"fixed", "hybrid"}:
         raise ValueError("streaming_window_mode must be fixed or hybrid")
     if req.get("media_type", "wav") not in {"wav", "raw"}:
