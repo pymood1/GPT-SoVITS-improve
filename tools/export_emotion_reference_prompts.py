@@ -18,6 +18,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
+from AR.models.emotion_control import sha256_file  # noqa: E402
 from TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
 from TTS_infer_pack.text_segmentation_method import splits  # noqa: E402
 
@@ -149,9 +150,18 @@ def main() -> int:
             f"{references[name]['phones'].numel()} phones"
         )
 
+    s2_checkpoint = str(
+        Path(tts.configs.vits_weights_path).expanduser().resolve()
+    )
+    if not Path(s2_checkpoint).is_file():
+        raise ReferenceExportError(
+            f"V5 S2 checkpoint not found: {s2_checkpoint}"
+        )
     payload = {
         "format_version": 2,
         "tts_version": config.version,
+        "s2_checkpoint": s2_checkpoint,
+        "s2_sha256": sha256_file(s2_checkpoint),
         "references": references,
     }
     output = Path(args.output).resolve()
