@@ -27,7 +27,7 @@ def _validate_output_format(format):
 
 def _transcode_audio(source, destination):
     subprocess.run(
-        [FFMPEG_EXE, "-i", source, "-vn", destination, "-q:a", "2", "-y"],
+        [FFMPEG_EXE, "-y", "-i", source, "-vn", "-q:a", "2", destination],
         check=True,
     )
 
