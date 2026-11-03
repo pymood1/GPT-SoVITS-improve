@@ -54,6 +54,7 @@ def verify(target: Path) -> None:
         target / "tools/check_emotion_patch.py",
         target / "tools/train_emotion_controller.py",
         target / "tools/export_emotion_reference_prompts.py",
+        target / "tools/run_emotion_v5_preprocess.py",
     ]
     missing = [
         str(path.relative_to(target))
@@ -77,6 +78,7 @@ def verify(target: Path) -> None:
             "tools/check_emotion_patch.py",
             "tools/train_emotion_controller.py",
             "tools/export_emotion_reference_prompts.py",
+            "tools/run_emotion_v5_preprocess.py",
         ],
         cwd=target,
     )
