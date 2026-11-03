@@ -1,4 +1,5 @@
 import os
+import subprocess
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,6 +9,21 @@ import numpy as np
 import soundfile as sf
 import torch
 from tqdm import tqdm
+from tools.portable_runtime import FFMPEG_EXE
+
+SUPPORTED_OUTPUT_FORMATS = {"wav", "flac", "mp3", "m4a"}
+
+
+def _validate_output_format(format):
+    if format not in SUPPORTED_OUTPUT_FORMATS:
+        raise ValueError(f"Unsupported output format: {format!r}")
+
+
+def _transcode_audio(source, destination):
+    subprocess.run(
+        [FFMPEG_EXE, "-i", source, "-vn", destination, "-q:a", "2", "-y"],
+        check=True,
+    )
 
 cpu = torch.device("cpu")
 
@@ -172,6 +188,7 @@ class Predictor:
         return _sources
 
     def prediction(self, m, vocal_root, others_root, format):
+        _validate_output_format(format)
         os.makedirs(vocal_root, exist_ok=True)
         os.makedirs(others_root, exist_ok=True)
         basename = os.path.basename(m)
@@ -192,14 +209,14 @@ class Predictor:
             opt_path_vocal = path_vocal[:-4] + ".%s" % format
             opt_path_other = path_other[:-4] + ".%s" % format
             if os.path.exists(path_vocal):
-                os.system('ffmpeg -i "%s" -vn "%s" -q:a 2 -y' % (path_vocal, opt_path_vocal))
+                _transcode_audio(path_vocal, opt_path_vocal)
                 if os.path.exists(opt_path_vocal):
                     try:
                         os.remove(path_vocal)
                     except:
                         pass
             if os.path.exists(path_other):
-                os.system('ffmpeg -i "%s" -vn "%s" -q:a 2 -y' % (path_other, opt_path_other))
+                _transcode_audio(path_other, opt_path_other)
                 if os.path.exists(opt_path_other):
                     try:
                         os.remove(path_other)
