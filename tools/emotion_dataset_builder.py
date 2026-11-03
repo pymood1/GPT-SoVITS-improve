@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 import unicodedata
@@ -72,7 +73,15 @@ def parse_list_line(line: str, line_number: int) -> Tuple[str, str, str, str]:
 
 
 def resolve_audio_path(raw_path: str, list_path: Path, wav_root: Optional[Path]) -> Path:
-    candidate = Path(raw_path).expanduser()
+    # Older Colab/Windows-generated .list files may contain paths such as
+    # "\\content\\drive\\MyDrive\\...". On POSIX, backslashes are ordinary
+    # characters, so normalize them before Path resolution.
+    normalized_path = raw_path
+    if os.name != "nt" and "\\" in normalized_path:
+        normalized_path = normalized_path.replace("\\", "/")
+        if normalized_path.startswith("/content/") is False and normalized_path.startswith("content/"):
+            normalized_path = "/" + normalized_path
+    candidate = Path(normalized_path).expanduser()
     if candidate.is_absolute() and candidate.exists():
         return candidate.resolve()
 
