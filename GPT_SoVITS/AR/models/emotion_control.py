@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import hashlib
 from typing import Optional, Tuple, Union
 
 import torch
@@ -190,6 +191,18 @@ class LowRankEmotionPreference(nn.Module):
             result[row] = candidate
 
         return result, state
+
+
+def sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
+    """Hash a checkpoint so tiny controllers cannot silently bind to another model."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def save_emotion_controller_checkpoint(
