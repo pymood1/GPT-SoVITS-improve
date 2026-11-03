@@ -1119,7 +1119,7 @@ class TTS:
                     "fragment_interval":0.3,      # float. to control the interval of the audio fragment.
                     "seed": -1,                   # int. random seed for reproducibility.
                     "parallel_infer": True,       # bool. whether to use parallel inference.
-                    "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
+                    "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.\n                    "emotion_id": None,           # int.(optional) target emotion index for patched S1.\n                    "emotion_strength": 1.0,      # float.(optional) bounded preference strength.
                     "sample_steps": 32,           # int. number of sampling steps for VITS model V3.
                     "super_sampling": False,      # bool. whether to use super-sampling for audio when using VITS model V3.
                     "return_fragment": False,     # bool. step by step return the audio fragment. (Best Quality, Slowest response speed. old version of streaming mode)
@@ -1156,6 +1156,17 @@ class TTS:
         use_cuda_graph = inputs.get("use_cuda_graph", True)
         use_flash_attention = inputs.get("use_flash_attention", True)
         repetition_penalty = inputs.get("repetition_penalty", 1.35)
+        emotion_id = inputs.get("emotion_id", None)
+        emotion_id = None if emotion_id in ["", None] else int(emotion_id)
+        emotion_strength = float(inputs.get("emotion_strength", 1.0))
+        emotion_controller = getattr(self.t2s_model.model, "emotion_controller", None)
+        emotion_enabled = (
+            emotion_controller is not None
+            and emotion_id is not None
+            and emotion_strength != 0.0
+        )
+        if emotion_id is not None and emotion_controller is None:
+            print("[Emotion] controller not attached; using base GPT-SoVITS inference.")
         sample_steps = inputs.get("sample_steps")
         cfg_rate = inputs.get("cfg_rate")
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
@@ -1370,7 +1381,7 @@ class TTS:
                     if self.t2s_accel is not None and self.t2s_accel.max_batch_size != accel_batch_size:
                         self.t2s_accel.close()
                         self.t2s_accel = None
-                    if self.t2s_accel is None:
+                    if self.t2s_accel is None and not emotion_enabled:
                         self.t2s_accel = create_acceleration(
                             self.configs.t2s_weights_path,
                             device=torch.device(self.configs.device),
@@ -1379,8 +1390,13 @@ class TTS:
                             use_cuda_graph=use_cuda_graph,
                             use_flash_attention=use_flash_attention,
                         )
-                    use_accel = self.t2s_accel is not None and self.t2s_accel.prepare(
-                        use_cuda_graph, use_flash_attention
+                    # The acceleration backend owns a separate sampler, so it
+                    # would bypass the S1 emotion tilt. Only emotion-enabled
+                    # requests fall back to the ordinary infer_panel path.
+                    use_accel = (
+                        not emotion_enabled
+                        and self.t2s_accel is not None
+                        and self.t2s_accel.prepare(use_cuda_graph, use_flash_attention)
                     )
                     if use_accel:
                         pred_semantic_list, idx_list = [], []
@@ -1414,6 +1430,8 @@ class TTS:
                             early_stop_num=self.configs.hz * self.configs.max_sec,
                             max_len=max_len,
                             repetition_penalty=repetition_penalty,
+                            emotion_id=emotion_id if emotion_enabled else None,
+                            emotion_strength=emotion_strength,
                         )
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
@@ -1506,6 +1524,8 @@ class TTS:
                         early_stop_num=self.configs.hz * self.configs.max_sec,
                         max_len=max_len,
                         repetition_penalty=repetition_penalty,
+                        emotion_id=emotion_id if emotion_enabled else None,
+                        emotion_strength=emotion_strength,
                         streaming_mode=True,
                         chunk_length=min_chunk_length,
                         mute_emb_sim_matrix=self.configs.mute_emb_sim_matrix if not fixed_length_chunk else None,
