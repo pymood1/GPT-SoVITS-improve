@@ -126,6 +126,16 @@ activate_portable_runtime(change_cwd=True)
 
 import os
 import sys
+
+# Logging user text must never abort synthesis on Windows code pages such as
+# cp936. Keep the user's configured encoding, but replace characters that the
+# console cannot represent.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
 import traceback
 from typing import Generator, Union, Optional
 
