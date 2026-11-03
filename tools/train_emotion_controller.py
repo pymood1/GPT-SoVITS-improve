@@ -227,9 +227,9 @@ def load_reference_map(
     return result
 
 
-def load_reference_semantics(
+def load_reference_prompt_cache(
     path: Optional[Path],
-) -> Dict[str, List[int]]:
+) -> Dict[str, dict]:
     if path is None:
         return {}
     payload = torch.load(
@@ -239,16 +239,52 @@ def load_reference_semantics(
     )
     if not isinstance(payload, dict) or "references" not in payload:
         raise TrainingDataError(
-            "reference semantic cache must contain 'references'"
+            "reference prompt cache must contain 'references'"
         )
-    result: Dict[str, List[int]] = {}
+    result: Dict[str, dict] = {}
     for name, value in payload["references"].items():
-        tensor = torch.as_tensor(value).reshape(-1).long()
-        if tensor.numel() == 0:
-            raise TrainingDataError(
-                f"empty reference semantic cache entry: {name}"
+        # v1 cache stored only a semantic tensor. v2 also stores the exact
+        # prompt text phones/BERT produced by the TTS preprocessing path.
+        if isinstance(value, dict):
+            semantic = torch.as_tensor(
+                value.get("semantic")
+            ).reshape(-1).long()
+            phones_value = value.get("phones")
+            bert_value = value.get("bert")
+            phones = (
+                torch.as_tensor(phones_value).reshape(-1).long().tolist()
+                if phones_value is not None
+                else None
             )
-        result[str(name)] = tensor.tolist()
+            bert = (
+                torch.as_tensor(bert_value).float()
+                if bert_value is not None
+                else None
+            )
+        else:
+            semantic = torch.as_tensor(value).reshape(-1).long()
+            phones = None
+            bert = None
+
+        if semantic.numel() == 0:
+            raise TrainingDataError(
+                f"empty reference prompt cache entry: {name}"
+            )
+        if bert is not None:
+            if bert.ndim != 2 or bert.shape[0] != 1024:
+                raise TrainingDataError(
+                    f"invalid cached BERT shape for {name}: "
+                    f"{tuple(bert.shape)}"
+                )
+            if phones is not None and bert.shape[-1] != len(phones):
+                raise TrainingDataError(
+                    f"cached phone/BERT mismatch for {name}"
+                )
+        result[str(name)] = {
+            "semantic": semantic.tolist(),
+            "phones": phones,
+            "bert": bert,
+        }
     return result
 
 
@@ -494,7 +530,7 @@ def build_pair_batch(
     negative_name: str,
     device: torch.device,
     pad_val: int,
-    reference_semantics: Dict[str, List[int]],
+    reference_prompt_cache: Dict[str, dict],
 ) -> dict:
     reference_meta = store.require_item(reference_name)
     positive_meta = store.require_item(positive_name)
@@ -515,11 +551,23 @@ def build_pair_batch(
             f"Pair group phone mismatch: {positive_name} vs {negative_name}"
         )
 
-    ref_phones = store.phone_ids(reference_name)
-    ref_semantic = reference_semantics.get(
-        reference_name,
-        store.semantic_ids(reference_name),
-    )
+    cached_reference = reference_prompt_cache.get(reference_name)
+    if cached_reference is None:
+        ref_phones = store.phone_ids(reference_name)
+        ref_semantic = store.semantic_ids(reference_name)
+        ref_bert = store.bert(reference_name)
+    else:
+        ref_phones = (
+            cached_reference["phones"]
+            if cached_reference.get("phones") is not None
+            else store.phone_ids(reference_name)
+        )
+        ref_semantic = cached_reference["semantic"]
+        ref_bert = (
+            cached_reference["bert"]
+            if cached_reference.get("bert") is not None
+            else store.bert(reference_name)
+        )
     pos_semantic = store.semantic_ids(positive_name)
     neg_semantic = store.semantic_ids(negative_name)
 
@@ -534,7 +582,6 @@ def build_pair_batch(
     x, x_lens = pad_1d(x_sequences, 0, device)
     y, y_lens = pad_1d(y_sequences, pad_val, device)
 
-    ref_bert = store.bert(reference_name)
     pos_bert = store.bert(positive_name)
     neg_bert = store.bert(negative_name)
     bert = pad_bert(
@@ -576,9 +623,9 @@ def save_checkpoint(
             ),
             "feature_dir": str(Path(args.feature_dir).resolve()),
             "metadata": str(Path(args.metadata).resolve()),
-            "reference_semantics": (
-                str(Path(args.reference_semantics).resolve())
-                if args.reference_semantics
+            "reference_prompt_cache": (
+                str(Path(args.reference_prompt_cache).resolve())
+                if args.reference_prompt_cache
                 else None
             ),
             "top_k": args.top_k,
@@ -597,10 +644,12 @@ def main() -> int:
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--reference-map", required=True)
     parser.add_argument(
+        "--reference-prompt-cache",
         "--reference-semantics",
+        dest="reference_prompt_cache",
         help=(
             "Optional cache from export_emotion_reference_prompts.py. "
-            "Recommended for inference-exact 0.3 s silence-tailed prompts."
+            "Recommended to match inference reference semantic + text features."
         ),
     )
     parser.add_argument("--output", required=True)
@@ -683,28 +732,29 @@ def main() -> int:
         Path(args.reference_map).resolve(),
         store,
     )
-    reference_semantics = load_reference_semantics(
-        Path(args.reference_semantics).resolve()
-        if args.reference_semantics
+    reference_prompt_cache = load_reference_prompt_cache(
+        Path(args.reference_prompt_cache).resolve()
+        if args.reference_prompt_cache
         else None
     )
-    if not reference_semantics:
+    if not reference_prompt_cache:
         print(
-            "[WARNING] No inference-exact reference semantic cache supplied. "
-            "Falling back to ordinary 1C reference semantics, which omit the "
-            "0.3 s silence tail used by TTS._set_prompt_semantic()."
+            "[WARNING] No inference-exact reference prompt cache supplied. "
+            "Falling back to ordinary 1A/1C reference features. These omit "
+            "the TTS 0.3 s semantic silence tail and may differ in prompt "
+            "punctuation preprocessing."
         )
     else:
-        missing_reference_semantics = sorted(
+        missing_reference_prompts = sorted(
             {
                 name for name in reference_map.values()
-                if name not in reference_semantics
+                if name not in reference_prompt_cache
             }
         )
-        if missing_reference_semantics:
+        if missing_reference_prompts:
             raise TrainingDataError(
-                "reference semantic cache is missing fixed references: "
-                + ", ".join(missing_reference_semantics[:20])
+                "reference prompt cache is missing fixed references: "
+                + ", ".join(missing_reference_prompts[:20])
             )
     groups = build_groups(
         store,
@@ -774,7 +824,7 @@ def main() -> int:
             negative_name=negative_name,
             device=device,
             pad_val=int(config["data"]["pad_val"]),
-            reference_semantics=reference_semantics,
+            reference_prompt_cache=reference_prompt_cache,
         )
 
         hidden, logits = frozen_teacher_forcing(
