@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Export fixed reference semantic prompts exactly as GPT-SoVITS TTS does.
+
+Unlike ordinary 1C preprocessing, TTS._set_prompt_semantic appends 0.3 seconds
+of silence before extracting the reference semantic prefix. This helper reuses
+that official path and stores only the resulting semantic token tensors.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
+
+from TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
+
+
+class ReferenceExportError(RuntimeError):
+    pass
+
+
+def load_metadata(path: Path) -> dict:
+    result = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            name = item.get("canonical_wav")
+            if not name:
+                raise ReferenceExportError(
+                    f"{path}:{line_number}: missing canonical_wav"
+                )
+            if name in result:
+                raise ReferenceExportError(
+                    f"duplicate canonical_wav: {name}"
+                )
+            result[name] = item
+    return result
+
+
+def resolve_reference_audio(
+    metadata_path: Path,
+    item: dict,
+) -> Path:
+    canonical = metadata_path.parent / "wav" / item["canonical_wav"]
+    if canonical.exists():
+        return canonical.resolve()
+    original = Path(item["original_path"]).expanduser()
+    if original.exists():
+        return original.resolve()
+    raise ReferenceExportError(
+        f"reference audio not found: {item['canonical_wav']}"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tts-config", required=True)
+    parser.add_argument("--metadata", required=True)
+    parser.add_argument("--reference-map", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    metadata_path = Path(args.metadata).resolve()
+    metadata = load_metadata(metadata_path)
+    reference_map = json.loads(
+        Path(args.reference_map).read_text(encoding="utf-8")
+    )
+    if not isinstance(reference_map, dict):
+        raise ReferenceExportError(
+            "reference map must be a JSON object"
+        )
+
+    config = TTS_Config(str(Path(args.tts_config).resolve()))
+    if config.version not in {"v5dev", "v5turbo"}:
+        raise ReferenceExportError(
+            f"TTS config must select V5, got {config.version!r}"
+        )
+    tts = TTS(config)
+
+    references = {}
+    for speaker_uid, name in reference_map.items():
+        if name not in metadata:
+            raise ReferenceExportError(
+                f"reference {name!r} missing from metadata"
+            )
+        item = metadata[name]
+        if item.get("speaker_uid") != speaker_uid:
+            raise ReferenceExportError(
+                f"{name!r} does not belong to {speaker_uid!r}"
+            )
+        if item.get("split") != "train":
+            raise ReferenceExportError(
+                f"{name!r} must be train-split"
+            )
+        audio_path = resolve_reference_audio(
+            metadata_path,
+            item,
+        )
+        tts.set_ref_audio(str(audio_path))
+        prompt = tts.prompt_cache["prompt_semantic"]
+        if prompt is None or prompt.numel() == 0:
+            raise ReferenceExportError(
+                f"empty prompt semantic for {name!r}"
+            )
+        references[name] = prompt.detach().cpu().long()
+        print(
+            f"[OK] {speaker_uid}: {name} -> "
+            f"{references[name].numel()} semantic tokens"
+        )
+
+    payload = {
+        "format_version": 1,
+        "tts_version": config.version,
+        "references": references,
+    }
+    output = Path(args.output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, output)
+    print(f"[OK] saved {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (
+        ReferenceExportError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        print(f"[FATAL] {exc}", file=sys.stderr)
+        raise SystemExit(2)
