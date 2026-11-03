@@ -228,6 +228,11 @@ def build_dataset(args: argparse.Namespace) -> None:
         )
         text_group_id = stable_hash(speaker_uid, language, normalized)
         source_id = metadata.get("source_id")
+        if split in {"val", "test"} and not source_id:
+            raise DatasetError(
+                f"{raw_wav}: {split} samples require explicit source_id "
+                "so evaluation lineage is known"
+            )
         pair_group_id = metadata.get("pair_group_id")
         pair_source = metadata.get("pair_source", "none")
         emotion_intended = metadata.get("emotion_intended") or metadata.get("emotion")
