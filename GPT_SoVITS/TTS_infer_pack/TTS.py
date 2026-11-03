@@ -1092,7 +1092,12 @@ class TTS:
         return _data
 
     def load_emotion_controller(self, checkpoint_path: str):
-        """Attach a trained emotion controller without replacing GPT-SoVITS weights."""
+        """Attach a trained V5 emotion controller without replacing GPT-SoVITS weights."""
+        if self.configs.version not in V5_VERSIONS:
+            raise ValueError(
+                "Emotion controller is currently supported only for "
+                f"GPT-SoVITS V5, got {self.configs.version!r}"
+            )
         controller, metadata = load_emotion_controller_checkpoint(
             checkpoint_path, map_location="cpu"
         )
