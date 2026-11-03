@@ -1113,6 +1113,18 @@ class TTS:
                 "Emotion controller was trained for a different S1 checkpoint. "
                 "Refusing to attach it to the current GPT model."
             )
+        expected_s2_hash = metadata.get("extra", {}).get("s2_sha256")
+        if not expected_s2_hash:
+            raise ValueError(
+                "Emotion controller checkpoint has no bound S2 hash; "
+                "retrain/regenerate it with the current trainer."
+            )
+        current_s2_hash = sha256_file(self.configs.vits_weights_path)
+        if current_s2_hash != expected_s2_hash:
+            raise ValueError(
+                "Emotion controller was trained for a different V5 S2 semantic "
+                "tokenizer. Refusing to attach it to the current SoVITS model."
+            )
         if controller.hidden_dim != self.t2s_model.model.model_dim:
             raise ValueError(
                 "Emotion controller hidden_dim does not match the loaded S1 model: "
