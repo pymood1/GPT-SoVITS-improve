@@ -885,6 +885,7 @@ def main() -> int:
     attempts = 0
     max_attempts = max(args.steps * 20, 100)
     skipped_low_coverage = 0
+    skipped_no_gradient = 0
     running_loss = 0.0
     running_gap = 0.0
 
@@ -952,6 +953,9 @@ def main() -> int:
             continue
 
         gap = positive_score - negative_score
+        if not gap.requires_grad:
+            skipped_no_gradient += 1
+            continue
         loss = F.softplus(
             -args.preference_beta * (gap - args.margin)
         )
@@ -983,7 +987,8 @@ def main() -> int:
                 f"gap={running_gap / divisor:.5f} "
                 f"coverage=({positive_coverage:.2%},"
                 f"{negative_coverage:.2%}) "
-                f"skipped={skipped_low_coverage}"
+                f"skipped_coverage={skipped_low_coverage} "
+                f"skipped_no_grad={skipped_no_gradient}"
             )
             running_loss = 0.0
             running_gap = 0.0
@@ -1007,9 +1012,10 @@ def main() -> int:
         raise TrainingDataError(
             f"Only {accepted_steps}/{args.steps} training steps were "
             f"accepted after {attempts} attempts. "
-            f"Low-support skips={skipped_low_coverage}. "
-            "Do not lower the support threshold blindly; inspect data and "
-            "sampler settings first."
+            f"Low-support skips={skipped_low_coverage}, "
+            f"no-gradient skips={skipped_no_gradient}. "
+            "Do not weaken safety settings blindly; inspect data and sampler "
+            "support first."
         )
 
     controller.eval()
@@ -1022,7 +1028,9 @@ def main() -> int:
     )
     print(
         f"[OK] saved {output} | groups={len(groups)} "
-        f"| steps={accepted_steps} | skips={skipped_low_coverage}"
+        f"| steps={accepted_steps} "
+        f"| skipped_coverage={skipped_low_coverage} "
+        f"| skipped_no_grad={skipped_no_gradient}"
     )
     return 0
 
