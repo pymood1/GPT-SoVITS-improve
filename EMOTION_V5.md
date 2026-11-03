@@ -61,25 +61,38 @@ Rules enforced by the builder:
 - source/text/pair groups may not cross splits;
 - `pair_group_id` must be explicit and must contain one speaker/language/exact text.
 
-## 3. Run the official V5 preprocessing
+## 3. Run the official V5 preprocessing in an isolated build
 
 Use only `/content/data_ready/train.list` for training features.
 
-Run the official GPT-SoVITS 1A/1B/1C preprocessing with the V5 pretrained
-SoVITS model. Do not reuse an old v2ProPlus/V5 experiment feature directory
-after changing the list, audio, preprocessing code, or S2 model.
+The wrapper below executes the official GPT-SoVITS 1A/1B/1C scripts unchanged,
+but fingerprints the dataset, S2, BERT, CNHuBERT, S2 config and current git
+commit before choosing the output directory:
 
-**Current safe rule:** use a fresh GPT-SoVITS preprocessing experiment/output
-folder for each changed dataset/model build.
+```bash
+python tools/run_emotion_v5_preprocess.py \
+  --train-list /content/data_ready/train.list \
+  --output-root /content/emotion_features \
+  --bert-dir GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large \
+  --cnhubert-dir GPT_SoVITS/pretrained_models/chinese-hubert-base \
+  --pretrained-s2g GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth \
+  --version v5dev
+```
 
-The controller trainer expects:
+It creates an isolated directory such as:
 
 ```text
-<feature_dir>/
+/content/emotion_features/build_0123456789abcdef/
 ├── 2-name2text.txt
 ├── 3-bert/
-└── 6-name2semantic.tsv
+├── 4-cnhubert/
+├── 5-wav32k/
+├── 6-name2semantic.tsv
+└── build.json
 ```
+
+If any fingerprinted input changes, a different build ID is used. A partial
+directory without a valid `build.json` is never reused.
 
 ## 4. Choose one fixed train reference per speaker
 
@@ -121,11 +134,11 @@ pretrained/fine-tuned models.
 ```bash
 python tools/train_emotion_controller.py \
   --s1-checkpoint GPT_SoVITS/pretrained_models/s1v3.ckpt \
-  --feature-dir /content/<fresh_v5_feature_dir> \
+  --feature-dir /content/emotion_features/build_0123456789abcdef \
+  --feature-build-manifest /content/emotion_features/build_0123456789abcdef/build.json \
   --metadata /content/data_ready/metadata.jsonl \
   --reference-map /content/data_ready/reference_map.json \
   --reference-prompt-cache /content/data_ready/reference_prompts.pt \
-  --semantic-s2-checkpoint GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth \
   --output /content/emotion_controller.pt \
   --emotions neutral,happy,sad,angry \
   --steps 1000
@@ -137,10 +150,11 @@ The controller checkpoint stores the SHA-256 identity of the S1 checkpoint used
 for training. `TTS.load_emotion_controller()` refuses to attach it to another
 S1 checkpoint, even when the tensor dimensions happen to match.
 
-When an inference-exact reference prompt cache is used, the trainer also checks
-that `--semantic-s2-checkpoint` has the same SHA-256 as the V5 S2 model that
-created the reference cache. This prevents target/reference semantic token
-spaces from being mixed silently.
+When an inference-exact reference prompt cache is used, the trainer checks the
+S2 SHA-256 stored in the preprocessing `build.json` against the S2 SHA-256
+stored in the reference prompt cache. This prevents target/reference semantic
+token spaces from being mixed silently. `--semantic-s2-checkpoint` remains a
+fallback only when a build manifest is unavailable.
 
 Training samples are selected as:
 
