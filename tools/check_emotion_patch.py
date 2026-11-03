@@ -145,6 +145,50 @@ def check_checkpoint_roundtrip() -> None:
         raise AssertionError("Checkpoint metadata mismatch")
 
 
+def check_integration_wiring() -> None:
+    root = ROOT
+    api = (root / "api_v2.py").read_text(encoding="utf-8")
+    webui = (
+        root / "GPT_SoVITS/inference_webui.py"
+    ).read_text(encoding="utf-8")
+    tts = (
+        root / "GPT_SoVITS/TTS_infer_pack/TTS.py"
+    ).read_text(encoding="utf-8")
+    streaming = (
+        root / "GPT_SoVITS/TTS_infer_pack/streaming.py"
+    ).read_text(encoding="utf-8")
+
+    required_api = (
+        "emotion_id: Optional[int] = None",
+        "emotion_strength: float = 1.0",
+        '@APP.get("/set_emotion_controller")',
+        '@APP.get("/unload_emotion_controller")',
+    )
+    for marker in required_api:
+        if marker not in api:
+            raise AssertionError(f"API integration marker missing: {marker}")
+
+    required_webui = (
+        "load_emotion_controller_webui",
+        "emotion_strength_slider",
+        "emotion_id=emotion_id if emotion_enabled else None",
+        "change_gpt_weights_webui",
+        "sovits_path_global",
+    )
+    for marker in required_webui:
+        if marker not in webui:
+            raise AssertionError(f"WebUI integration marker missing: {marker}")
+
+    for marker in ("expected_s1_hash", "expected_s2_hash", "V5_VERSIONS"):
+        if marker not in tts:
+            raise AssertionError(f"TTS safety marker missing: {marker}")
+
+    if "gpt_streaming does not yet support" not in streaming:
+        raise AssertionError(
+            "Streaming path does not explicitly reject unsupported emotion steering"
+        )
+
+
 def main() -> int:
     torch.manual_seed(233333)
     check_zero_effect()
@@ -152,6 +196,7 @@ def main() -> int:
     check_support_and_eos()
     check_budget_fail_open()
     check_checkpoint_roundtrip()
+    check_integration_wiring()
     print("[OK] emotion-v5 invariant checks passed")
     return 0
 
