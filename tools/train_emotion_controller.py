@@ -630,6 +630,11 @@ def save_checkpoint(
             ),
             "s1_sha256": args.s1_sha256,
             "feature_dir": str(Path(args.feature_dir).resolve()),
+            "feature_build_manifest": (
+                str(Path(args.feature_build_manifest).resolve())
+                if args.feature_build_manifest
+                else None
+            ),
             "metadata": str(Path(args.metadata).resolve()),
             "reference_prompt_cache": (
                 str(Path(args.reference_prompt_cache).resolve())
@@ -652,10 +657,17 @@ def main() -> int:
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--reference-map", required=True)
     parser.add_argument(
+        "--feature-build-manifest",
+        help=(
+            "build.json from run_emotion_v5_preprocess.py. Preferred source "
+            "of semantic S2 provenance."
+        ),
+    )
+    parser.add_argument(
         "--semantic-s2-checkpoint",
         help=(
-            "Exact V5 S2 checkpoint used to generate 6-name2semantic.tsv. "
-            "Required when using an inference-exact reference prompt cache."
+            "Fallback: exact V5 S2 checkpoint used to generate "
+            "6-name2semantic.tsv when no build manifest is available."
         ),
     )
     parser.add_argument(
@@ -779,15 +791,39 @@ def main() -> int:
                 "reference prompt cache has no S2 identity hash; regenerate it "
                 "with the current exporter"
             )
-        if not args.semantic_s2_checkpoint:
-            raise TrainingDataError(
-                "--semantic-s2-checkpoint is required with "
-                "--reference-prompt-cache so target/reference semantic spaces "
-                "can be verified"
+        actual_s2_hash = None
+        if args.feature_build_manifest:
+            manifest = json.loads(
+                Path(args.feature_build_manifest)
+                .resolve()
+                .read_text(encoding="utf-8")
             )
-        actual_s2_hash = sha256_file(
-            str(Path(args.semantic_s2_checkpoint).resolve())
-        )
+            manifest_feature_dir = Path(
+                manifest.get("feature_dir", "")
+            ).resolve()
+            if manifest_feature_dir != feature_dir:
+                raise TrainingDataError(
+                    "feature build manifest does not belong to --feature-dir"
+                )
+            actual_s2_hash = (
+                manifest.get("identity", {}).get("s2_sha256")
+            )
+            if not actual_s2_hash:
+                raise TrainingDataError(
+                    "feature build manifest has no S2 SHA-256"
+                )
+        elif args.semantic_s2_checkpoint:
+            actual_s2_hash = sha256_file(
+                str(Path(args.semantic_s2_checkpoint).resolve())
+            )
+        else:
+            raise TrainingDataError(
+                "With --reference-prompt-cache, provide "
+                "--feature-build-manifest (preferred) or "
+                "--semantic-s2-checkpoint so target/reference semantic "
+                "spaces can be verified"
+            )
+
         if actual_s2_hash != expected_s2_hash:
             raise TrainingDataError(
                 "S2 checkpoint mismatch: reference prompt cache and "
