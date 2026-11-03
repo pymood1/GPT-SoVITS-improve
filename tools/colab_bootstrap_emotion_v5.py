@@ -51,6 +51,7 @@ def verify(target: Path) -> None:
         target / "GPT_SoVITS/AR/models/t2s_model.py",
         target / "GPT_SoVITS/TTS_infer_pack/TTS.py",
         target / "tools/emotion_dataset_builder.py",
+        target / "tools/check_emotion_patch.py",
     ]
     missing = [
         str(path.relative_to(target))
@@ -71,9 +72,12 @@ def verify(target: Path) -> None:
             "GPT_SoVITS/AR/models/t2s_model.py",
             "GPT_SoVITS/TTS_infer_pack/TTS.py",
             "tools/emotion_dataset_builder.py",
+            "tools/check_emotion_patch.py",
         ],
         cwd=target,
     )
+
+    run([sys.executable, "tools/check_emotion_patch.py"], cwd=target)
 
     t2s_text = (
         target / "GPT_SoVITS/AR/models/t2s_model.py"
