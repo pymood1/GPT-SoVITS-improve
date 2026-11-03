@@ -1199,7 +1199,17 @@ class TTS:
         emotion_id = inputs.get("emotion_id", None)
         emotion_id = None if emotion_id in ["", None] else int(emotion_id)
         emotion_strength = float(inputs.get("emotion_strength", 1.0))
+        if not math.isfinite(emotion_strength) or emotion_strength < 0:
+            raise ValueError(
+                "emotion_strength must be a finite non-negative number"
+            )
         emotion_controller = getattr(self.t2s_model.model, "emotion_controller", None)
+        if emotion_controller is not None and emotion_id is not None:
+            if emotion_id < 0 or emotion_id >= emotion_controller.num_emotions:
+                raise ValueError(
+                    f"emotion_id out of range: {emotion_id}; "
+                    f"controller supports 0..{emotion_controller.num_emotions - 1}"
+                )
         emotion_enabled = (
             emotion_controller is not None
             and emotion_id is not None
