@@ -264,7 +264,7 @@ class Roformer_Loader:
         else:
             sf.write(path, data, sr)
             subprocess.run(
-                [FFMPEG_EXE, "-i", path, "-vn", path[:-3] + format, "-q:a", "2", "-y"],
+                [FFMPEG_EXE, "-y", "-i", path, "-vn", "-q:a", "2", path[:-3] + format],
                 check=True,
             )
             try:
