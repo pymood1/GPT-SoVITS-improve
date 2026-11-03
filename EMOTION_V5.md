@@ -125,12 +125,22 @@ python tools/train_emotion_controller.py \
   --metadata /content/data_ready/metadata.jsonl \
   --reference-map /content/data_ready/reference_map.json \
   --reference-prompt-cache /content/data_ready/reference_prompts.pt \
+  --semantic-s2-checkpoint GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth \
   --output /content/emotion_controller.pt \
   --emotions neutral,happy,sad,angry \
   --steps 1000
 ```
 
 Only the small controller is optimized. The S1 backbone is frozen.
+
+The controller checkpoint stores the SHA-256 identity of the S1 checkpoint used
+for training. `TTS.load_emotion_controller()` refuses to attach it to another
+S1 checkpoint, even when the tensor dimensions happen to match.
+
+When an inference-exact reference prompt cache is used, the trainer also checks
+that `--semantic-s2-checkpoint` has the same SHA-256 as the V5 S2 model that
+created the reference cache. This prevents target/reference semantic token
+spaces from being mixed silently.
 
 Training samples are selected as:
 
