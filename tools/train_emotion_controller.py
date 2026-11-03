@@ -227,6 +227,31 @@ def load_reference_map(
     return result
 
 
+def load_reference_semantics(
+    path: Optional[Path],
+) -> Dict[str, List[int]]:
+    if path is None:
+        return {}
+    payload = torch.load(
+        path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    if not isinstance(payload, dict) or "references" not in payload:
+        raise TrainingDataError(
+            "reference semantic cache must contain 'references'"
+        )
+    result: Dict[str, List[int]] = {}
+    for name, value in payload["references"].items():
+        tensor = torch.as_tensor(value).reshape(-1).long()
+        if tensor.numel() == 0:
+            raise TrainingDataError(
+                f"empty reference semantic cache entry: {name}"
+            )
+        result[str(name)] = tensor.tolist()
+    return result
+
+
 def build_groups(
     store: FeatureStore,
     emotion_to_id: Dict[str, int],
@@ -469,6 +494,7 @@ def build_pair_batch(
     negative_name: str,
     device: torch.device,
     pad_val: int,
+    reference_semantics: Dict[str, List[int]],
 ) -> dict:
     reference_meta = store.require_item(reference_name)
     positive_meta = store.require_item(positive_name)
@@ -490,7 +516,10 @@ def build_pair_batch(
         )
 
     ref_phones = store.phone_ids(reference_name)
-    ref_semantic = store.semantic_ids(reference_name)
+    ref_semantic = reference_semantics.get(
+        reference_name,
+        store.semantic_ids(reference_name),
+    )
     pos_semantic = store.semantic_ids(positive_name)
     neg_semantic = store.semantic_ids(negative_name)
 
@@ -547,6 +576,11 @@ def save_checkpoint(
             ),
             "feature_dir": str(Path(args.feature_dir).resolve()),
             "metadata": str(Path(args.metadata).resolve()),
+            "reference_semantics": (
+                str(Path(args.reference_semantics).resolve())
+                if args.reference_semantics
+                else None
+            ),
             "top_k": args.top_k,
             "top_p": args.top_p,
             "temperature": args.temperature,
@@ -562,6 +596,13 @@ def main() -> int:
     parser.add_argument("--feature-dir", required=True)
     parser.add_argument("--metadata", required=True)
     parser.add_argument("--reference-map", required=True)
+    parser.add_argument(
+        "--reference-semantics",
+        help=(
+            "Optional cache from export_emotion_reference_prompts.py. "
+            "Recommended for inference-exact 0.3 s silence-tailed prompts."
+        ),
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--emotions",
@@ -642,6 +683,29 @@ def main() -> int:
         Path(args.reference_map).resolve(),
         store,
     )
+    reference_semantics = load_reference_semantics(
+        Path(args.reference_semantics).resolve()
+        if args.reference_semantics
+        else None
+    )
+    if not reference_semantics:
+        print(
+            "[WARNING] No inference-exact reference semantic cache supplied. "
+            "Falling back to ordinary 1C reference semantics, which omit the "
+            "0.3 s silence tail used by TTS._set_prompt_semantic()."
+        )
+    else:
+        missing_reference_semantics = sorted(
+            {
+                name for name in reference_map.values()
+                if name not in reference_semantics
+            }
+        )
+        if missing_reference_semantics:
+            raise TrainingDataError(
+                "reference semantic cache is missing fixed references: "
+                + ", ".join(missing_reference_semantics[:20])
+            )
     groups = build_groups(
         store,
         emotion_to_id,
@@ -710,6 +774,7 @@ def main() -> int:
             negative_name=negative_name,
             device=device,
             pad_val=int(config["data"]["pad_val"]),
+            reference_semantics=reference_semantics,
         )
 
         hidden, logits = frozen_teacher_forcing(
