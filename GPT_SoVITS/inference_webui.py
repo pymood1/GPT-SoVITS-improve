@@ -233,6 +233,7 @@ from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 v3v4set = {"v3", "v4"} | V5_VERSIONS
 t2s_model_cudagraph = None
 gpt_path_global = None
+sovits_path_global = None
 emotion_controller_metadata = None
 
 
@@ -259,6 +260,13 @@ def load_emotion_controller_webui(controller_path):
         raise gr.Error(i18n("当前 GPT 模型路径不可用"))
     if sha256_file(gpt_path_global) != expected_s1_hash:
         raise gr.Error(i18n("控制器与当前 GPT/S1 权重不匹配，已拒绝加载"))
+    expected_s2_hash = metadata.get("extra", {}).get("s2_sha256")
+    if not expected_s2_hash:
+        raise gr.Error(i18n("控制器缺少 S2 哈希，请使用当前训练器重新生成"))
+    if sovits_path_global in [None, ""]:
+        raise gr.Error(i18n("当前 SoVITS 模型路径不可用"))
+    if sha256_file(sovits_path_global) != expected_s2_hash:
+        raise gr.Error(i18n("控制器与当前 V5 SoVITS/S2 权重不匹配，已拒绝加载"))
     if controller.hidden_dim != t2s_model.model.model_dim:
         raise gr.Error(i18n("控制器 hidden_dim 与当前 GPT 模型不匹配"))
 
@@ -302,6 +310,12 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
     if "！" in sovits_path or "!" in sovits_path:
         sovits_path = name2sovits_path[sovits_path]
     global vq_model, hps, version, model_version, dict_language, if_lora_v3, t2s_model_cudagraph
+    global emotion_controller_metadata, sovits_path_global
+    current_t2s_model = globals().get("t2s_model")
+    if current_t2s_model is not None:
+        current_t2s_model.model.clear_emotion_controller()
+    emotion_controller_metadata = None
+    sovits_path_global = sovits_path
     if t2s_model_cudagraph is not None:
         t2s_model_cudagraph.close()
     t2s_model_cudagraph = None
@@ -355,6 +369,8 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
             {"__type__": "update", "visible": True if model_version == "v3" else False},
             {"__type__": "update", "value": i18n("模型加载中，请等待"), "interactive": False},
             {"__type__": "update", "visible": False, "value": 0.0, "interactive": False},
+            {"__type__": "update", "choices": [], "value": None},
+            i18n("SoVITS 模型已切换，请重新加载情感控制器"),
         )
 
     dict_s2 = load_sovits_new(sovits_path)
@@ -441,6 +457,8 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         {"__type__": "update", "visible": True if model_version == "v3" else False},
         {"__type__": "update", "value": i18n("合成语音"), "interactive": True},
         {"__type__": "update", "visible": False, "value": 0.0, "interactive": False},
+        {"__type__": "update", "choices": [], "value": None},
+        i18n("SoVITS 模型已切换，请重新加载情感控制器"),
     )
     with open("./weight.json") as f:
         data = f.read()
@@ -460,9 +478,11 @@ def change_gpt_weights(gpt_path):
     if "！" in gpt_path or "!" in gpt_path:
         gpt_path = name2gpt_path[gpt_path]
     global hz, max_sec, t2s_model, config, t2s_model_cudagraph, gpt_path_global
+    global emotion_controller_metadata
     if t2s_model_cudagraph is not None:
         t2s_model_cudagraph.close()
     t2s_model_cudagraph = None
+    emotion_controller_metadata = None
     gpt_path_global = gpt_path
     hz = 50
     dict_s1 = torch.load(gpt_path, map_location="cpu", weights_only=False)
@@ -485,6 +505,16 @@ def change_gpt_weights(gpt_path):
 
 
 change_gpt_weights(gpt_path)
+
+
+def change_gpt_weights_webui(gpt_path):
+    change_gpt_weights(gpt_path)
+    return (
+        {"__type__": "update", "choices": [], "value": None},
+        i18n("GPT 模型已切换，请重新加载情感控制器"),
+    )
+
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import torch
 
@@ -1620,9 +1650,15 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 if_sr_Checkbox,
                 inference_button,
                 cfg_rate,
+                emotion_selector,
+                emotion_status,
             ],
         )
-        GPT_dropdown.change(change_gpt_weights, [GPT_dropdown], [])
+        GPT_dropdown.change(
+            change_gpt_weights_webui,
+            [GPT_dropdown],
+            [emotion_selector, emotion_status],
+        )
 
         # gr.Markdown(value=i18n("文本切分工具。太长的文本合成出来效果不一定好，所以太长建议先切。合成会根据文本的换行分开合成再拼起来。"))
         # with gr.Row():
