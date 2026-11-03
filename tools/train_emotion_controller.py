@@ -629,6 +629,7 @@ def save_checkpoint(
                 Path(args.s1_checkpoint).resolve()
             ),
             "s1_sha256": args.s1_sha256,
+            "s2_sha256": args.s2_sha256,
             "feature_dir": str(Path(args.feature_dir).resolve()),
             "feature_build_manifest": (
                 str(Path(args.feature_build_manifest).resolve())
@@ -759,6 +760,39 @@ def main() -> int:
         Path(args.reference_map).resolve(),
         store,
     )
+    # The emotion controller is tied to the semantic tokenizer used by
+    # 6-name2semantic.tsv, so S2 provenance is mandatory even when the optional
+    # inference-exact reference prompt cache is not used.
+    if args.feature_build_manifest:
+        manifest = json.loads(
+            Path(args.feature_build_manifest)
+            .resolve()
+            .read_text(encoding="utf-8")
+        )
+        manifest_feature_dir = Path(
+            manifest.get("feature_dir", "")
+        ).resolve()
+        if manifest_feature_dir != feature_dir:
+            raise TrainingDataError(
+                "feature build manifest does not belong to --feature-dir"
+            )
+        actual_s2_hash = manifest.get("identity", {}).get("s2_sha256")
+        if not actual_s2_hash:
+            raise TrainingDataError(
+                "feature build manifest has no S2 SHA-256"
+            )
+    elif args.semantic_s2_checkpoint:
+        actual_s2_hash = sha256_file(
+            str(Path(args.semantic_s2_checkpoint).resolve())
+        )
+    else:
+        raise TrainingDataError(
+            "Provide --feature-build-manifest (preferred) or "
+            "--semantic-s2-checkpoint so the controller can be bound to the "
+            "semantic tokenizer used for training."
+        )
+    args.s2_sha256 = actual_s2_hash
+
     reference_prompt_cache, reference_cache_metadata = (
         load_reference_prompt_cache(
             Path(args.reference_prompt_cache).resolve()
@@ -791,39 +825,6 @@ def main() -> int:
                 "reference prompt cache has no S2 identity hash; regenerate it "
                 "with the current exporter"
             )
-        actual_s2_hash = None
-        if args.feature_build_manifest:
-            manifest = json.loads(
-                Path(args.feature_build_manifest)
-                .resolve()
-                .read_text(encoding="utf-8")
-            )
-            manifest_feature_dir = Path(
-                manifest.get("feature_dir", "")
-            ).resolve()
-            if manifest_feature_dir != feature_dir:
-                raise TrainingDataError(
-                    "feature build manifest does not belong to --feature-dir"
-                )
-            actual_s2_hash = (
-                manifest.get("identity", {}).get("s2_sha256")
-            )
-            if not actual_s2_hash:
-                raise TrainingDataError(
-                    "feature build manifest has no S2 SHA-256"
-                )
-        elif args.semantic_s2_checkpoint:
-            actual_s2_hash = sha256_file(
-                str(Path(args.semantic_s2_checkpoint).resolve())
-            )
-        else:
-            raise TrainingDataError(
-                "With --reference-prompt-cache, provide "
-                "--feature-build-manifest (preferred) or "
-                "--semantic-s2-checkpoint so target/reference semantic "
-                "spaces can be verified"
-            )
-
         if actual_s2_hash != expected_s2_hash:
             raise TrainingDataError(
                 "S2 checkpoint mismatch: reference prompt cache and "
