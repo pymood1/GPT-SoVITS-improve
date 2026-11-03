@@ -192,6 +192,56 @@ class LowRankEmotionPreference(nn.Module):
         return result, state
 
 
+def save_emotion_controller_checkpoint(
+    controller: LowRankEmotionPreference,
+    path: str,
+    emotion_names=None,
+    extra=None,
+) -> None:
+    """Save only the tiny controller; GPT-SoVITS backbone weights stay separate."""
+    payload = {
+        "format_version": 1,
+        "config": {
+            "hidden_dim": controller.hidden_dim,
+            "num_emotions": controller.num_emotions,
+            "rank": controller.rank,
+            "max_log_odds_shift": controller.max_log_odds_shift,
+            "prefix_log_ratio_budget": controller.prefix_log_ratio_budget,
+        },
+        "state_dict": controller.state_dict(),
+        "emotion_names": list(emotion_names) if emotion_names is not None else None,
+        "extra": dict(extra or {}),
+    }
+    torch.save(payload, path)
+
+
+def load_emotion_controller_checkpoint(
+    path: str,
+    map_location="cpu",
+) -> Tuple[LowRankEmotionPreference, dict]:
+    """Load a controller checkpoint without touching GPT-SoVITS backbone weights."""
+    payload = torch.load(path, map_location=map_location, weights_only=False)
+    if not isinstance(payload, dict) or "config" not in payload or "state_dict" not in payload:
+        raise ValueError("Invalid emotion controller checkpoint")
+
+    config = dict(payload["config"])
+    controller = LowRankEmotionPreference(
+        hidden_dim=int(config["hidden_dim"]),
+        num_emotions=int(config["num_emotions"]),
+        rank=int(config.get("rank", 8)),
+        max_log_odds_shift=float(config.get("max_log_odds_shift", 0.35)),
+        prefix_log_ratio_budget=float(config.get("prefix_log_ratio_budget", 2.0)),
+    )
+    controller.load_state_dict(payload["state_dict"], strict=True)
+    metadata = {
+        "format_version": payload.get("format_version", 1),
+        "emotion_names": payload.get("emotion_names"),
+        "extra": payload.get("extra") or {},
+        "config": config,
+    }
+    return controller, metadata
+
+
 def sample_with_emotion_preference(
     logits: torch.Tensor,
     hidden_state: torch.Tensor,
