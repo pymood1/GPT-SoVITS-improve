@@ -119,6 +119,7 @@ def set_seed(seed):
 
 from time import time as ttime
 
+from AR.models.emotion_control import load_emotion_controller_checkpoint, sha256_file
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from peft import LoraConfig, get_peft_model
 from text import cleaned_text_to_sequence
@@ -232,6 +233,69 @@ from process_ckpt import get_sovits_version_from_path_fast, load_sovits_new
 v3v4set = {"v3", "v4"} | V5_VERSIONS
 t2s_model_cudagraph = None
 gpt_path_global = None
+emotion_controller_metadata = None
+
+
+def load_emotion_controller_webui(controller_path):
+    global emotion_controller_metadata, t2s_model_cudagraph
+    if controller_path in [None, ""]:
+        return (
+            {"__type__": "update", "choices": [], "value": None},
+            i18n("请选择情感控制器文件"),
+        )
+    if hasattr(controller_path, "name"):
+        controller_path = controller_path.name
+    controller_path = str(controller_path)
+    if model_version not in V5_VERSIONS:
+        raise gr.Error(i18n("情感控制器目前仅支持 V5dev/V5turbo 模型"))
+
+    controller, metadata = load_emotion_controller_checkpoint(
+        controller_path, map_location="cpu"
+    )
+    expected_s1_hash = metadata.get("extra", {}).get("s1_sha256")
+    if not expected_s1_hash:
+        raise gr.Error(i18n("控制器缺少 S1 哈希，请使用当前训练器重新生成"))
+    if gpt_path_global in [None, ""]:
+        raise gr.Error(i18n("当前 GPT 模型路径不可用"))
+    if sha256_file(gpt_path_global) != expected_s1_hash:
+        raise gr.Error(i18n("控制器与当前 GPT/S1 权重不匹配，已拒绝加载"))
+    if controller.hidden_dim != t2s_model.model.model_dim:
+        raise gr.Error(i18n("控制器 hidden_dim 与当前 GPT 模型不匹配"))
+
+    controller = controller.to(
+        device=device,
+        dtype=torch.float16 if is_half else torch.float32,
+    ).eval()
+    t2s_model.model.set_emotion_controller(controller)
+    emotion_controller_metadata = metadata
+
+    if t2s_model_cudagraph is not None:
+        t2s_model_cudagraph.close()
+        t2s_model_cudagraph = None
+
+    names = metadata.get("emotion_names") or [
+        str(i) for i in range(controller.num_emotions)
+    ]
+    choices = [(f"{i}: {name}", i) for i, name in enumerate(names)]
+    return (
+        {
+            "__type__": "update",
+            "choices": choices,
+            "value": choices[0][1] if choices else None,
+        },
+        i18n("情感控制器已加载") + f": {os.path.basename(controller_path)}",
+    )
+
+
+def unload_emotion_controller_webui():
+    global emotion_controller_metadata
+    if t2s_model is not None:
+        t2s_model.model.clear_emotion_controller()
+    emotion_controller_metadata = None
+    return (
+        {"__type__": "update", "choices": [], "value": None},
+        i18n("情感控制器已卸载"),
+    )
 
 
 def change_sovits_weights(sovits_path, prompt_language=None, text_language=None):
@@ -865,6 +929,8 @@ def get_tts_wav(
     use_cuda_graph=True,
     use_flash_attention=True,
     cfg_rate=None,
+    emotion_id=None,
+    emotion_strength=1.0,
 ):
     global cache, t2s_model_cudagraph
     if sample_steps is None:
@@ -872,6 +938,25 @@ def get_tts_wav(
     if cfg_rate is None:
         cfg_rate = 0.0
     sample_steps, cfg_rate = int(sample_steps), float(cfg_rate)
+    emotion_strength = float(emotion_strength)
+    if not np.isfinite(emotion_strength) or emotion_strength < 0:
+        raise gr.Error(i18n("情感强度必须是有限的非负数"))
+    emotion_id = None if emotion_id in [None, ""] else int(emotion_id)
+    emotion_controller = getattr(t2s_model.model, "emotion_controller", None)
+    if emotion_controller is None and emotion_id is not None:
+        gr.Warning(i18n("未加载情感控制器，本次使用原始 GPT-SoVITS 推理"))
+        emotion_id = None
+    if emotion_controller is not None and emotion_id is not None:
+        if emotion_id < 0 or emotion_id >= emotion_controller.num_emotions:
+            raise gr.Error(i18n("情感 ID 超出控制器范围"))
+    emotion_enabled = (
+        emotion_controller is not None
+        and emotion_id is not None
+        and emotion_strength != 0.0
+    )
+    if emotion_enabled and if_freeze:
+        gr.Warning(i18n("情感控制启用时自动关闭语义缓存冻结，避免复用其他情感的 token"))
+        if_freeze = False
     if ref_wav_path:
         pass
     else:
@@ -974,7 +1059,7 @@ def get_tts_wav(
     t2 = ttime()
     pending_texts = [entry for entry in prepared_texts if not (if_freeze and entry[0] in cache)]
     if pending_texts:
-        if t2s_model_cudagraph is None:
+        if t2s_model_cudagraph is None and not emotion_enabled:
             t2s_model_cudagraph = create_acceleration(
                 gpt_path_global,
                 device=torch.device(device),
@@ -983,8 +1068,10 @@ def get_tts_wav(
                 use_cuda_graph=use_cuda_graph,
                 use_flash_attention=use_flash_attention,
             )
-        use_accel = t2s_model_cudagraph is not None and t2s_model_cudagraph.prepare(
-            use_cuda_graph, use_flash_attention
+        use_accel = (
+            not emotion_enabled
+            and t2s_model_cudagraph is not None
+            and t2s_model_cudagraph.prepare(use_cuda_graph, use_flash_attention)
         )
         with torch.no_grad():
             if use_accel:
@@ -1016,6 +1103,8 @@ def get_tts_wav(
                         temperature=temperature,
                         early_stop_num=hz * max_sec,
                         repetition_penalty=1.35,
+                        emotion_id=emotion_id if emotion_enabled else None,
+                        emotion_strength=emotion_strength,
                     )
                     cache[i_text] = pred_semantic[:, -idx:].unsqueeze(0)
     t3 = ttime()
@@ -1293,6 +1382,51 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             )
             refresh_button = gr.Button(i18n("刷新模型路径"), variant="primary", scale=14)
             refresh_button.click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
+
+        with gr.Row():
+            emotion_controller_file = gr.File(
+                label=i18n("可选：V5 情感控制器 (.pt/.pth)"),
+                type="filepath",
+                file_types=[".pt", ".pth"],
+                scale=8,
+            )
+            emotion_load_button = gr.Button(
+                i18n("加载情感控制器"), variant="secondary", scale=4
+            )
+            emotion_unload_button = gr.Button(
+                i18n("卸载情感控制器"), variant="secondary", scale=4
+            )
+            emotion_selector = gr.Dropdown(
+                label=i18n("目标情感"),
+                choices=[],
+                value=None,
+                interactive=True,
+                scale=5,
+            )
+            emotion_strength_slider = gr.Slider(
+                minimum=0.0,
+                maximum=2.0,
+                step=0.05,
+                value=1.0,
+                label=i18n("情感控制强度"),
+                interactive=True,
+                scale=5,
+            )
+        emotion_status = gr.Textbox(
+            label=i18n("情感控制器状态"),
+            value=i18n("未加载"),
+            interactive=False,
+        )
+        emotion_load_button.click(
+            load_emotion_controller_webui,
+            [emotion_controller_file],
+            [emotion_selector, emotion_status],
+        )
+        emotion_unload_button.click(
+            unload_emotion_controller_webui,
+            [],
+            [emotion_selector, emotion_status],
+        )
         gr.Markdown(html_center(i18n("*请上传并填写参考信息"), "h3"))
         with gr.Row():
             inp_ref = gr.Audio(label=i18n("请上传3~10秒内参考音频，超过会报错！"), type="filepath", scale=13)
@@ -1465,6 +1599,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 use_cuda_graph_checkbox,
                 flash_attn_checkbox,
                 cfg_rate,
+                emotion_selector,
+                emotion_strength_slider,
             ],
             [output],
         )
