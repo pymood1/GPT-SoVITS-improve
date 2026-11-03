@@ -37,6 +37,39 @@ def check_zero_effect() -> None:
         raise AssertionError("Zero-effect initialization was lost")
 
 
+def check_zero_init_is_trainable() -> None:
+    controller = LowRankEmotionPreference(
+        hidden_dim=8,
+        num_emotions=4,
+        rank=4,
+    )
+    hidden = torch.randn(1, 8)
+    output_weight = torch.randn(5, 8)
+    base = torch.tensor(
+        [[0.40, 0.20, 0.15, 0.15, 0.10]],
+        dtype=torch.float32,
+    )
+    scores = controller.preference_scores(
+        hidden,
+        output_weight,
+        emotion_id=0,
+    )
+    tilted, _ = controller.tilt_probabilities(
+        base_probs=base,
+        preference_scores=scores,
+        strength=1.0,
+        eos_id=None,
+        state=None,
+    )
+    loss = -torch.log(tilted[0, 0].clamp_min(1e-12))
+    loss.backward()
+    grad = controller.u_proj.grad
+    if grad is None or not torch.isfinite(grad).all() or grad.norm() <= 0:
+        raise AssertionError(
+            "Zero-effect initialization blocks the first training update"
+        )
+
+
 def check_support_and_eos() -> None:
     controller = LowRankEmotionPreference(
         hidden_dim=8,
@@ -115,6 +148,7 @@ def check_checkpoint_roundtrip() -> None:
 def main() -> int:
     torch.manual_seed(233333)
     check_zero_effect()
+    check_zero_init_is_trainable()
     check_support_and_eos()
     check_budget_fail_open()
     check_checkpoint_roundtrip()
