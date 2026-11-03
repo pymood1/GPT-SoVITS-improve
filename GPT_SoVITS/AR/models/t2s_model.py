@@ -18,6 +18,7 @@ from AR.models.utils import (
     sample,
     topk_sampling,
 )
+from AR.models.emotion_control import EmotionSamplingState, sample_with_emotion_preference
 from AR.modules.embedding import SinePositionalEmbedding, TokenEmbedding
 from AR.modules.transformer import LayerNorm, TransformerEncoder, TransformerEncoderLayer
 
@@ -311,6 +312,9 @@ class Text2SemanticDecoder(nn.Module):
         )
 
         self.ar_predict_layer = nn.Linear(self.model_dim, self.vocab_size, bias=False)
+        # Optional and absent for ordinary GPT-SoVITS checkpoints. Attaching a
+        # controller later therefore does not change pretrained state loading.
+        self.emotion_controller = None
         self.loss_fct = nn.CrossEntropyLoss(reduction="sum")
 
         self.ar_accuracy_metric = MulticlassAccuracy(
@@ -351,6 +355,70 @@ class Text2SemanticDecoder(nn.Module):
             blocks.append(block)
 
         self.t2s_transformer = T2STransformer(self.num_layers, blocks)
+
+    def set_emotion_controller(self, controller):
+        """Attach an optional emotion preference controller after checkpoint loading."""
+        self.emotion_controller = controller
+        return self
+
+    def clear_emotion_controller(self):
+        """Return inference to the unmodified GPT-SoVITS sampling path."""
+        self.emotion_controller = None
+
+    def _prepare_emotion_runtime(self, kwargs, device):
+        emotion_id = kwargs.get("emotion_id", None)
+        emotion_strength = float(kwargs.get("emotion_strength", 1.0))
+        if self.emotion_controller is None or emotion_id is None or emotion_strength == 0.0:
+            return None, emotion_strength, None
+
+        if isinstance(emotion_id, (list, tuple)):
+            emotion_id = torch.tensor(emotion_id, dtype=torch.long, device=device)
+        elif torch.is_tensor(emotion_id):
+            emotion_id = emotion_id.to(device=device, dtype=torch.long)
+
+        return emotion_id, emotion_strength, EmotionSamplingState()
+
+    def _sample_token(
+        self,
+        logits,
+        hidden_state,
+        previous_tokens,
+        top_k,
+        top_p,
+        repetition_penalty,
+        temperature,
+        emotion_id,
+        emotion_strength,
+        emotion_state,
+    ):
+        if self.emotion_controller is None or emotion_id is None or emotion_strength == 0.0:
+            samples = sample(
+                logits,
+                previous_tokens,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
+            )[0]
+            return samples, emotion_state
+
+        eos_id = self.EOS if self.EOS < logits.shape[-1] else None
+        samples, _, emotion_state = sample_with_emotion_preference(
+            logits=logits,
+            hidden_state=hidden_state,
+            previous_tokens=previous_tokens,
+            output_weight=self.ar_predict_layer.weight,
+            controller=self.emotion_controller,
+            emotion_id=emotion_id,
+            strength=emotion_strength,
+            eos_id=eos_id,
+            state=emotion_state,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            temperature=temperature,
+        )
+        return samples, emotion_state
 
     def make_input_data(self, x, x_lens, y, y_lens, bert_feature):
         x = self.ar_text_embedding(x)
@@ -607,6 +675,10 @@ class Text2SemanticDecoder(nn.Module):
                 **kwargs,
             )
 
+        emotion_id, emotion_strength, emotion_state = self._prepare_emotion_runtime(
+            kwargs, x_lens.device
+        )
+
         max_len = kwargs.get("max_len", x_lens.max())
         x_list = []
         for x_item, bert_item in zip(x, bert_feature):
@@ -713,9 +785,18 @@ class Text2SemanticDecoder(nn.Module):
             if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
                 logits = logits[:, :-1] 
 
-            samples = sample(
-                logits, y, top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
-            )[0]
+            samples, emotion_state = self._sample_token(
+                logits=logits,
+                hidden_state=xy_dec[:, -1],
+                previous_tokens=y,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
+                emotion_id=emotion_id,
+                emotion_strength=emotion_strength,
+                emotion_state=emotion_state,
+            )
 
             y = torch.concat([y, samples], dim=1)
 
@@ -745,6 +826,13 @@ class Text2SemanticDecoder(nn.Module):
                     for i in range(len(k_cache)):
                         k_cache[i] = torch.index_select(k_cache[i], dim=0, index=reserved_idx_of_batch_for_y)
                         v_cache[i] = torch.index_select(v_cache[i], dim=0, index=reserved_idx_of_batch_for_y)
+
+                if emotion_state is not None:
+                    emotion_state.index_select(reserved_idx_of_batch_for_y)
+                if torch.is_tensor(emotion_id) and emotion_id.numel() > 1:
+                    emotion_id = torch.index_select(
+                        emotion_id.reshape(-1), 0, reserved_idx_of_batch_for_y
+                    )
 
             if (early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num) or idx == 1499:
                 print("use early stop num:", early_stop_num)
@@ -796,6 +884,13 @@ class Text2SemanticDecoder(nn.Module):
         y_list = []
         idx_list = []
         for i in range(len(x)):
+            item_kwargs = dict(kwargs)
+            item_emotion_id = item_kwargs.get("emotion_id", None)
+            if isinstance(item_emotion_id, (list, tuple)) and len(item_emotion_id) > 1:
+                item_kwargs["emotion_id"] = item_emotion_id[i]
+            elif torch.is_tensor(item_emotion_id) and item_emotion_id.numel() > 1:
+                item_kwargs["emotion_id"] = item_emotion_id.reshape(-1)[i]
+
             y, idx = next(self.infer_panel_naive(
                 x[i].unsqueeze(0),
                 x_lens[i],
@@ -806,7 +901,7 @@ class Text2SemanticDecoder(nn.Module):
                 early_stop_num,
                 temperature,
                 repetition_penalty,
-                **kwargs,
+                **item_kwargs,
             ))
             y_list.append(y[0])
             idx_list.append(idx)
@@ -828,6 +923,9 @@ class Text2SemanticDecoder(nn.Module):
         chunk_length: int = 24,
         **kwargs,
     ):
+        emotion_id, emotion_strength, emotion_state = self._prepare_emotion_runtime(
+            kwargs, x.device
+        )
         mute_emb_sim_matrix = kwargs.get("mute_emb_sim_matrix", None)
         chunk_split_thershold = kwargs.get("chunk_split_thershold", 0.3)
         check_token_num = 2
@@ -900,9 +998,18 @@ class Text2SemanticDecoder(nn.Module):
             if idx < 11:  ###至少预测出10个token不然不给停止（0.4s）
                 logits = logits[:, :-1]
 
-            samples = sample(
-                logits, y, top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty, temperature=temperature
-            )[0]
+            samples, emotion_state = self._sample_token(
+                logits=logits,
+                hidden_state=xy_dec[:, -1],
+                previous_tokens=y,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
+                emotion_id=emotion_id,
+                emotion_strength=emotion_strength,
+                emotion_state=emotion_state,
+            )
 
             y = torch.concat([y, samples], dim=1)
 
