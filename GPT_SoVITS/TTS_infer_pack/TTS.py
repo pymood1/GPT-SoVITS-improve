@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
+from AR.models.emotion_control import load_emotion_controller_checkpoint
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from BigVGAN.bigvgan import BigVGAN
 from feature_extractor.cnhubert import CNHubert
@@ -512,6 +513,7 @@ class TTS:
 
         self.t2s_model: Text2SemanticLightningModule = None
         self.t2s_accel = None
+        self.emotion_controller_metadata = None
         self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
         self.bert_tokenizer: AutoTokenizer = None
         self.bert_model: AutoModelForMaskedLM = None
@@ -1085,6 +1087,29 @@ class TTS:
             for j, index in enumerate(index_list):
                 _data[index] = data[i][j]
         return _data
+
+    def load_emotion_controller(self, checkpoint_path: str):
+        """Attach a trained emotion controller without replacing GPT-SoVITS weights."""
+        controller, metadata = load_emotion_controller_checkpoint(
+            checkpoint_path, map_location="cpu"
+        )
+        if controller.hidden_dim != self.t2s_model.model.model_dim:
+            raise ValueError(
+                "Emotion controller hidden_dim does not match the loaded S1 model: "
+                f"{controller.hidden_dim} != {self.t2s_model.model.model_dim}"
+            )
+        controller = controller.to(
+            device=self.configs.device,
+            dtype=self.precision,
+        ).eval()
+        self.t2s_model.model.set_emotion_controller(controller)
+        self.emotion_controller_metadata = metadata
+        return metadata
+
+    def unload_emotion_controller(self):
+        """Detach emotion control and return to the original GPT-SoVITS sampler."""
+        self.t2s_model.model.clear_emotion_controller()
+        self.emotion_controller_metadata = None
 
     def stop(
         self,
