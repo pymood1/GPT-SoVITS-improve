@@ -35,6 +35,12 @@ class Text2SemanticLightningModule(LightningModule):
             )
         if is_train:
             self.automatic_optimization = False
+            self.grad_accum_steps = int(
+                config["train"].get("grad_accumulation_steps", 4)
+            )
+            if self.grad_accum_steps <= 0:
+                raise ValueError("grad_accumulation_steps must be positive")
+            self._grad_accum_count = 0
             self.save_hyperparameters()
             self.eval_dir = output_dir / "eval"
             self.eval_dir.mkdir(parents=True, exist_ok=True)
@@ -51,10 +57,9 @@ class Text2SemanticLightningModule(LightningModule):
             batch["bert_feature"],
         )
         self.manual_backward(loss)
-        if batch_idx > 0 and batch_idx % 4 == 0:
-            opt.step()
-            opt.zero_grad()
-            scheduler.step()
+        self._grad_accum_count += 1
+        if self._grad_accum_count >= self.grad_accum_steps:
+            self._step_accumulated_gradients(opt, scheduler)
 
         self.log(
             "total_loss",
@@ -78,6 +83,23 @@ class Text2SemanticLightningModule(LightningModule):
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
+        )
+
+    def _step_accumulated_gradients(self, opt, scheduler):
+        opt.step()
+        opt.zero_grad()
+        scheduler.step()
+        self._grad_accum_count = 0
+
+    def on_train_epoch_end(self):
+        # Flush a partial accumulation window instead of silently dropping the
+        # final 1-3 batches when the epoch length is not divisible by the
+        # configured accumulation count.
+        if getattr(self, "_grad_accum_count", 0) <= 0:
+            return
+        self._step_accumulated_gradients(
+            self.optimizers(),
+            self.lr_schedulers(),
         )
 
     def validation_step(self, batch: Dict, batch_idx: int):

@@ -139,7 +139,13 @@ class Text2SemanticDataset(Dataset):
 
             semantic_str = self.semantic_data.iloc[i, 1]
             # get token list
-            semantic_ids = [int(idx) for idx in semantic_str.split(" ")]
+            semantic_ids = [int(idx) for idx in semantic_str.split(" ") if idx]
+            if not semantic_ids:
+                num_deleted_ps += 1
+                print(
+                    f'Warning: File "{item_name}" has no semantic tokens! Skipped.'
+                )
+                continue
             # (T), 是否需要变成 (1, T) -> 不需要，因为需要求 len
             # 过滤掉太长的样本
             if (
@@ -178,6 +184,12 @@ class Text2SemanticDataset(Dataset):
 
         min_num = 100  # 20直接不补#30补了也不存ckpt
         leng = len(self.semantic_phoneme)
+        if leng == 0:
+            raise RuntimeError(
+                "No usable S1 training samples remain after matching and "
+                "duration/phoneme-rate filtering. Check 2-name2text.txt, "
+                "6-name2semantic.tsv, language/version, and preprocessing outputs."
+            )
         if leng < min_num:
             tmp1 = self.semantic_phoneme
             tmp2 = self.item_names
