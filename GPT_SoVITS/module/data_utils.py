@@ -53,6 +53,13 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         tmp = self.audiopaths_sid_text
         leng = len(tmp)
         min_num = 100
+        if leng == 0:
+            raise RuntimeError(
+                "No matching S2 training samples were found across text, "
+                "CNHuBERT, wav32k"
+                + (", and speaker embeddings" if self.is_v2Pro else "")
+                + ". Check preprocessing outputs and file names."
+            )
         if leng < min_num:
             self.audiopaths_sid_text = []
             for _ in range(max(2, int(min_num / leng))):
@@ -102,7 +109,12 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        assert len(audiopaths_sid_text_new) > 1  # 至少能凑够batch size，这里todo
+        if len(audiopaths_sid_text_new) <= 1:
+            raise RuntimeError(
+                "Too few usable S2 training samples remain after duration/phone "
+                f"filtering: {len(audiopaths_sid_text_new)}. "
+                "Need at least 2 usable samples."
+            )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
 
@@ -307,6 +319,12 @@ class TextAudioSpeakerLoaderV3(torch.utils.data.Dataset):
         tmp = self.audiopaths_sid_text
         leng = len(tmp)
         min_num = 100
+        if leng == 0:
+            raise RuntimeError(
+                "No matching S2 training samples were found across text, "
+                "CNHuBERT, wav32k"
+                + ". Check preprocessing outputs and file names."
+            )
         if leng < min_num:
             self.audiopaths_sid_text = []
             for _ in range(max(2, int(min_num / leng))):
@@ -356,7 +374,12 @@ class TextAudioSpeakerLoaderV3(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        assert len(audiopaths_sid_text_new) > 1  # 至少能凑够batch size，这里todo
+        if len(audiopaths_sid_text_new) <= 1:
+            raise RuntimeError(
+                "Too few usable S2 training samples remain after duration/phone "
+                f"filtering: {len(audiopaths_sid_text_new)}. "
+                "Need at least 2 usable samples."
+            )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
         self.spec_min = -12
@@ -545,6 +568,12 @@ class TextAudioSpeakerLoaderV4(torch.utils.data.Dataset):
         tmp = self.audiopaths_sid_text
         leng = len(tmp)
         min_num = 100
+        if leng == 0:
+            raise RuntimeError(
+                "No matching S2 training samples were found across text, "
+                "CNHuBERT, wav32k"
+                + ". Check preprocessing outputs and file names."
+            )
         if leng < min_num:
             self.audiopaths_sid_text = []
             for _ in range(max(2, int(min_num / leng))):
@@ -594,7 +623,12 @@ class TextAudioSpeakerLoaderV4(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        assert len(audiopaths_sid_text_new) > 1  # 至少能凑够batch size，这里todo
+        if len(audiopaths_sid_text_new) <= 1:
+            raise RuntimeError(
+                "Too few usable S2 training samples remain after duration/phone "
+                f"filtering: {len(audiopaths_sid_text_new)}. "
+                "Need at least 2 usable samples."
+            )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
         self.spec_min = -12
@@ -756,6 +790,12 @@ class TextAudioSpeakerLoaderV3b(torch.utils.data.Dataset):
         tmp = self.audiopaths_sid_text
         leng = len(tmp)
         min_num = 100
+        if leng == 0:
+            raise RuntimeError(
+                "No matching S2 training samples were found across text, "
+                "CNHuBERT, wav32k"
+                + ". Check preprocessing outputs and file names."
+            )
         if leng < min_num:
             self.audiopaths_sid_text = []
             for _ in range(max(2, int(min_num / leng))):
@@ -805,7 +845,12 @@ class TextAudioSpeakerLoaderV3b(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        assert len(audiopaths_sid_text_new) > 1  # 至少能凑够batch size，这里todo
+        if len(audiopaths_sid_text_new) <= 1:
+            raise RuntimeError(
+                "Too few usable S2 training samples remain after duration/phone "
+                f"filtering: {len(audiopaths_sid_text_new)}. "
+                "Need at least 2 usable samples."
+            )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
         self.spec_min = -12
