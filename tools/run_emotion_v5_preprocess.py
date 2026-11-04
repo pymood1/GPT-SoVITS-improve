@@ -271,6 +271,21 @@ def main() -> int:
 
     output_dir.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
+
+    # Official preprocessing scripts import modules as top-level packages
+    # (for example: text.cleaner, module.models, utils, tools.my_utils).
+    # When they are executed by file path, Python puts only the script
+    # directory on sys.path, so explicitly expose both the repository root
+    # and GPT_SoVITS package root to subprocesses.
+    pythonpath_entries = [
+        str(ROOT / "GPT_SoVITS"),
+        str(ROOT),
+    ]
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
     env.update(
         {
             "inp_text": str(train_list),
