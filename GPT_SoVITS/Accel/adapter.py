@@ -135,6 +135,10 @@ class AccelInference:
                 for handle in handles:
                     while True:
                         response = handle.queue.get()
+                        if response.ready_event is not None:
+                            response.ready_event.wait(
+                                torch.cuda.current_stream(self.device)
+                            )
                         if response.finished:
                             results.append(response.result)
                             break
