@@ -629,7 +629,8 @@ def save_checkpoint(
                 Path(args.s1_checkpoint).resolve()
             ),
             "s1_sha256": args.s1_sha256,
-            "s2_sha256": args.s2_sha256,
+            "semantic_s2_sha256": args.s2_sha256,
+            "s2_sha256": args.s2_sha256,  # legacy reader compatibility
             "feature_dir": str(Path(args.feature_dir).resolve()),
             "feature_build_manifest": (
                 str(Path(args.feature_build_manifest).resolve())
