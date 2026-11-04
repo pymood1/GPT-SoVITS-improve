@@ -230,6 +230,7 @@ class AudioPreDeEcho:
     def _path_audio_(
         self, music_file, vocal_root=None, ins_root=None, format="flac", is_hp3=False
     ):  # 3个VR模型vocal和ins是反的
+        _validate_output_format(format)
         if ins_root is None and vocal_root is None:
             return "No save root."
         name = os.path.basename(music_file)
@@ -320,9 +321,7 @@ class AudioPreDeEcho:
                 )
                 if os.path.exists(path):
                     opt_format_path = path[:-4] + ".%s" % format
-                    cmd = 'ffmpeg -i "%s" -vn "%s" -q:a 2 -y' % (path, opt_format_path)
-                    print(cmd)
-                    os.system(cmd)
+                    _transcode_audio(path, opt_format_path)
                     if os.path.exists(opt_format_path):
                         try:
                             os.remove(path)
@@ -353,9 +352,7 @@ class AudioPreDeEcho:
                 )
                 if os.path.exists(path):
                     opt_format_path = path[:-4] + ".%s" % format
-                    cmd = 'ffmpeg -i "%s" -vn "%s" -q:a 2 -y' % (path, opt_format_path)
-                    print(cmd)
-                    os.system(cmd)
+                    _transcode_audio(path, opt_format_path)
                     if os.path.exists(opt_format_path):
                         try:
                             os.remove(path)
