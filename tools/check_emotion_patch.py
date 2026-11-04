@@ -145,6 +145,33 @@ def check_checkpoint_roundtrip() -> None:
         raise AssertionError("Checkpoint metadata mismatch")
 
 
+def check_checkpoint_schema_rejects_unexpected_metadata() -> None:
+    controller = LowRankEmotionPreference(
+        hidden_dim=8,
+        num_emotions=2,
+        rank=4,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "controller.pt")
+        save_emotion_controller_checkpoint(
+            controller,
+            path,
+            emotion_names=["neutral", "happy"],
+            extra={"safe": "value"},
+        )
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        payload["unexpected"] = "reject-me"
+        torch.save(payload, path)
+        try:
+            load_emotion_controller_checkpoint(path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "Unexpected controller checkpoint fields were accepted"
+            )
+
+
 def check_integration_wiring() -> None:
     root = ROOT
     api = (root / "api_v2.py").read_text(encoding="utf-8")
@@ -179,7 +206,14 @@ def check_integration_wiring() -> None:
         if marker not in webui:
             raise AssertionError(f"WebUI integration marker missing: {marker}")
 
-    for marker in ("expected_s1_hash", "expected_s2_hash", "V5_VERSIONS"):
+    for marker in (
+        "expected_s1_hash",
+        "expected_s2_hash",
+        "semantic_s2_sha256",
+        "_invalidate_s2_dependent_state",
+        "prompt_version",
+        "V5_VERSIONS",
+    ):
         if marker not in tts:
             raise AssertionError(f"TTS safety marker missing: {marker}")
 
@@ -196,6 +230,7 @@ def main() -> int:
     check_support_and_eos()
     check_budget_fail_open()
     check_checkpoint_roundtrip()
+    check_checkpoint_schema_rejects_unexpected_metadata()
     check_integration_wiring()
     print("[OK] emotion-v5 invariant checks passed")
     return 0
