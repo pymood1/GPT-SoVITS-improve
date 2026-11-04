@@ -22,6 +22,11 @@ def main() -> int:
     api = read("api_v2.py")
     streaming = read("GPT_SoVITS/TTS_infer_pack/streaming.py")
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    uvr_files = [
+        read("tools/uvr5/vr.py"),
+        read("tools/uvr5/mdxnet.py"),
+        read("tools/uvr5/bsroformer.py"),
+    ]
 
     if 'if leng == 0:' not in s1_data:
         raise AssertionError("S1 zero-sample guard missing")
@@ -55,6 +60,9 @@ def main() -> int:
             raise AssertionError(
                 f"Gradio 4 compatibility requirement missing: {requirement}"
             )
+
+    if any("os.system(" in source for source in uvr_files):
+        raise AssertionError("UVR5 still contains shell-based os.system ffmpeg calls")
 
     print("[OK] training/API guard checks passed")
     return 0
