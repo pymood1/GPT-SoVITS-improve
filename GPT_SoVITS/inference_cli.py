@@ -28,7 +28,14 @@ def synthesize(
 
     # Change model weights
     change_gpt_weights(gpt_path=GPT_model_path)
-    change_sovits_weights(sovits_path=SoVITS_model_path)
+    # change_sovits_weights is a Gradio generator: its model-loading work
+    # continues after the first UI update yield. Exhaust it in CLI mode.
+    for _ in change_sovits_weights(
+        sovits_path=SoVITS_model_path,
+        prompt_language=i18n(ref_language),
+        text_language=i18n(target_language),
+    ):
+        pass
 
     # Synthesize audio
     synthesis_result = get_tts_wav(
