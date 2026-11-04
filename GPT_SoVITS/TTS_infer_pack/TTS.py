@@ -537,17 +537,7 @@ class TTS:
             self.bert_model, self.bert_tokenizer, self.configs.device
         )
 
-        self.prompt_cache: dict = {
-            "ref_audio_path": None,
-            "prompt_semantic": None,
-            "refer_spec": [],
-            "prompt_text": None,
-            "prompt_lang": None,
-            "phones": None,
-            "bert_features": None,
-            "norm_text": None,
-            "aux_ref_audio_paths": [],
-        }
+        self._reset_prompt_cache()
 
         self.stop_flag: bool = False
         self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
@@ -560,6 +550,52 @@ class TTS:
         self.init_bert_weights(self.configs.bert_base_path)
         self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
         # self.enable_half_precision(self.configs.is_half)
+
+    def _reset_prompt_cache(self):
+        """Clear every cached reference/text feature tied to the active S2/frontend."""
+        self.prompt_cache = {
+            "ref_audio_path": None,
+            "prompt_semantic": None,
+            "refer_spec": [],
+            "raw_audio": None,
+            "raw_sr": None,
+            "prompt_text": None,
+            "prompt_lang": None,
+            "prompt_version": None,
+            "phones": None,
+            "bert_features": None,
+            "norm_text": None,
+            "aux_ref_audio_paths": [],
+        }
+
+    def _invalidate_s2_dependent_state(self):
+        """Detach controller and cached prompt state after a successful S2 switch."""
+        if (
+            self.t2s_model is not None
+            and getattr(self.t2s_model, "model", None) is not None
+            and hasattr(self.t2s_model.model, "clear_emotion_controller")
+        ):
+            self.t2s_model.model.clear_emotion_controller()
+        self.emotion_controller_metadata = None
+        self._reset_prompt_cache()
+
+    def _semantic_s2_checkpoint_path(self) -> str:
+        """Return the checkpoint that owns the semantic tokenizer used at runtime."""
+        weights_path = self.configs.vits_weights_path
+        _version, model_version, is_lora = get_sovits_version_from_path_fast(
+            weights_path
+        )
+        if is_lora and model_version in V5_VERSIONS:
+            base_path = self.configs.default_configs[model_version][
+                "vits_weights_path"
+            ]
+            if not os.path.isfile(base_path):
+                raise FileNotFoundError(
+                    "V5 LoRA semantic base checkpoint is missing: "
+                    f"{base_path}"
+                )
+            return base_path
+        return weights_path
 
     def init_cnhuhbert_weights(self, base_path: str):
         print(f"Loading CNHuBERT weights from {base_path}")
@@ -675,6 +711,9 @@ class TTS:
         if self.configs.is_half and str(self.configs.device) != "cpu":
             self.vits_model = self.vits_model.half()
 
+        # Only invalidate old S2-dependent state after the replacement model
+        # has loaded successfully.
+        self._invalidate_s2_dependent_state()
         self.configs.save_configs()
 
 
@@ -866,17 +905,18 @@ class TTS:
         self.prompt_cache["ref_audio_path"] = ref_audio_path
 
     def _set_ref_spec(self, ref_audio_path):
-        spec_audio = self._get_ref_spec(ref_audio_path)
+        spec_audio = self._get_ref_spec(ref_audio_path, cache_raw=True)
         if self.prompt_cache["refer_spec"] in [[], None]:
             self.prompt_cache["refer_spec"] = [spec_audio]
         else:
             self.prompt_cache["refer_spec"][0] = spec_audio
 
-    def _get_ref_spec(self, ref_audio_path):
+    def _get_ref_spec(self, ref_audio_path, cache_raw: bool = False):
         raw_audio, raw_sr = torchaudio.load(ref_audio_path)
         raw_audio = raw_audio.to(self.configs.device).float()
-        self.prompt_cache["raw_audio"] = raw_audio
-        self.prompt_cache["raw_sr"] = raw_sr
+        if cache_raw:
+            self.prompt_cache["raw_audio"] = raw_audio
+            self.prompt_cache["raw_sr"] = raw_sr
 
         if raw_sr != self.configs.sampling_rate:
             audio = raw_audio.to(self.configs.device)
@@ -1113,13 +1153,18 @@ class TTS:
                 "Emotion controller was trained for a different S1 checkpoint. "
                 "Refusing to attach it to the current GPT model."
             )
-        expected_s2_hash = metadata.get("extra", {}).get("s2_sha256")
+        extra = metadata.get("extra", {})
+        expected_s2_hash = (
+            extra.get("semantic_s2_sha256")
+            or extra.get("s2_sha256")
+        )
         if not expected_s2_hash:
             raise ValueError(
-                "Emotion controller checkpoint has no bound S2 hash; "
+                "Emotion controller checkpoint has no bound semantic S2 hash; "
                 "retrain/regenerate it with the current trainer."
             )
-        current_s2_hash = sha256_file(self.configs.vits_weights_path)
+        semantic_s2_path = self._semantic_s2_checkpoint_path()
+        current_s2_hash = sha256_file(semantic_s2_path)
         if current_s2_hash != expected_s2_hash:
             raise ValueError(
                 "Emotion controller was trained for a different V5 S2 semantic "
@@ -1334,12 +1379,17 @@ class TTS:
             if prompt_text[-1] not in splits:
                 prompt_text += "。" if prompt_lang != "en" else "."
             print(i18n("实际输入的参考文本:"), prompt_text)
-            if self.prompt_cache["prompt_text"] != prompt_text:
+            if (
+                self.prompt_cache["prompt_text"] != prompt_text
+                or self.prompt_cache["prompt_lang"] != prompt_lang
+                or self.prompt_cache["prompt_version"] != self.configs.version
+            ):
                 phones, bert_features, norm_text = self.text_preprocessor.segment_and_extract_feature_for_text(
                     prompt_text, prompt_lang, self.configs.version
                 )
                 self.prompt_cache["prompt_text"] = prompt_text
                 self.prompt_cache["prompt_lang"] = prompt_lang
+                self.prompt_cache["prompt_version"] = self.configs.version
                 self.prompt_cache["phones"] = phones
                 self.prompt_cache["bert_features"] = bert_features
                 self.prompt_cache["norm_text"] = norm_text
