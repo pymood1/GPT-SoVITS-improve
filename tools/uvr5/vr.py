@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 parent_directory = os.path.dirname(os.path.abspath(__file__))
 import logging
@@ -14,6 +15,21 @@ from lib.lib_v5 import spec_utils
 from lib.lib_v5.model_param_init import ModelParameters
 from lib.lib_v5.nets_new import CascadedNet
 from lib.utils import inference
+from tools.portable_runtime import FFMPEG_EXE
+
+SUPPORTED_OUTPUT_FORMATS = {"wav", "flac", "mp3", "m4a"}
+
+
+def _validate_output_format(format):
+    if format not in SUPPORTED_OUTPUT_FORMATS:
+        raise ValueError(f"Unsupported output format: {format!r}")
+
+
+def _transcode_audio(source, destination):
+    subprocess.run(
+        [FFMPEG_EXE, "-y", "-i", source, "-vn", "-q:a", "2", destination],
+        check=True,
+    )
 
 
 class AudioPre:
@@ -43,6 +59,7 @@ class AudioPre:
         self.model = model
 
     def _path_audio_(self, music_file, ins_root=None, vocal_root=None, format="flac", is_hp3=False):
+        _validate_output_format(format)
         if ins_root is None and vocal_root is None:
             return "No save root."
         name = os.path.basename(music_file)
@@ -140,9 +157,7 @@ class AudioPre:
                 )
                 if os.path.exists(path):
                     opt_format_path = path[:-4] + ".%s" % format
-                    cmd = 'ffmpeg -i "%s" -vn "%s" -q:a 2 -y' % (path, opt_format_path)
-                    print(cmd)
-                    os.system(cmd)
+                    _transcode_audio(path, opt_format_path)
                     if os.path.exists(opt_format_path):
                         try:
                             os.remove(path)
@@ -177,9 +192,7 @@ class AudioPre:
                 )
                 if os.path.exists(path):
                     opt_format_path = path[:-4] + ".%s" % format
-                    cmd = 'ffmpeg -i "%s" -vn "%s" -q:a 2 -y' % (path, opt_format_path)
-                    print(cmd)
-                    os.system(cmd)
+                    _transcode_audio(path, opt_format_path)
                     if os.path.exists(opt_format_path):
                         try:
                             os.remove(path)
