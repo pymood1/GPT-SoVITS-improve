@@ -573,8 +573,11 @@ def init_bigvgan():
         bigvgan_model = bigvgan_model.to(device)
 
 
-def init_hifigan():
+def init_hifigan(version=None):
     global hifigan_model, bigvgan_model, sv_cn_model, hifigan_version
+    target_version = model_version if version is None else version
+    vocoder_family = "v5" if target_version in V5_VERSIONS else "v4"
+
     clean_hifigan_model()
     hifigan_model = Generator(
         initial_channel=100,
@@ -590,12 +593,17 @@ def init_hifigan():
     hifigan_model.eval()
     hifigan_model.remove_weight_norm()
     state_dict_g = torch.load(
-        "%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,),
+        "%s/GPT_SoVITS/pretrained_models/gsv-%s-pretrained/vocoder.pth"
+        % (now_dir, vocoder_family),
         map_location="cpu",
         weights_only=False,
     )
-    print("loading vocoder", hifigan_model.load_state_dict(state_dict_g))
-    hifigan_version = "v4"
+    print(
+        "loading vocoder",
+        vocoder_family,
+        hifigan_model.load_state_dict(state_dict_g),
+    )
+    hifigan_version = vocoder_family
     clean_bigvgan_model()
     clean_sv_cn_model()
     if is_half == True:
@@ -619,7 +627,7 @@ hifigan_version = None
 if model_version == "v3":
     init_bigvgan()
 if model_version in ({"v4"} | V5_VERSIONS):
-    init_hifigan()
+    init_hifigan(model_version)
 if model_version in {"v2Pro", "v2ProPlus"}:
     init_sv_cn()
 
@@ -1222,9 +1230,15 @@ def get_tts_wav(
             if model_version == "v3":
                 if bigvgan_model == None:
                     init_bigvgan()
-            else:  # v4
-                if hifigan_model is None or hifigan_version != "v4":
-                    init_hifigan()
+            else:  # v4 / v5
+                expected_vocoder_family = (
+                    "v5" if model_version in V5_VERSIONS else "v4"
+                )
+                if (
+                    hifigan_model is None
+                    or hifigan_version != expected_vocoder_family
+                ):
+                    init_hifigan(model_version)
             vocoder_model = bigvgan_model if model_version == "v3" else hifigan_model
             with torch.inference_mode():
                 wav_gen = vocoder_model(cfm_res)
