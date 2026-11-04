@@ -46,7 +46,7 @@ POST:
     "streaming_mode": False,      # bool or int. return audio chunk by chunk.T he available options are: 0,1,2,3 or True/False (0/False: Disabled | 1/True: Best Quality, Slowest response speed (old version streaming_mode) | 2: Medium Quality, Slow response speed | 3: Lower Quality, Faster response speed )
     "overlap_length": 2,          # int. overlap length of semantic tokens for streaming mode.
     "min_chunk_length": 16,       # int. The minimum chunk length of semantic tokens for streaming mode. (affects audio chunk size)
-    "gpt_streaming": false,       # bool. opt in to semantic-token streaming.
+    "gpt_streaming": false,       # bool. reserved; currently disabled until semantic streaming is wired end-to-end.
     "streaming_chunk_seconds": 2.0,
     "streaming_window_mode": "fixed",
     "streaming_lookahead_seconds": 0.12,
@@ -56,15 +56,10 @@ POST:
 }
 ```
 
-When `gpt_streaming` is enabled, use model `v2ProPlus`, `v5turbo` or `v5dev`,
-integer `streaming_mode` 2 or 3, `batch_size=1`, and `media_type="raw"` or `"wav"`.
-All existing text split methods (`cut0` through `cut5`) are supported: each text
-segment streams through its own GPT session within one HTTP response.
-`streaming_window_mode` defaults to `fixed`; `hybrid` is supported for these models.
-On v2ProPlus, `min_chunk_length` sets the initial semantic block size; hybrid
-windows can grow later blocks up to four times that token count. On V5,
-`streaming_chunk_seconds` sets every fixed window, or the first hybrid window
-of each text segment.
+`gpt_streaming` is currently reserved and returns HTTP 501. The semantic
+streaming helpers are not yet wired into the production TTS request path.
+Use the existing `streaming_mode` values without `gpt_streaming` for supported
+audio streaming/fragment behavior.
 
 RESP:
 成功: 直接返回 wav 音频流， http code 200
@@ -159,7 +154,6 @@ import uvicorn
 from io import BytesIO
 from tools.i18n.i18n import I18nAuto
 from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
-from GPT_SoVITS.TTS_infer_pack.streaming import validate_streaming_options
 from GPT_SoVITS.TTS_infer_pack.text_segmentation_method import get_method_names as get_cut_method_names
 from pydantic import BaseModel
 import threading
@@ -492,17 +486,17 @@ async def tts_handle(req: dict, raw_streaming_mode=None):
 
         gpt_streaming = req.get("gpt_streaming", False)
         if gpt_streaming:
-            try:
-                validation_req = dict(req)
-                if raw_streaming_mode is not None:
-                    validation_req["streaming_mode"] = raw_streaming_mode
-                validate_streaming_options(
-                    validation_req,
-                    getattr(tts_pipeline.configs, "version", tts_config.version),
-                    api_mode=True,
-                )
-            except (TypeError, ValueError) as e:
-                return JSONResponse(status_code=400, content={"message": str(e)})
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "message": (
+                        "gpt_streaming is temporarily disabled because the "
+                        "semantic streaming helpers are not yet wired into "
+                        "the production TTS.run path. Use streaming_mode "
+                        "without gpt_streaming."
+                    )
+                },
+            )
 
         streaming_mode = req.get("streaming_mode", False)
         return_fragment = req.get("return_fragment", False)
