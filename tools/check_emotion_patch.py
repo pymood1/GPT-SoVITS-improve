@@ -202,7 +202,7 @@ def check_integration_wiring() -> None:
         "change_gpt_weights_webui",
         "sovits_path_global",
         'vocoder_family = "v5" if target_version in V5_VERSIONS else "v4"',
-        '"gsv-%s-pretrained/vocoder.pth"',
+        "gsv-%s-pretrained/vocoder.pth",
         "init_hifigan(model_version)",
     )
     for marker in required_webui:
