@@ -228,16 +228,92 @@ def save_emotion_controller_checkpoint(
     torch.save(payload, path)
 
 
+def _validate_checkpoint_metadata(value, field: str) -> None:
+    """Reject unexpected Python objects in controller checkpoint metadata."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_checkpoint_metadata(item, f"{field}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{field} contains a non-string key")
+            _validate_checkpoint_metadata(item, f"{field}.{key}")
+        return
+    raise ValueError(
+        f"{field} contains unsupported metadata type: {type(value).__name__}"
+    )
+
+
 def load_emotion_controller_checkpoint(
     path: str,
     map_location="cpu",
 ) -> Tuple[LowRankEmotionPreference, dict]:
-    """Load a controller checkpoint without touching GPT-SoVITS backbone weights."""
-    payload = torch.load(path, map_location=map_location, weights_only=False)
-    if not isinstance(payload, dict) or "config" not in payload or "state_dict" not in payload:
+    """Safely load a tiny controller without deserializing arbitrary Python objects."""
+    payload = torch.load(path, map_location=map_location, weights_only=True)
+    if not isinstance(payload, dict):
         raise ValueError("Invalid emotion controller checkpoint")
 
-    config = dict(payload["config"])
+    allowed_payload_keys = {
+        "format_version",
+        "config",
+        "state_dict",
+        "emotion_names",
+        "extra",
+    }
+    unexpected_payload_keys = set(payload) - allowed_payload_keys
+    if unexpected_payload_keys:
+        raise ValueError(
+            "Unexpected emotion controller checkpoint keys: "
+            + ", ".join(sorted(unexpected_payload_keys))
+        )
+    if payload.get("format_version", 1) != 1:
+        raise ValueError(
+            f"Unsupported emotion controller format_version: "
+            f"{payload.get('format_version')!r}"
+        )
+
+    raw_config = payload.get("config")
+    state_dict = payload.get("state_dict")
+    if not isinstance(raw_config, dict) or not isinstance(state_dict, dict):
+        raise ValueError(
+            "Emotion controller checkpoint must contain config/state_dict mappings"
+        )
+
+    allowed_config_keys = {
+        "hidden_dim",
+        "num_emotions",
+        "rank",
+        "max_log_odds_shift",
+        "prefix_log_ratio_budget",
+    }
+    unexpected_config_keys = set(raw_config) - allowed_config_keys
+    if unexpected_config_keys:
+        raise ValueError(
+            "Unexpected emotion controller config keys: "
+            + ", ".join(sorted(unexpected_config_keys))
+        )
+    for required_key in ("hidden_dim", "num_emotions"):
+        if required_key not in raw_config:
+            raise ValueError(
+                f"Emotion controller config is missing {required_key!r}"
+            )
+
+    expected_state_keys = {
+        "v_proj",
+        "u_proj",
+        "emotion_coeff.weight",
+    }
+    if set(state_dict) != expected_state_keys:
+        raise ValueError(
+            "Emotion controller state_dict keys do not match the expected schema"
+        )
+    if not all(isinstance(value, torch.Tensor) for value in state_dict.values()):
+        raise ValueError("Emotion controller state_dict must contain tensors only")
+
+    config = dict(raw_config)
     controller = LowRankEmotionPreference(
         hidden_dim=int(config["hidden_dim"]),
         num_emotions=int(config["num_emotions"]),
@@ -245,11 +321,28 @@ def load_emotion_controller_checkpoint(
         max_log_odds_shift=float(config.get("max_log_odds_shift", 0.35)),
         prefix_log_ratio_budget=float(config.get("prefix_log_ratio_budget", 2.0)),
     )
-    controller.load_state_dict(payload["state_dict"], strict=True)
+    controller.load_state_dict(state_dict, strict=True)
+
+    emotion_names = payload.get("emotion_names")
+    if emotion_names is not None:
+        if (
+            not isinstance(emotion_names, list)
+            or not all(isinstance(name, str) for name in emotion_names)
+            or len(emotion_names) != controller.num_emotions
+        ):
+            raise ValueError(
+                "emotion_names must contain one string per configured emotion"
+            )
+
+    extra = payload.get("extra") or {}
+    if not isinstance(extra, dict):
+        raise ValueError("Emotion controller extra metadata must be a mapping")
+    _validate_checkpoint_metadata(extra, "extra")
+
     metadata = {
         "format_version": payload.get("format_version", 1),
-        "emotion_names": payload.get("emotion_names"),
-        "extra": payload.get("extra") or {},
+        "emotion_names": emotion_names,
+        "extra": extra,
         "config": config,
     }
     return controller, metadata
