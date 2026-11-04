@@ -21,6 +21,7 @@ def main() -> int:
     lightning = read("GPT_SoVITS/AR/models/t2s_lightning_module.py")
     api = read("api_v2.py")
     streaming = read("GPT_SoVITS/TTS_infer_pack/streaming.py")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
     if 'if leng == 0:' not in s1_data:
         raise AssertionError("S1 zero-sample guard missing")
@@ -45,6 +46,15 @@ def main() -> int:
         raise AssertionError("API still advertises/validates unwired semantic streaming")
     if 'not wired into API v2 yet' not in streaming:
         raise AssertionError("Semantic streaming module is not marked experimental")
+
+    for requirement in (
+        "fastapi[standard]>=0.115.2,<0.116",
+        "starlette>=0.40,<0.47",
+    ):
+        if requirement not in requirements:
+            raise AssertionError(
+                f"Gradio 4 compatibility requirement missing: {requirement}"
+            )
 
     print("[OK] training/API guard checks passed")
     return 0
