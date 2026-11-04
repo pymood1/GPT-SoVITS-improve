@@ -1,4 +1,4 @@
-"""Opt-in API v2 semantic streaming. Ordinary inference remains in TTS.run."""
+"""Experimental semantic-streaming helpers; not wired into API v2 yet."""
 import math
 import threading
 import time
