@@ -6,6 +6,7 @@ if "_CUDA_VISIBLE_DEVICES" in os.environ:
 import argparse
 import logging
 import platform
+import inspect
 from pathlib import Path
 
 import torch
@@ -144,7 +145,15 @@ def main(args):
     except Exception:
         ckpt_path = None
     print("ckpt_path:", ckpt_path)
-    trainer.fit(model, data_module, ckpt_path=ckpt_path)
+    fit_kwargs = {"ckpt_path": ckpt_path}
+    # PyTorch 2.6 changed torch.load's default to weights_only=True, and
+    # Lightning 2.6+ exposes that choice through Trainer.fit(). GPT-SoVITS
+    # resume checkpoints are full Lightning checkpoints produced locally by
+    # this training run, so they require weights_only=False. Keep compatibility
+    # with Lightning versions whose Trainer.fit() predates this argument.
+    if "weights_only" in inspect.signature(trainer.fit).parameters:
+        fit_kwargs["weights_only"] = False
+    trainer.fit(model, data_module, **fit_kwargs)
 
 
 # srun --gpus-per-node=1 --ntasks-per-node=1 python train.py --path-to-configuration configurations/default.yaml
