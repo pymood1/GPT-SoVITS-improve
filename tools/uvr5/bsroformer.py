@@ -1,5 +1,6 @@
 # This code is modified from https://github.com/ZFTurbo/
 import os
+import subprocess
 import warnings
 
 import librosa
@@ -9,6 +10,14 @@ import torch
 import torch.nn as nn
 import yaml
 from tqdm import tqdm
+from tools.portable_runtime import FFMPEG_EXE
+
+SUPPORTED_OUTPUT_FORMATS = {"wav", "flac", "mp3", "m4a"}
+
+
+def _validate_output_format(format):
+    if format not in SUPPORTED_OUTPUT_FORMATS:
+        raise ValueError(f"Unsupported output format: {format!r}")
 
 warnings.filterwarnings("ignore")
 
@@ -246,6 +255,7 @@ class Roformer_Loader:
                 self.save_audio(path_other, res[other].T, sr, format)
 
     def save_audio(self, path, data, sr, format):
+        _validate_output_format(format)
         # input path should be endwith '.wav'
         if format in ["wav", "flac"]:
             if format == "flac":
@@ -253,7 +263,10 @@ class Roformer_Loader:
             sf.write(path, data, sr)
         else:
             sf.write(path, data, sr)
-            os.system('ffmpeg -i "{}" -vn "{}" -q:a 2 -y'.format(path, path[:-3] + format))
+            subprocess.run(
+                [FFMPEG_EXE, "-y", "-i", path, "-vn", "-q:a", "2", path[:-3] + format],
+                check=True,
+            )
             try:
                 os.remove(path)
             except:
