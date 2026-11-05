@@ -41,6 +41,7 @@ name2sovits_path = {
     i18n("不训练直接推v2ProPlus底模！"): "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth",
 }
 name2gpt_path = {
+    i18n("不训练直接推v5dev底模！"): pretrained_gpt_name["v5dev"],
     # i18n("不训练直接推v1底模！"):"GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
     i18n(
         "不训练直接推v2底模！"
