@@ -227,11 +227,52 @@ Normal requests can still use the existing acceleration backend. Emotion-enabled
 requests currently fall back to the ordinary `infer_panel` path because the
 acceleration backend owns a separate sampler.
 
-## 9. Not implemented on purpose
+## 9. WebUI flow
 
-The current branch does **not** include:
+In the main WebUI:
 
-- WebUI emotion controls;
+```text
+1A - dataset formatting
+1B - GPT-SoVITS fine-tuning
+1C - emotion controller training
+1D - inference
+```
+
+The emotion tab runs the existing scripts in order instead of reimplementing
+their training logic. A sidecar JSONL is required when building a fresh
+emotion dataset. Each usable pair group must explicitly identify the intended
+emotion and pair provenance, for example:
+
+```json
+{"wav":"neutral_001.wav","split":"train","emotion_intended":"neutral","pair_group_id":"prompt_0001","pair_source":"recording_manifest"}
+{"wav":"happy_001.wav","split":"train","emotion_intended":"happy","pair_group_id":"prompt_0001","pair_source":"recording_manifest"}
+```
+
+Keep at least one 3-10 second train sample per paired speaker outside all
+`pair_group_id` groups. The WebUI selects that sample as the fixed reference.
+
+When training finishes, the controller path is passed to the normal inference
+WebUI and loaded automatically when its S1/S2 provenance matches.
+
+## 10. Not implemented on purpose
+
+The current branch includes a WebUI pipeline for:
+
+- canonical emotion-dataset preparation;
+- automatic fixed-reference selection for paired speakers;
+- V5dev preprocessing;
+- inference-exact reference-prompt export;
+- emotion-controller training;
+- controller auto-handoff to the normal inference WebUI.
+
+For V5dev SoVITS LoRA fine-tunes, controller S2 provenance is checked
+against the V5dev base S2 because the current fine-tune path applies LoRA to
+the CFM while preserving the semantic token space. GPT/S1 is different:
+the controller must be trained against the exact S1 checkpoint used for
+inference.
+
+The current branch still does **not** include:
+
 - emotion steering inside the acceleration backend;
 - automatic emotion relabeling;
 - fuzzy same-text emotion pairing;
