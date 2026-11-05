@@ -2555,7 +2555,6 @@ emotion pair 밖에 하나 이상 남겨두세요.
                                 "(V5dev LoRA도 이 base token 공간을 사용)"
                             )
                         )
-                        )
 
                         with gr.Row():
                             emotion_run = gr.Button(
