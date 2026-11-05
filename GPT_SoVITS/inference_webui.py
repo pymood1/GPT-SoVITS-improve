@@ -269,7 +269,13 @@ def load_emotion_controller_webui(controller_path):
         raise gr.Error(i18n("控制器缺少 S2 哈希，请使用当前训练器重新生成"))
     if sovits_path_global in [None, ""]:
         raise gr.Error(i18n("当前 SoVITS 模型路径不可用"))
-    if sha256_file(sovits_path_global) != expected_s2_hash:
+
+    s2_hash_path = sovits_path_global
+
+    if if_lora_v3 and model_version in V5_VERSIONS:
+        s2_hash_path = pretrained_sovits_name[model_version]
+
+    if sha256_file(s2_hash_path) != expected_s2_hash:
         raise gr.Error(i18n("控制器与当前 V5 SoVITS/S2 权重不匹配，已拒绝加载"))
     if controller.hidden_dim != t2s_model.model.model_dim:
         raise gr.Error(i18n("控制器 hidden_dim 与当前 GPT 模型不匹配"))
