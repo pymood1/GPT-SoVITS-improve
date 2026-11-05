@@ -115,7 +115,8 @@ lines = ["numpy==1.26.4" if line.strip() == "numpy<2.0" else line for line in li
 full_req = Path("/content/gpt_sovits_full_requirements.txt")
 full_req.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-print("[setup] preparing full requirements...", flush=True)\nprint("Full requirements retained:", sum(
+print("[setup] preparing full requirements...", flush=True)
+print("Full requirements retained:", sum(
     1 for x in lines if x.strip() and not x.lstrip().startswith("#")
 ))
 print("extra-req.txt retained:", repo_extra.read_text(encoding="utf-8").strip())
@@ -150,7 +151,8 @@ pip_cmd = [
     "-r", str(full_req),
     "torchcodec",
 ]
-print("[setup] installing full Python dependencies while downloading assets...", flush=True)\nprint("+", " ".join(pip_cmd), flush=True)
+print("[setup] installing full Python dependencies while downloading assets...", flush=True)
+print("+", " ".join(pip_cmd), flush=True)
 pip_proc = subprocess.Popen(pip_cmd, cwd=str(REPO_DIR), env=uv_env, text=True)
 
 errors = []
