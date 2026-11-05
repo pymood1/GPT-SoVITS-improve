@@ -238,6 +238,10 @@ p_asr = None
 p_denoise = None
 p_tts_inference = None
 p_emotion_training = None
+latest_emotion_controller_path = os.environ.get(
+    "emotion_controller_path",
+    "",
+)
 tts_inference_url = None
 tts_inference_logs = deque(maxlen=40)
 tts_inference_reader = None
@@ -383,6 +387,7 @@ def run_emotion_training_pipeline(
     reuse_dataset,
 ):
     global p_emotion_training
+    global latest_emotion_controller_path
 
     if p_emotion_training is not None and p_emotion_training.poll() is None:
         yield "### 감정 제어 학습\n\n이미 다른 감정 학습 작업이 실행 중입니다."
@@ -404,11 +409,12 @@ def run_emotion_training_pipeline(
         tts_config_path = dataset_dir / "tts_infer_emotion_v5dev.yaml"
 
         s1_checkpoint = Path(
-            pretrained_gpt_name["v5dev"]
-        ).expanduser().resolve()
+            "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+        ).resolve()
         s2_checkpoint = Path(
-            pretrained_sovits_name["v5dev"]
-        ).expanduser().resolve()
+            "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/"
+            "s2Gv5dev.pth"
+        ).resolve()
         bert_dir = Path(
             "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
         ).resolve()
@@ -564,7 +570,27 @@ def run_emotion_training_pipeline(
         ):
             yield status
 
-        feature_dir = latest_feature_build(feature_root)
+        feature_dir = None
+
+        for line in reversed(log_lines):
+            candidate_text = str(line).strip()
+
+            if not candidate_text:
+                continue
+
+            candidate = Path(candidate_text).expanduser()
+
+            if (
+                candidate.name.startswith("build_")
+                and candidate.is_dir()
+                and (candidate / "build.json").is_file()
+            ):
+                feature_dir = candidate.resolve()
+                break
+
+        if feature_dir is None:
+            feature_dir = latest_feature_build(feature_root)
+
         build_manifest = feature_dir / "build.json"
 
         log_lines.append(
@@ -646,6 +672,11 @@ def run_emotion_training_pipeline(
                 "학습 프로세스는 종료됐지만 controller 파일이 없습니다: "
                 f"{controller_output}"
             )
+
+        latest_emotion_controller_path = str(controller_output)
+        os.environ["emotion_controller_path"] = (
+            latest_emotion_controller_path
+        )
 
         yield _emotion_status(
             "감정 제어 학습 완료",
@@ -806,6 +837,7 @@ def change_tts_inference(
                 "is_share": str(is_share),
                 "version": version,
                 "language": language,
+                "emotion_controller_path": latest_emotion_controller_path,
                 "PYTHONUNBUFFERED": "1",
             }
         )
@@ -2483,9 +2515,10 @@ emotion pair 밖에 하나 이상 남겨두세요.
                         gr.Markdown(
                             (
                                 "**사용 모델:** V5dev base S1 "
-                                f"\`{pretrained_gpt_name['v5dev']}\` / "
+                                "\`GPT_SoVITS/pretrained_models/s1v3.ckpt\` / "
                                 "V5dev base S2 "
-                                f"\`{pretrained_sovits_name['v5dev']}\`"
+                                "\`GPT_SoVITS/pretrained_models/"
+                                "gsv-v5-pretrained/s2Gv5dev.pth\`"
                             )
                         )
 
