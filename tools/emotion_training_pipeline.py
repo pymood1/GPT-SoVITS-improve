@@ -153,11 +153,38 @@ def create_reference_map(
 
     rows = read_jsonl(metadata_path)
 
+    pair_groups: dict[str, dict[str, object]] = {}
+
+    for row in rows:
+        if row.get("split") != "train":
+            continue
+
+        pair_group_id = str(
+            row.get("pair_group_id") or ""
+        ).strip()
+        emotion = str(
+            row.get("emotion_intended") or ""
+        ).strip()
+        speaker_uid = str(
+            row.get("speaker_uid") or ""
+        ).strip()
+
+        if not pair_group_id or not emotion or not speaker_uid:
+            continue
+
+        group = pair_groups.setdefault(
+            pair_group_id,
+            {
+                "speaker_uid": speaker_uid,
+                "emotions": set(),
+            },
+        )
+        group["emotions"].add(emotion)
+
     speakers = {
-        str(row.get("speaker_uid", "")).strip()
-        for row in rows
-        if row.get("split") == "train"
-        and str(row.get("speaker_uid", "")).strip()
+        str(group["speaker_uid"])
+        for group in pair_groups.values()
+        if len(group["emotions"]) >= 2
     }
 
     candidates = _reference_candidates(rows, dataset_dir)
