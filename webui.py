@@ -2388,7 +2388,150 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 button1Ba_close.click(close1Ba, [], [info1Ba, button1Ba_open, button1Ba_close])
                 button1Bb_close.click(close1Bb, [], [info1Bb, button1Bb_open, button1Bb_close])
     
-                with gr.TabItem("1C-" + i18n("推理"), id="inference"):
+                with gr.TabItem("1C-감정 제어 학습", id="emotion-training"):
+                    gr.Markdown(
+                        """
+### V5dev Emotion Controller
+
+일반 V5 파인튜닝과 별개로, 같은 화자·같은 문장의 감정 pair를 이용해
+작은 emotion controller를 학습합니다.
+
+sidecar JSONL에는 최소한 \`emotion_intended\`, \`pair_group_id\`,
+\`pair_source\`가 있어야 합니다. 기준 reference로 사용할 3~10초 train 샘플은
+emotion pair 밖에 하나 이상 남겨두세요.
+"""
+                    )
+
+                    with gr.Accordion(
+                        label="1Ca-감정 데이터셋",
+                        open=True,
+                    ):
+                        with gr.Row():
+                            emotion_source_list = gr.Textbox(
+                                label="원본 GPT-SoVITS .list 경로",
+                                placeholder="/content/drive/MyDrive/data/train.list",
+                                interactive=True,
+                            )
+                            emotion_wav_root = gr.Textbox(
+                                label="오디오 루트 폴더 (선택)",
+                                placeholder="/content/drive/MyDrive/data/wav",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            emotion_sidecar = gr.Textbox(
+                                label="감정 sidecar JSONL 경로",
+                                placeholder="/content/drive/MyDrive/data/emotion_sidecar.jsonl",
+                                interactive=True,
+                            )
+                            emotion_dataset_id = gr.Textbox(
+                                label="데이터셋 ID",
+                                value="emotion_dataset_01",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            emotion_dataset_dir = gr.Textbox(
+                                label="canonical dataset 출력 폴더",
+                                value="/content/emotion_dataset",
+                                interactive=True,
+                            )
+                            emotion_reuse_dataset = gr.Checkbox(
+                                label="기존 canonical dataset 재사용",
+                                value=True,
+                                interactive=True,
+                            )
+
+                    with gr.Accordion(
+                        label="1Cb-V5dev 전처리 및 Controller 학습",
+                        open=True,
+                    ):
+                        with gr.Row():
+                            emotion_feature_root = gr.Textbox(
+                                label="V5 전처리 feature 폴더",
+                                value="/content/emotion_features",
+                                interactive=True,
+                            )
+                            emotion_controller_output = gr.Textbox(
+                                label="Controller 저장 경로",
+                                value=(
+                                    "/content/drive/MyDrive/GPT-SoVITS/"
+                                    "emotion_controller.pt"
+                                ),
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            emotion_names = gr.Textbox(
+                                label="감정 목록",
+                                value="neutral,happy,sad,angry",
+                                interactive=True,
+                            )
+                            emotion_steps = gr.Number(
+                                label="학습 steps",
+                                value=1000,
+                                minimum=1,
+                                precision=0,
+                                interactive=True,
+                            )
+                            emotion_gpu = gr.Textbox(
+                                label="GPU 번호",
+                                value=str(default_gpu_numbers),
+                                interactive=True,
+                            )
+
+                        gr.Markdown(
+                            (
+                                "**사용 모델:** V5dev base S1 "
+                                f"\`{pretrained_gpt_name['v5dev']}\` / "
+                                "V5dev base S2 "
+                                f"\`{pretrained_sovits_name['v5dev']}\`"
+                            )
+                        )
+
+                        with gr.Row():
+                            emotion_run = gr.Button(
+                                value="감정 제어 전체 파이프라인 실행",
+                                variant="primary",
+                            )
+                            emotion_stop = gr.Button(
+                                value="감정 학습 중지",
+                                variant="stop",
+                            )
+
+                        emotion_status = gr.Markdown(
+                            value=(
+                                "데이터셋 준비 → reference 자동 선택 → "
+                                "V5dev 전처리 → prompt 생성 → controller 학습"
+                            )
+                        )
+
+                    emotion_run.click(
+                        run_emotion_training_pipeline,
+                        [
+                            emotion_source_list,
+                            emotion_wav_root,
+                            emotion_sidecar,
+                            emotion_dataset_id,
+                            emotion_dataset_dir,
+                            emotion_feature_root,
+                            emotion_controller_output,
+                            emotion_names,
+                            emotion_steps,
+                            emotion_gpu,
+                            emotion_reuse_dataset,
+                        ],
+                        [emotion_status],
+                    )
+
+                    emotion_stop.click(
+                        stop_emotion_training,
+                        [],
+                        [emotion_status],
+                        queue=False,
+                    )
+
+                with gr.TabItem("1D-" + i18n("推理"), id="inference"):
                     gr.Markdown(
                         value=i18n(
                             "选择训练完存放在SoVITS_weights和GPT_weights下的模型。默认的几个是底模，体验5秒Zero Shot TTS不训练推理用。"
