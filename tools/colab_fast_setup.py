@@ -18,6 +18,18 @@ ASSETS = {
     "G2PWModel.zip": f"{HF_BASE}/G2PWModel.zip",
     "nltk_data.zip": f"{HF_BASE}/nltk_data.zip",
     "open_jtalk_dic_utf_8-1.11.tar.gz": f"{HF_BASE}/open_jtalk_dic_utf_8-1.11.tar.gz",
+
+    # V5 is newer than the legacy pretrained_models.zip bundle.
+    # Download the V5dev base model and V5 vocoder directly from the official
+    # GPT-SoVITS model repository while the large legacy ZIP is downloading.
+    "s2Gv5dev.pth": (
+        "https://huggingface.co/lj1995/GPT-SoVITS/"
+        "resolve/main/gsv-v5-pretrained/s2Gv5dev.pth"
+    ),
+    "v5-vocoder.pth": (
+        "https://huggingface.co/lj1995/GPT-SoVITS/"
+        "resolve/main/gsv-v5-pretrained/vocoder.pth"
+    ),
 }
 if DOWNLOAD_UVR5:
     ASSETS["uvr5_weights.zip"] = f"{HF_BASE}/uvr5_weights.zip"
@@ -134,7 +146,7 @@ def download_one(name, url):
 
     print(f"[download] start {name}")
     cmd = [
-        "curl", "-L", "--fail",
+        "curl", "-L", "--fail", "--silent", "--show-error",
         "--retry", "8", "--retry-delay", "2",
         "--connect-timeout", "20",
         "--speed-time", "30", "--speed-limit", "1024",
@@ -156,7 +168,7 @@ print("+", " ".join(pip_cmd), flush=True)
 pip_proc = subprocess.Popen(pip_cmd, cwd=str(REPO_DIR), env=uv_env, text=True)
 
 errors = []
-with ThreadPoolExecutor(max_workers=min(4, len(ASSETS))) as pool:
+with ThreadPoolExecutor(max_workers=min(6, len(ASSETS))) as pool:
     futures = {pool.submit(download_one, n, u): n for n, u in ASSETS.items()}
     for future in as_completed(futures):
         name = futures[future]
@@ -230,7 +242,27 @@ with ThreadPoolExecutor(max_workers=4) as pool:
 if DOWNLOAD_UVR5:
     run(["unzip", "-q", "-o", str(DL_DIR / "uvr5_weights.zip"),
          "-d", str(REPO_DIR / "tools/uvr5")])
-t = elapsed("parallel asset extraction", t)
+
+
+# V5 files are distributed separately from pretrained_models.zip.
+v5_dir = REPO_DIR / "GPT_SoVITS" / "pretrained_models" / "gsv-v5-pretrained"
+v5_dir.mkdir(parents=True, exist_ok=True)
+
+v5_files = {
+    DL_DIR / "s2Gv5dev.pth": v5_dir / "s2Gv5dev.pth",
+    DL_DIR / "v5-vocoder.pth": v5_dir / "vocoder.pth",
+}
+
+for source, destination in v5_files.items():
+    if not source.exists():
+        raise FileNotFoundError(f"Downloaded V5 asset missing: {source}")
+
+    if not destination.exists() or destination.stat().st_size != source.stat().st_size:
+        print(f"[install] {destination.name}", flush=True)
+        shutil.copyfile(source, destination)
+
+
+t = elapsed("parallel asset extraction + V5 install", t)
 
 
 # 6. Verify only in a NEW Python process.
