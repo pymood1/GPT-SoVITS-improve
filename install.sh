@@ -282,7 +282,7 @@ fi
 
 if [ "$DOWNLOAD_UVR5" = "true" ]; then
     if find -L "tools/uvr5/uvr5_weights" -mindepth 1 ! -name '.gitignore' | grep -q .; then
-        echo -e"${INFO}UVR5 Models Exists"
+        echo -e "${INFO}UVR5 Models Exist"
         echo -e "${INFO}Skip Downloading UVR5 Models"
     else
         echo -e "${INFO}Downloading UVR5 Models..."
@@ -298,7 +298,7 @@ fi
 if [ "$USE_CUDA" = true ] && [ "$WORKFLOW" = false ]; then
     echo -e "${INFO}Checking For Nvidia Driver Installation..."
     if command -v nvidia-smi &>/dev/null; then
-        echo "${INFO}Nvidia Driver Founded"
+        echo -e "${INFO}NVIDIA Driver Found"
     else
         echo -e "${WARNING}Nvidia Driver Not Found, Fallback to CPU"
         USE_CUDA=false
@@ -309,9 +309,9 @@ fi
 if [ "$USE_ROCM" = true ] && [ "$WORKFLOW" = false ]; then
     echo -e "${INFO}Checking For ROCm Installation..."
     if [ -d "/opt/rocm" ]; then
-        echo -e "${INFO}ROCm Founded"
+        echo -e "${INFO}ROCm Found"
         if grep -qi "microsoft" /proc/version; then
-            echo -e "${INFO}WSL2 Founded"
+            echo -e "${INFO}WSL2 Found"
             IS_WSL=true
         else
             IS_WSL=false
@@ -338,7 +338,7 @@ elif [ "$USE_CPU" = true ] && [ "$WORKFLOW" = false ]; then
     echo -e "${INFO}Installing PyTorch For CPU..."
     run_pip_quiet torch torchcodec --index-url "https://download.pytorch.org/whl/cpu"
 elif [ "$WORKFLOW" = false ]; then
-    echo -e "${ERROR}Unknown Err"
+    echo -e "${ERROR}Unknown Error"
     exit 1
 fi
 echo -e "${SUCCESS}PyTorch Installed"
@@ -368,7 +368,7 @@ rm -rf open_jtalk_dic_utf_8-1.11.tar.gz
 run_wget_quiet "$PYOPENJTALK_URL" -O open_jtalk_dic_utf_8-1.11.tar.gz
 tar -xzf open_jtalk_dic_utf_8-1.11.tar.gz -C "$PYOPENJTALK_PREFIX"
 rm -rf open_jtalk_dic_utf_8-1.11.tar.gz
-echo -e "${SUCCESS}Open JTalk Dic Downloaded"
+echo -e "${SUCCESS}Open JTalk Dictionary Downloaded"
 
 if [ "$USE_ROCM" = true ] && [ "$IS_WSL" = true ]; then
     echo -e "${INFO}Updating WSL Compatible Runtime Lib For ROCm..."
