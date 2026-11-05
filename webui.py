@@ -810,10 +810,19 @@ def change_tts_inference(
         gpt_path = name2gpt_path.get(gpt_path, gpt_path)
         sovits_path = name2sovits_path.get(sovits_path, sovits_path)
 
+        controller_available = bool(
+            latest_emotion_controller_path
+            and os.path.isfile(latest_emotion_controller_path)
+        )
+
         script_path = (
-            "GPT_SoVITS/inference_webui_fast.py"
-            if batched_infer_enabled
-            else "GPT_SoVITS/inference_webui.py"
+            "GPT_SoVITS/inference_webui.py"
+            if controller_available
+            else (
+                "GPT_SoVITS/inference_webui_fast.py"
+                if batched_infer_enabled
+                else "GPT_SoVITS/inference_webui.py"
+            )
         )
 
         cmd = [
