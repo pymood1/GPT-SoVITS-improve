@@ -1,7 +1,12 @@
 import os
 import sys
+import re
+import threading
+import time
+from collections import deque
 
-os.environ["version"] = version = "v2Pro"
+version = os.environ.get("version", "v2Pro")
+os.environ["version"] = version
 now_dir = os.getcwd()
 sys.path.insert(0, now_dir)
 import warnings
@@ -161,7 +166,12 @@ def fix_gpu_numbers(inputs):
         return inputs
 
 
-from config import pretrained_gpt_name, pretrained_sovits_name
+from config import (
+    name2gpt_path,
+    name2sovits_path,
+    pretrained_gpt_name,
+    pretrained_sovits_name,
+)
 
 
 def check_pretrained_is_exist(version):
@@ -202,11 +212,25 @@ for root in SoVITS_weight_root + GPT_weight_root:
     os.makedirs(root, exist_ok=True)
 SoVITS_names, GPT_names = get_weights_names()
 
+
+def _default_pretrained_choice(names, version_):
+    preferred = i18n(f"不训练直接推{version_}底模！")
+    if preferred in names:
+        return preferred
+    return names[0] if names else ""
+
+
+default_sovits_choice = _default_pretrained_choice(SoVITS_names, version)
+default_gpt_choice = _default_pretrained_choice(GPT_names, version)
+
 p_label = None
 p_uvr5 = None
 p_asr = None
 p_denoise = None
 p_tts_inference = None
+tts_inference_url = None
+tts_inference_logs = deque(maxlen=40)
+tts_inference_reader = None
 
 
 def kill_proc_tree(pid, including_parent=True):
@@ -329,34 +353,159 @@ def change_uvr5():
 process_name_tts = i18n("TTS推理WebUI")
 
 
-def change_tts_inference(bert_path, cnhubert_base_path, gpu_number, gpt_path, sovits_path, batched_infer_enabled):
+def _stream_tts_inference_output(process):
+    global tts_inference_url
+
+    if process.stdout is None:
+        return
+
+    public_url_pattern = re.compile(r"https://[A-Za-z0-9-]+\\.gradio\\.live")
+
+    for line in process.stdout:
+        clean_line = line.rstrip()
+        print(f"[TTS] {clean_line}", flush=True)
+        tts_inference_logs.append(clean_line)
+
+        match = public_url_pattern.search(clean_line)
+        if match is not None:
+            tts_inference_url = match.group(0)
+
+
+def _tts_log_tail(limit=12):
+    lines = list(tts_inference_logs)[-limit:]
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
+def change_tts_inference(
+    bert_path,
+    cnhubert_base_path,
+    gpu_number,
+    gpt_path,
+    sovits_path,
+    batched_infer_enabled,
+):
     global p_tts_inference
-    if batched_infer_enabled:
-        cmd = '"%s" -s GPT_SoVITS/inference_webui_fast.py "%s"' % (python_exec, language)
-    else:
-        cmd = '"%s" -s GPT_SoVITS/inference_webui.py "%s"' % (python_exec, language)
-    # #####v3暂不支持加速推理
-    # if version=="v3":
-    #     cmd = '"%s" GPT_SoVITS/inference_webui.py "%s"'%(python_exec, language)
+    global tts_inference_reader
+    global tts_inference_url
+
+    if p_tts_inference is not None and p_tts_inference.poll() is not None:
+        p_tts_inference = None
+
     if p_tts_inference is None:
-        os.environ["gpt_path"] = gpt_path
-        os.environ["sovits_path"] = sovits_path
-        os.environ["cnhubert_base_path"] = cnhubert_base_path
-        os.environ["bert_path"] = bert_path
-        os.environ["_CUDA_VISIBLE_DEVICES"] = str(fix_gpu_number(gpu_number))
-        os.environ["is_half"] = str(is_half)
-        os.environ["infer_ttswebui"] = str(webui_port_infer_tts)
-        os.environ["is_share"] = str(is_share)
+        script_path = (
+            "GPT_SoVITS/inference_webui_fast.py"
+            if batched_infer_enabled
+            else "GPT_SoVITS/inference_webui.py"
+        )
+
+        cmd = [
+            python_exec,
+            "-u",
+            "-s",
+            script_path,
+            language,
+        ]
+
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "gpt_path": gpt_path,
+                "sovits_path": sovits_path,
+                "cnhubert_base_path": cnhubert_base_path,
+                "bert_path": bert_path,
+                "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_number)),
+                "is_half": str(is_half),
+                "infer_ttswebui": str(webui_port_infer_tts),
+                "is_share": str(is_share),
+                "version": version,
+                "language": language,
+                "PYTHONUNBUFFERED": "1",
+            }
+        )
+
+        tts_inference_url = None
+        tts_inference_logs.clear()
+
+        print("[TTS] launch:", " ".join(cmd), flush=True)
+
+        process = Popen(
+            cmd,
+            cwd=now_dir,
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        p_tts_inference = process
+
+        tts_inference_reader = threading.Thread(
+            target=_stream_tts_inference_output,
+            args=(process,),
+            daemon=True,
+        )
+        tts_inference_reader.start()
+
         yield (
-            process_info(process_name_tts, "opened"),
+            i18n("正在启动TTS推理WebUI，请等待模型加载和公开链接生成。"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
-        print(cmd)
-        p_tts_inference = Popen(cmd, shell=True)
+
+        deadline = time.monotonic() + 120
+
+        while time.monotonic() < deadline:
+            if tts_inference_url is not None:
+                yield (
+                    f"### {i18n('TTS推理WebUI已就绪')}\n\n"
+                    f"[{i18n('TTS推理WebUI')}]({tts_inference_url})",
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                )
+                return
+
+            return_code = process.poll()
+            if return_code is not None:
+                log_tail = _tts_log_tail()
+                p_tts_inference = None
+
+                message = (
+                    f"### {i18n('TTS推理WebUI启动失败')} "
+                    f"(exit code {return_code})"
+                )
+
+                if log_tail:
+                    message += f"\n\n```text\n{log_tail}\n```"
+
+                yield (
+                    message,
+                    {"__type__": "update", "visible": True},
+                    {"__type__": "update", "visible": False},
+                )
+                return
+
+            time.sleep(0.25)
+
+        log_tail = _tts_log_tail()
+        message = f"### {i18n('未能生成公开链接，请查看日志')}"
+
+        if log_tail:
+            message += f"\n\n```text\n{log_tail}\n```"
+
+        yield (
+            message,
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+        )
+
     else:
         kill_process(p_tts_inference.pid, process_name_tts)
         p_tts_inference = None
+        tts_inference_url = None
+        tts_inference_logs.clear()
+
         yield (
             process_info(process_name_tts, "closed"),
             {"__type__": "update", "visible": True},
@@ -1496,7 +1645,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         version_checkbox = gr.Radio(
                             label=i18n("训练模型的版本"),
                             value=version,
-                            choices=["v2", "v2Pro", "v2ProPlus", "v4"],
+                            choices=["v2", "v2Pro", "v2ProPlus", "v4", "v5dev"],
                             scale=5,
                         )
             with gr.Accordion(label=i18n("预训练模型路径"), open=False):
@@ -1866,13 +2015,13 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 GPT_dropdown = gr.Dropdown(
                                     label=i18n("GPT模型列表"),
                                     choices=GPT_names,
-                                    value=GPT_names[-1],
+                                    value=default_gpt_choice,
                                     interactive=True,
                                 )
                                 SoVITS_dropdown = gr.Dropdown(
                                     label=i18n("SoVITS模型列表"),
                                     choices=SoVITS_names,
-                                    value=SoVITS_names[0],
+                                    value=default_sovits_choice,
                                     interactive=True,
                                 )
                         with gr.Column(scale=2):
@@ -1894,7 +2043,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 value=process_info(process_name_tts, "close"), variant="primary", visible=False
                             )
                         with gr.Column():
-                            tts_info = gr.Textbox(label=process_info(process_name_tts, "info"), scale=2)
+                            tts_info = gr.Markdown(value=process_info(process_name_tts, "info"))
                         open_tts.click(
                             change_tts_inference,
                             [
