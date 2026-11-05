@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 version = os.environ.get("version", "v2Pro")
 os.environ["version"] = version
@@ -89,6 +90,14 @@ from config import (
     webui_port_uvr5,
 )
 from tools import my_utils
+from tools.emotion_training_pipeline import (
+    EmotionPipelineError,
+    create_reference_map,
+    format_dataset_summary,
+    latest_feature_build,
+    validate_emotion_dataset,
+    write_v5_tts_config,
+)
 from tools.my_utils import check_details, check_for_existance
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -228,6 +237,7 @@ p_uvr5 = None
 p_asr = None
 p_denoise = None
 p_tts_inference = None
+p_emotion_training = None
 tts_inference_url = None
 tts_inference_logs = deque(maxlen=40)
 tts_inference_reader = None
