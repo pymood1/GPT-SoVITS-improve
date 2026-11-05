@@ -381,6 +381,7 @@ def run_emotion_training_pipeline(
     dataset_dir,
     feature_root,
     controller_output,
+    s1_checkpoint_path,
     emotion_names,
     steps,
     gpu_number,
@@ -408,9 +409,24 @@ def run_emotion_training_pipeline(
         reference_prompt_path = dataset_dir / "reference_prompts.pt"
         tts_config_path = dataset_dir / "tts_infer_emotion_v5dev.yaml"
 
+        s1_checkpoint_path = str(
+            s1_checkpoint_path or ""
+        ).strip()
+
+        if not s1_checkpoint_path:
+            s1_checkpoint_path = (
+                "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+            )
+
+        s1_checkpoint_path = name2gpt_path.get(
+            s1_checkpoint_path,
+            s1_checkpoint_path,
+        )
+
         s1_checkpoint = Path(
-            "GPT_SoVITS/pretrained_models/s1v3.ckpt"
-        ).resolve()
+            s1_checkpoint_path
+        ).expanduser().resolve()
+
         s2_checkpoint = Path(
             "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/"
             "s2Gv5dev.pth"
@@ -2503,6 +2519,16 @@ emotion pair 밖에 하나 이상 남겨두세요.
                             )
 
                         with gr.Row():
+                            emotion_s1_checkpoint = gr.Textbox(
+                                label=(
+                                    "Controller에 사용할 GPT/S1 체크포인트 "
+                                    "(정확히 일치해야 함)"
+                                ),
+                                value="GPT_SoVITS/pretrained_models/s1v3.ckpt",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
                             emotion_names = gr.Textbox(
                                 label="감정 목록",
                                 value="neutral,happy,sad,angry",
@@ -2523,12 +2549,12 @@ emotion pair 밖에 하나 이상 남겨두세요.
 
                         gr.Markdown(
                             (
-                                "**사용 모델:** V5dev base S1 "
-                                "\`GPT_SoVITS/pretrained_models/s1v3.ckpt\` / "
-                                "V5dev base S2 "
-                                "\`GPT_SoVITS/pretrained_models/"
-                                "gsv-v5-pretrained/s2Gv5dev.pth\`"
+                                "**S2 semantic 기준:** "
+                                "`GPT_SoVITS/pretrained_models/"
+                                "gsv-v5-pretrained/s2Gv5dev.pth`  "
+                                "(V5dev LoRA도 이 base token 공간을 사용)"
                             )
+                        )
                         )
 
                         with gr.Row():
@@ -2558,6 +2584,7 @@ emotion pair 밖에 하나 이상 남겨두세요.
                             emotion_dataset_dir,
                             emotion_feature_root,
                             emotion_controller_output,
+                            emotion_s1_checkpoint,
                             emotion_names,
                             emotion_steps,
                             emotion_gpu,
