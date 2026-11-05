@@ -1,4 +1,11 @@
 import os
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path.cwd()
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "GPT_SoVITS"))
 
 inp_text = os.environ.get("inp_text")
 exp_name = os.environ.get("exp_name")
