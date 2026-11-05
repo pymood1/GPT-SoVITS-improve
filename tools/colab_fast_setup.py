@@ -280,6 +280,26 @@ for source, destination in v5_files.items():
 t = elapsed("parallel asset extraction + V5 install", t)
 
 
+print("[check] Python syntax for WebUI/emotion pipeline", flush=True)
+
+syntax_targets = [
+    REPO_DIR / "webui.py",
+    REPO_DIR / "tools/emotion_training_pipeline.py",
+    REPO_DIR / "GPT_SoVITS/inference_webui.py",
+    REPO_DIR / "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
+]
+
+run(
+    [
+        sys.executable,
+        "-m",
+        "py_compile",
+        *[str(path) for path in syntax_targets],
+    ],
+    cwd=REPO_DIR,
+)
+
+
 # 6. Verify only in a NEW Python process.
 verify_script = r"""
 import importlib
