@@ -394,6 +394,9 @@ def change_tts_inference(
         p_tts_inference = None
 
     if p_tts_inference is None:
+        gpt_path = name2gpt_path.get(gpt_path, gpt_path)
+        sovits_path = name2sovits_path.get(sovits_path, sovits_path)
+
         script_path = (
             "GPT_SoVITS/inference_webui_fast.py"
             if batched_infer_enabled
