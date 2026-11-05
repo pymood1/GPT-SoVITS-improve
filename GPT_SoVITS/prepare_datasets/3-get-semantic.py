@@ -14,18 +14,10 @@ if os.path.exists(pretrained_s2G):
     ...
 else:
     raise FileNotFoundError(pretrained_s2G)
-# version=os.environ.get("version","v2")
-size = os.path.getsize(pretrained_s2G)
-if size < 82978 * 1024:
-    version = "v1"
-elif size < 100 * 1024 * 1024:
-    version = "v2"
-elif size < 103520 * 1024:
-    version = "v1"
-elif size < 700 * 1024 * 1024:
-    version = "v2"
-else:
-    version = "v3"
+from process_ckpt import get_sovits_version_from_path_fast
+
+_, version, _ = get_sovits_version_from_path_fast(pretrained_s2G)
+
 import torch
 
 is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
@@ -37,10 +29,10 @@ sys.path.append(now_dir)
 import logging
 import utils
 
-if version != "v3":
-    from module.models import SynthesizerTrn
-else:
+if version in {"v3", "v4", "v5dev", "v5turbo"}:
     from module.models import SynthesizerTrnV3 as SynthesizerTrn
+else:
+    from module.models import SynthesizerTrn
 from tools.my_utils import clean_path
 
 logging.getLogger("numba").setLevel(logging.WARNING)
