@@ -42,23 +42,30 @@ def run(cmd, *, cwd=None, env=None, check=True, quiet=False, capture=False):
     )
 
 
-# 0. Runtime check in a fresh process so this notebook kernel does not preload NumPy.
-preflight = r"""
-import json, sys
-import torch, torchaudio
-print(json.dumps({
-    "python": sys.version.split()[0],
-    "torch": torch.__version__,
-    "cuda": torch.version.cuda,
-    "cuda_ok": torch.cuda.is_available(),
-    "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-    "torchaudio": torchaudio.__version__,
-}))
-"""
-p = run([sys.executable, "-c", preflight], capture=True, quiet=True)
-print(p.stdout.strip())
+# 0. Fast runtime check.
+# Do NOT import torch/torchaudio here: on a fresh Colab runtime their first import
+# can take ~45-60 seconds and makes the first cell look frozen.
+print("[setup] fast runtime preflight...", flush=True)
 if not ((3, 10) <= sys.version_info[:2] <= (3, 12)):
     raise RuntimeError("Use Colab Runtime Version 2026.07 (Python 3.12).")
+
+try:
+    from importlib.metadata import version as pkg_version
+    print("Python:", sys.version.split()[0], flush=True)
+    print("PyTorch package:", pkg_version("torch"), flush=True)
+    print("torchaudio package:", pkg_version("torchaudio"), flush=True)
+except Exception as exc:
+    print("[warn] package metadata check:", repr(exc), flush=True)
+
+if shutil.which("nvidia-smi"):
+    gpu = subprocess.run(
+        ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+        text=True, capture_output=True, check=False,
+    )
+    print("GPU:", gpu.stdout.strip() or "nvidia-smi available", flush=True)
+else:
+    raise RuntimeError("GPU runtime is required.")
+
 t = elapsed("runtime preflight", T0)
 
 
@@ -74,7 +81,7 @@ if missing:
     run(["apt-get", "update", "-qq"])
     run(["apt-get", "install", "-y", "-qq", *sorted({mapping[x] for x in missing})])
 else:
-    print("System tools already present; apt/conda install skipped.")
+    print("System tools already present; apt/conda install skipped.", flush=True)
 t = elapsed("system tools", t)
 
 
@@ -108,7 +115,7 @@ lines = ["numpy==1.26.4" if line.strip() == "numpy<2.0" else line for line in li
 full_req = Path("/content/gpt_sovits_full_requirements.txt")
 full_req.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-print("Full requirements retained:", sum(
+print("[setup] preparing full requirements...", flush=True)\nprint("Full requirements retained:", sum(
     1 for x in lines if x.strip() and not x.lstrip().startswith("#")
 ))
 print("extra-req.txt retained:", repo_extra.read_text(encoding="utf-8").strip())
@@ -143,7 +150,7 @@ pip_cmd = [
     "-r", str(full_req),
     "torchcodec",
 ]
-print("+", " ".join(pip_cmd))
+print("[setup] installing full Python dependencies while downloading assets...", flush=True)\nprint("+", " ".join(pip_cmd), flush=True)
 pip_proc = subprocess.Popen(pip_cmd, cwd=str(REPO_DIR), env=uv_env, text=True)
 
 errors = []
