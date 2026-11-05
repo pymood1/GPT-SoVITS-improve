@@ -212,11 +212,26 @@ def extract_g2pw():
 
 
 def extract_nltk():
-    marker = Path(sys.prefix) / "nltk_data"
+    runtime_dir = REPO_DIR / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    marker = runtime_dir / "nltk_data"
+
     if marker.exists():
         return "[extract] NLTK already present"
-    run(["unzip", "-q", "-o", str(DL_DIR / "nltk_data.zip"),
-         "-d", sys.prefix], quiet=True)
+
+    run(
+        [
+            "unzip",
+            "-q",
+            "-o",
+            str(DL_DIR / "nltk_data.zip"),
+            "-d",
+            str(runtime_dir),
+        ],
+        quiet=True,
+    )
+
     return "[extract] nltk_data.zip done"
 
 
