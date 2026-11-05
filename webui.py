@@ -312,9 +312,9 @@ def _emotion_status(stage, log_lines, final_message=None):
         message += f"\n\n{final_message}"
 
     if tail:
-        message += "\n\n\`\`\`text\n"
+        message += "\n\n```text\n"
         message += "\n".join(tail)
-        message += "\n\`\`\`"
+        message += "\n```"
 
     return message
 
@@ -698,7 +698,7 @@ def run_emotion_training_pipeline(
             "감정 제어 학습 완료",
             log_lines,
             (
-                f"**Controller:** \`{controller_output}\`\n\n"
+                f"**Controller:** `{controller_output}`\n\n"
                 "이 파일을 1D-추론의 감정 컨트롤러에서 불러오면 됩니다."
             ),
         )
@@ -2453,8 +2453,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 일반 V5 파인튜닝과 별개로, 같은 화자·같은 문장의 감정 pair를 이용해
 작은 emotion controller를 학습합니다.
 
-sidecar JSONL에는 최소한 \`emotion_intended\`, \`pair_group_id\`,
-\`pair_source\`가 있어야 합니다. 기준 reference로 사용할 3~10초 train 샘플은
+sidecar JSONL에는 최소한 `emotion_intended`, `pair_group_id`,
+`pair_source`가 있어야 합니다. 기준 reference로 사용할 3~10초 train 샘플은
 emotion pair 밖에 하나 이상 남겨두세요.
 """
                     )
