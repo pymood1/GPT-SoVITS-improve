@@ -359,7 +359,7 @@ def _stream_tts_inference_output(process):
     if process.stdout is None:
         return
 
-    public_url_pattern = re.compile(r"https://[A-Za-z0-9-]+\\.gradio\\.live")
+    public_url_pattern = re.compile(r"https://[A-Za-z0-9-]+\.gradio\.live")
 
     for line in process.stdout:
         clean_line = line.rstrip()
