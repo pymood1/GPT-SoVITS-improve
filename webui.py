@@ -299,6 +299,378 @@ def process_info(process_name="", indicator=""):
         return process_name
 
 
+
+def _emotion_status(stage, log_lines, final_message=None):
+    tail = list(log_lines)[-28:]
+    message = f"### {stage}"
+
+    if final_message:
+        message += f"\n\n{final_message}"
+
+    if tail:
+        message += "\n\n\`\`\`text\n"
+        message += "\n".join(tail)
+        message += "\n\`\`\`"
+
+    return message
+
+
+def _stream_emotion_command(cmd, log_lines, stage):
+    global p_emotion_training
+
+    child_env = os.environ.copy()
+    child_env["PYTHONUNBUFFERED"] = "1"
+
+    command_text = " ".join(str(item) for item in cmd)
+    log_lines.append(f"$ {command_text}")
+    print(f"[Emotion] {command_text}", flush=True)
+
+    process = Popen(
+        cmd,
+        cwd=now_dir,
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    p_emotion_training = process
+
+    if process.stdout is not None:
+        for line in process.stdout:
+            clean_line = line.rstrip()
+            log_lines.append(clean_line)
+            print(f"[Emotion] {clean_line}", flush=True)
+            yield _emotion_status(stage, log_lines)
+
+    return_code = process.wait()
+    p_emotion_training = None
+
+    if return_code != 0:
+        raise EmotionPipelineError(
+            f"{stage} failed with exit code {return_code}"
+        )
+
+
+def stop_emotion_training():
+    global p_emotion_training
+
+    if p_emotion_training is None:
+        return "### 감정 제어 학습\n\n실행 중인 작업이 없습니다."
+
+    if p_emotion_training.poll() is None:
+        kill_process(
+            p_emotion_training.pid,
+            "Emotion training ",
+        )
+
+    p_emotion_training = None
+
+    return "### 감정 제어 학습 중지됨"
+
+
+def run_emotion_training_pipeline(
+    source_list,
+    wav_root,
+    sidecar_path,
+    dataset_id,
+    dataset_dir,
+    feature_root,
+    controller_output,
+    emotion_names,
+    steps,
+    gpu_number,
+    reuse_dataset,
+):
+    global p_emotion_training
+
+    if p_emotion_training is not None and p_emotion_training.poll() is None:
+        yield "### 감정 제어 학습\n\n이미 다른 감정 학습 작업이 실행 중입니다."
+        return
+
+    log_lines = deque(maxlen=120)
+
+    try:
+        dataset_dir = Path(dataset_dir).expanduser().resolve()
+        feature_root = Path(feature_root).expanduser().resolve()
+        controller_output = Path(
+            controller_output
+        ).expanduser().resolve()
+
+        metadata_path = dataset_dir / "metadata.jsonl"
+        train_list = dataset_dir / "train.list"
+        reference_map_path = dataset_dir / "reference_map.json"
+        reference_prompt_path = dataset_dir / "reference_prompts.pt"
+        tts_config_path = dataset_dir / "tts_infer_emotion_v5dev.yaml"
+
+        s1_checkpoint = Path(
+            pretrained_gpt_name["v5dev"]
+        ).expanduser().resolve()
+        s2_checkpoint = Path(
+            pretrained_sovits_name["v5dev"]
+        ).expanduser().resolve()
+        bert_dir = Path(
+            "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+        ).resolve()
+        cnhubert_dir = Path(
+            "GPT_SoVITS/pretrained_models/chinese-hubert-base"
+        ).resolve()
+
+        for required_path, label in (
+            (s1_checkpoint, "V5dev S1"),
+            (s2_checkpoint, "V5dev S2"),
+            (bert_dir, "BERT"),
+            (cnhubert_dir, "CNHuBERT"),
+        ):
+            if not required_path.exists():
+                raise EmotionPipelineError(
+                    f"{label} path not found: {required_path}"
+                )
+
+        parsed_emotions = [
+            item.strip()
+            for item in str(emotion_names).split(",")
+            if item.strip()
+        ]
+
+        if len(parsed_emotions) < 2:
+            raise EmotionPipelineError(
+                "감정은 최소 2개 이상 지정해야 합니다."
+            )
+
+        if len(set(parsed_emotions)) != len(parsed_emotions):
+            raise EmotionPipelineError(
+                "감정 이름이 중복되어 있습니다."
+            )
+
+        steps = int(steps)
+
+        if steps <= 0:
+            raise EmotionPipelineError(
+                "학습 step은 1 이상이어야 합니다."
+            )
+
+        gpu_number = str(fix_gpu_number(gpu_number))
+
+        dataset_ready = (
+            metadata_path.is_file()
+            and train_list.is_file()
+            and (dataset_dir / "report.json").is_file()
+        )
+
+        if reuse_dataset and dataset_ready:
+            log_lines.append(
+                f"[reuse] canonical dataset: {dataset_dir}"
+            )
+            yield _emotion_status(
+                "1/5 감정 데이터셋 검사",
+                log_lines,
+            )
+        else:
+            source_list = str(source_list or "").strip()
+            sidecar_path = str(sidecar_path or "").strip()
+            wav_root = str(wav_root or "").strip()
+
+            if not source_list:
+                raise EmotionPipelineError(
+                    "원본 GPT-SoVITS .list 파일 경로를 입력하세요."
+                )
+
+            if not sidecar_path:
+                raise EmotionPipelineError(
+                    "감정 pair 학습에는 sidecar JSONL이 필요합니다."
+                )
+
+            if dataset_dir.exists() and any(dataset_dir.iterdir()):
+                raise EmotionPipelineError(
+                    "canonical dataset 폴더가 이미 비어 있지 않습니다. "
+                    "'기존 canonical dataset 재사용'을 켜거나 "
+                    "다른 출력 경로를 사용하세요."
+                )
+
+            cmd = [
+                python_exec,
+                "-u",
+                "tools/emotion_dataset_builder.py",
+                "--list",
+                source_list,
+                "--output",
+                str(dataset_dir),
+                "--dataset-id",
+                str(dataset_id).strip() or "emotion_dataset_01",
+                "--sidecar",
+                sidecar_path,
+                "--stage-mode",
+                "symlink",
+            ]
+
+            if wav_root:
+                cmd.extend(
+                    [
+                        "--wav-root",
+                        wav_root,
+                    ]
+                )
+
+            for status in _stream_emotion_command(
+                cmd,
+                log_lines,
+                "1/5 감정 데이터셋 생성",
+            ):
+                yield status
+
+        report = validate_emotion_dataset(dataset_dir)
+        summary = format_dataset_summary(report)
+        log_lines.append(f"[dataset] {summary}")
+
+        create_reference_map(
+            metadata_path,
+            reference_map_path,
+        )
+        log_lines.append(
+            f"[reference] {reference_map_path}"
+        )
+
+        yield _emotion_status(
+            "2/5 기준 reference 자동 선택",
+            log_lines,
+            "3~10초 train 샘플 중 emotion pair 밖의 reference를 선택했습니다.",
+        )
+
+        preprocess_cmd = [
+            python_exec,
+            "-u",
+            "tools/run_emotion_v5_preprocess.py",
+            "--train-list",
+            str(train_list),
+            "--output-root",
+            str(feature_root),
+            "--bert-dir",
+            str(bert_dir),
+            "--cnhubert-dir",
+            str(cnhubert_dir),
+            "--pretrained-s2g",
+            str(s2_checkpoint),
+            "--version",
+            "v5dev",
+            "--gpu",
+            gpu_number,
+        ]
+
+        for status in _stream_emotion_command(
+            preprocess_cmd,
+            log_lines,
+            "3/5 V5dev 전처리",
+        ):
+            yield status
+
+        feature_dir = latest_feature_build(feature_root)
+        build_manifest = feature_dir / "build.json"
+
+        log_lines.append(
+            f"[features] {feature_dir}"
+        )
+
+        write_v5_tts_config(
+            tts_config_path,
+            version="v5dev",
+            s1_checkpoint=s1_checkpoint,
+            s2_checkpoint=s2_checkpoint,
+            bert_dir=bert_dir,
+            cnhubert_dir=cnhubert_dir,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            is_half=bool(is_half and torch.cuda.is_available()),
+        )
+
+        prompt_cmd = [
+            python_exec,
+            "-u",
+            "tools/export_emotion_reference_prompts.py",
+            "--tts-config",
+            str(tts_config_path),
+            "--metadata",
+            str(metadata_path),
+            "--reference-map",
+            str(reference_map_path),
+            "--output",
+            str(reference_prompt_path),
+        ]
+
+        for status in _stream_emotion_command(
+            prompt_cmd,
+            log_lines,
+            "4/5 reference prompt 생성",
+        ):
+            yield status
+
+        controller_output.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        train_cmd = [
+            python_exec,
+            "-u",
+            "tools/train_emotion_controller.py",
+            "--s1-checkpoint",
+            str(s1_checkpoint),
+            "--feature-dir",
+            str(feature_dir),
+            "--feature-build-manifest",
+            str(build_manifest),
+            "--metadata",
+            str(metadata_path),
+            "--reference-map",
+            str(reference_map_path),
+            "--reference-prompt-cache",
+            str(reference_prompt_path),
+            "--output",
+            str(controller_output),
+            "--emotions",
+            ",".join(parsed_emotions),
+            "--steps",
+            str(steps),
+            "--device",
+            "cuda" if torch.cuda.is_available() else "cpu",
+        ]
+
+        for status in _stream_emotion_command(
+            train_cmd,
+            log_lines,
+            "5/5 emotion controller 학습",
+        ):
+            yield status
+
+        if not controller_output.is_file():
+            raise EmotionPipelineError(
+                "학습 프로세스는 종료됐지만 controller 파일이 없습니다: "
+                f"{controller_output}"
+            )
+
+        yield _emotion_status(
+            "감정 제어 학습 완료",
+            log_lines,
+            (
+                f"**Controller:** \`{controller_output}\`\n\n"
+                "이 파일을 1D-추론의 감정 컨트롤러에서 불러오면 됩니다."
+            ),
+        )
+
+    except (
+        EmotionPipelineError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        p_emotion_training = None
+        log_lines.append(f"[ERROR] {exc}")
+        yield _emotion_status(
+            "감정 제어 학습 실패",
+            log_lines,
+            str(exc),
+        )
+
+
 process_name_subfix = i18n("音频标注WebUI")
 
 
