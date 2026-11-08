@@ -4,26 +4,28 @@ This branch keeps the ordinary GPT-SoVITS V5 path intact and adds a small
 S1 probability-preference controller. It is intentionally conservative and
 fail-open.
 
-## 1. Colab checkout
+## 1. Current branch and Colab entry point
 
-For a fresh Colab runtime:
+The active development branch is `main` in:
 
-```bash
-git clone https://github.com/RVC-Boss/GPT-SoVITS.git /content/GPT-SoVITS
-cd /content/GPT-SoVITS
-
-git remote add emotion-patch https://github.com/pymood1/GPT-SoVITS-improve.git
-git fetch emotion-patch emotion-v5
-git checkout -B emotion-v5 emotion-patch/emotion-v5
-
-python tools/check_emotion_patch.py
+```text
+https://github.com/pymood1/GPT-SoVITS-improve
 ```
 
-This keeps the official repository as `origin` and the experimental fork as
-`emotion-patch`.
+For Colab, use:
 
-Use the official GPT-SoVITS installation/model-download procedure for
-dependencies and pretrained weights.
+```text
+Colab-Inference-Fast.ipynb
+```
+
+That notebook mounts Google Drive, synchronizes the latest `main`, runs
+`tools/colab_fast_setup.py`, and launches the Korean V5dev main WebUI.
+
+For development context and current architectural decisions, read
+`CODEX_HANDOFF.md` before changing the emotion pipeline.
+
+The older `emotion-v5` branch checkout flow is historical and should not be
+treated as the current source of truth.
 
 ## 2. Canonicalize an existing wav + .list dataset
 
