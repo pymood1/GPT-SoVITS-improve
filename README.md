@@ -27,6 +27,20 @@ A Powerful Few-shot Voice Conversion and Text-to-Speech WebUI.<br><br>
 
 ---
 
+## GPT-SoVITS-improve development notes
+
+This fork contains experimental V5dev Colab and emotion-control work.
+
+- **Codex / developer handoff:** [CODEX_HANDOFF.md](./CODEX_HANDOFF.md)
+- **Emotion-control technical notes:** [EMOTION_V5.md](./EMOTION_V5.md)
+- **Primary Colab notebook:** [Colab-Inference-Fast.ipynb](./Colab-Inference-Fast.ipynb)
+
+For continued development, read **CODEX_HANDOFF.md first**. It records the
+current architecture, solved issues, constraints, runtime assumptions, and
+prioritized next steps.
+
+---
+
 ## Features:
 
 1. **Zero-shot TTS:** Input a 5-second vocal sample and experience instant text-to-speech conversion.
