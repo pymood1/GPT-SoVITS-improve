@@ -56,7 +56,7 @@ jobs:
             --python-version 3.14 \
             requirements.txt \
             --output-file /tmp/requirements-314.txt
-          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|jieba-pyfast|pydantic|torchmetrics)==' \
+          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics)==' \
             /tmp/requirements-314.txt || true
 
 
@@ -72,7 +72,6 @@ jobs:
           python -m pip install -q uv
           uv pip install --system \
             "mecab-ko>=1.0.3" \
-            "jieba_pyfast>=4.0.1" \
             "pyopenjtalk-plus>=0.4.1.post10" \
             g2pk2 ko_pron jamo nltk
       - name: Prepare NLTK cmudict
@@ -87,7 +86,7 @@ jobs:
         run: |
           python - <<'PY'
           import pyopenjtalk
-          import jieba_pyfast.posseg as psg
+          import jieba.posseg as psg
 
           from text.korean import g2p as korean_g2p
 
@@ -101,7 +100,7 @@ jobs:
 
           zh = psg.lcut("你好世界")
           if not zh:
-              raise SystemExit("jieba_pyfast returned no tokens")
+              raise SystemExit("jieba.posseg returned no tokens")
 
           print("PY314_TEXT_FRONTEND_SMOKE_OK")
           print("ko_phones=", len(ko))
