@@ -9,6 +9,15 @@ from pathlib import Path
 version = os.environ.get("version", "v2Pro")
 os.environ["version"] = version
 now_dir = os.getcwd()
+
+bundled_nltk_data = Path(now_dir) / "runtime" / "nltk_data"
+if bundled_nltk_data.is_dir():
+    existing_nltk_data = os.environ.get("NLTK_DATA", "").strip()
+    nltk_paths = [str(bundled_nltk_data)]
+    if existing_nltk_data:
+        nltk_paths.append(existing_nltk_data)
+    os.environ["NLTK_DATA"] = os.pathsep.join(nltk_paths)
+
 sys.path.insert(0, now_dir)
 import warnings
 
@@ -3800,7 +3809,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 gpu_numbers1a = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s-%s" % (gpus, gpus),
+                                    value="%s" % (gpus),
                                     interactive=True,
                                 )
                             with gr.Row():
@@ -3825,7 +3834,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 gpu_numbers1Ba = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s-%s" % (gpus, gpus),
+                                    value="%s" % (gpus),
                                     interactive=True,
                                 )
                             with gr.Row():
@@ -3850,7 +3859,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 gpu_numbers1c = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s-%s" % (gpus, gpus),
+                                    value="%s" % (gpus),
                                     interactive=True,
                                 )
                             with gr.Row():
