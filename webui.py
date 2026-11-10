@@ -2735,6 +2735,7 @@ def close1c():
 
 
 ps1abc = []
+preprocess_1abc_cancel_requested = False
 process_name_1abc = i18n("训练集格式化一键三连")
 
 
@@ -2751,6 +2752,10 @@ def open1abc(
     pretrained_s2G_path,
 ):
     global ps1abc
+    global preprocess_1abc_cancel_requested
+
+    preprocess_1abc_cancel_requested = False
+
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
     if not check_for_existance(
@@ -2801,12 +2806,20 @@ def open1abc(
                     print(cmd)
                     p = Popen(cmd, shell=True)
                     ps1abc.append(p)
+
+                stage_processes = list(ps1abc)
                 yield (
                     i18n("进度") + ": 1A-Doing",
                     {"__type__": "update", "visible": False},
                     {"__type__": "update", "visible": True},
                 )
-                return_codes = [p.wait() for p in ps1abc]
+                return_codes = [
+                    p.wait() for p in stage_processes
+                ]
+                if preprocess_1abc_cancel_requested:
+                    ps1abc = []
+                    preprocess_1abc_cancel_requested = False
+                    return
                 if any(code != 0 for code in return_codes):
                     raise RuntimeError(
                         "preprocessing subprocess failed: "
@@ -2852,13 +2865,25 @@ def open1abc(
                 print(cmd)
                 p = Popen(cmd, shell=True)
                 ps1abc.append(p)
+
+            stage_processes = list(ps1abc)
             yield (
                 i18n("进度") + ": 1A-Done, 1B-Doing",
                 {"__type__": "update", "visible": False},
                 {"__type__": "update", "visible": True},
             )
-            for p in ps1abc:
-                p.wait()
+            return_codes = [
+                p.wait() for p in stage_processes
+            ]
+            if preprocess_1abc_cancel_requested:
+                ps1abc = []
+                preprocess_1abc_cancel_requested = False
+                return
+            if any(code != 0 for code in return_codes):
+                raise RuntimeError(
+                    "preprocessing subprocess failed: "
+                    + str(return_codes)
+                )
             ps1abc = []
             if "Pro" in version:
                 for i_part in range(all_parts):
@@ -2874,7 +2899,15 @@ def open1abc(
                     print(cmd)
                     p = Popen(cmd, shell=True)
                     ps1abc.append(p)
-                return_codes = [p.wait() for p in ps1abc]
+
+                stage_processes = list(ps1abc)
+                return_codes = [
+                    p.wait() for p in stage_processes
+                ]
+                if preprocess_1abc_cancel_requested:
+                    ps1abc = []
+                    preprocess_1abc_cancel_requested = False
+                    return
                 if any(code != 0 for code in return_codes):
                     raise RuntimeError(
                         "preprocessing subprocess failed: "
@@ -2918,12 +2951,20 @@ def open1abc(
                     print(cmd)
                     p = Popen(cmd, shell=True)
                     ps1abc.append(p)
+
+                stage_processes = list(ps1abc)
                 yield (
                     i18n("进度") + ": 1A-Done, 1B-Done, 1C-Doing",
                     {"__type__": "update", "visible": False},
                     {"__type__": "update", "visible": True},
                 )
-                return_codes = [p.wait() for p in ps1abc]
+                return_codes = [
+                    p.wait() for p in stage_processes
+                ]
+                if preprocess_1abc_cancel_requested:
+                    ps1abc = []
+                    preprocess_1abc_cancel_requested = False
+                    return
                 if any(code != 0 for code in return_codes):
                     raise RuntimeError(
                         "preprocessing subprocess failed: "
@@ -2967,6 +3008,10 @@ def open1abc(
 
 def close1abc():
     global ps1abc
+    global preprocess_1abc_cancel_requested
+
+    preprocess_1abc_cancel_requested = True
+
     if ps1abc != []:
         for p1abc in ps1abc:
             try:
