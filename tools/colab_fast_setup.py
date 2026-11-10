@@ -289,6 +289,8 @@ syntax_targets = [
     REPO_DIR / "tools/asr/funasr_asr.py",
     REPO_DIR / "tools/emotion_training_pipeline.py",
     REPO_DIR / "tools/auto_emotion_sidecar.py",
+    REPO_DIR / "tools/emotion_dataset_builder.py",
+    REPO_DIR / "tools/run_emotion_v5_preprocess.py",
     REPO_DIR / "tools/train_emotion_controller.py",
     REPO_DIR / "GPT_SoVITS/inference_webui.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
