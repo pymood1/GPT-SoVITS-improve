@@ -295,13 +295,20 @@ def load_emotion_controller_webui(controller_path):
         str(i) for i in range(controller.num_emotions)
     ]
     choices = [(f"{i}: {name}", i) for i, name in enumerate(names)]
+    tag_examples = " ".join(f"[{name}]" for name in names)
     return (
         {
             "__type__": "update",
             "choices": choices,
             "value": choices[0][1] if choices else None,
         },
-        i18n("情感控制器已加载") + f": {os.path.basename(controller_path)}",
+        (
+            i18n("情感控制器已加载")
+            + f": {os.path.basename(controller_path)}"
+            + "\n"
+            + i18n("可用情感标签")
+            + f": {tag_examples}"
+        ),
     )
 
 
@@ -314,6 +321,112 @@ def unload_emotion_controller_webui():
         {"__type__": "update", "choices": [], "value": None},
         i18n("情感控制器已卸载"),
     )
+
+
+EMOTION_TAG_PATTERN = re.compile(
+    r"\[\s*([^\[\]:\n]+?)\s*"
+    r"(?::\s*([0-9]+(?:\.[0-9]+)?))?\s*\]"
+)
+
+
+def _emotion_names_from_controller():
+    controller = getattr(
+        getattr(t2s_model, "model", None),
+        "emotion_controller",
+        None,
+    )
+    if controller is None:
+        return []
+
+    names = (
+        emotion_controller_metadata or {}
+    ).get("emotion_names")
+    if not names:
+        names = [str(i) for i in range(controller.num_emotions)]
+
+    return [str(name).strip() for name in names]
+
+
+def parse_emotion_tagged_text(text):
+    text = str(text or "")
+    matches = list(EMOTION_TAG_PATTERN.finditer(text))
+
+    if not matches:
+        return [(text, None, 0.0)]
+
+    emotion_names = _emotion_names_from_controller()
+    if not emotion_names:
+        raise gr.Error(
+            i18n("检测到情感标签，但尚未加载情感控制器")
+        )
+
+    name_to_id = {
+        name.casefold(): index
+        for index, name in enumerate(emotion_names)
+    }
+    available = ", ".join(
+        f"[{name}]" for name in emotion_names
+    )
+
+    segments = []
+    cursor = 0
+    current_emotion_id = None
+    current_strength = 0.0
+
+    for match in matches:
+        prefix = text[cursor:match.start()]
+        if prefix.strip():
+            segments.append(
+                (
+                    prefix,
+                    current_emotion_id,
+                    current_strength,
+                )
+            )
+
+        name = match.group(1).strip()
+        emotion_id = name_to_id.get(name.casefold())
+        if emotion_id is None:
+            raise gr.Error(
+                i18n("未知情感标签")
+                + f": [{name}]\n"
+                + i18n("可用情感标签")
+                + f": {available}"
+            )
+
+        strength_text = match.group(2)
+        strength = (
+            1.0
+            if strength_text is None
+            else float(strength_text)
+        )
+        if (
+            not np.isfinite(strength)
+            or strength < 0.0
+            or strength > 2.0
+        ):
+            raise gr.Error(
+                i18n("情感标签强度必须在 0 到 2 之间")
+            )
+
+        current_emotion_id = emotion_id
+        current_strength = strength
+        cursor = match.end()
+
+    suffix = text[cursor:]
+    if suffix.strip():
+        segments.append(
+            (
+                suffix,
+                current_emotion_id,
+                current_strength,
+            )
+        )
+
+    if not segments:
+        raise gr.Error(i18n("情感标签后没有可合成的文本"))
+
+    return segments
 
 
 def change_sovits_weights(sovits_path, prompt_language=None, text_language=None):
