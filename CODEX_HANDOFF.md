@@ -865,8 +865,7 @@ Do not add these merely because they sound sophisticated.
 - large external emotion encoder in the main inference loop;
 - full decoder/backbone fine-tuning for controller training;
 - token-level tag switching inside one semantic sequence;
-- automatic fuzzy pair inference;
-- automatic emotion relabeling;
+- fuzzy or semantic pair inference beyond exact normalized transcript matching;
 - LLM transcript rewriting;
 - separate S2/CFM emotion adapter;
 - emotion steering inside the acceleration backend;
@@ -892,19 +891,21 @@ Priority validation order:
 5. V5dev is selected;
 6. 1B is initially visible;
 7. 1A preprocessing and the optional 1B emotion-training section render without Gradio component errors;
-8. build a small controlled emotion dataset;
-9. reference auto-selection succeeds;
-10. V5 preprocessing produces a valid build directory;
-11. reference prompt cache is generated;
-12. tiny controller run, for example 3-20 accepted steps;
-13. controller checkpoint is written;
-14. 1C launches inference WebUI;
-15. Gradio public link appears in the parent WebUI;
-16. controller auto-load succeeds;
-17. emotion selector shows checkpoint emotion_names;
-18. strength 0 matches ordinary inference behavior;
-19. nonzero strength changes emotion direction without severe speaker drift;
-20. V5 LoRA + controller provenance path is tested separately.
+8. automatic emotion sidecar generation runs on a small user dataset;
+9. exact-text pair groups and the reserved reference make sense in the generated report;
+10. canonical emotion dataset creation accepts auto_exact_text provenance;
+11. reference auto-selection succeeds;
+12. V5 preprocessing produces a valid build directory;
+13. reference prompt cache is generated;
+14. tiny controller run, for example 3-20 accepted steps;
+15. controller checkpoint is written;
+16. 1C launches inference WebUI;
+17. Gradio public link appears in the parent WebUI;
+18. controller auto-load succeeds;
+19. emotion selector shows checkpoint emotion_names;
+20. strength 0 matches ordinary inference behavior;
+21. nonzero strength changes emotion direction without severe speaker drift;
+22. V5 LoRA + controller provenance path is tested separately.
 
 Do not begin a long 1000-step training run before the tiny smoke run passes.
 
