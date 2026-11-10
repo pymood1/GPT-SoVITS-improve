@@ -102,13 +102,21 @@ Current main WebUI tab flow:
 
 ~~~text
 1A - preprocessing
+     - optional audio -> .list transcription
      - ordinary GPT-SoVITS dataset formatting
-     - optional emotion-pair metadata preparation
+     - optional automatic emotion-pair metadata preparation
 1B - training
      - SoVITS / GPT fine-tuning
      - optional V5dev emotion-controller training
 1C - inference
 ~~~
+
+The 1A transcription shortcut reuses the repository's existing ASR scripts.
+Faster Whisper is the default multilingual path. The UI also exposes the real
+Fun-ASR MLT-Nano checkpoint for multilingual transcription, SenseVoice for the
+five GPT-SoVITS languages, and the classic Chinese backend. ASR and emotion
+classification are separate tasks: emotion2vec+ is used only for emotion
+labels/pair discovery.
 
 This keeps the upstream GPT-SoVITS workflow visible instead of exposing the
 emotion controller as a separate top-level stage. Emotion control remains an
@@ -984,6 +992,9 @@ config.py
 tools/emotion_training_pipeline.py
 tools/auto_emotion_sidecar.py
 tools/emotion_dataset_builder.py
+tools/asr/config.py
+tools/asr/funasr_asr.py
+tools/asr/fasterwhisper_asr.py
 tools/run_emotion_v5_preprocess.py
 tools/export_emotion_reference_prompts.py
 tools/train_emotion_controller.py
