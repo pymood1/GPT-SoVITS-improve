@@ -540,19 +540,33 @@ def run_emotion_training_pipeline(
 
     try:
         dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
+        dataset_slug = re.sub(
+            r"[^0-9A-Za-z._-]+",
+            "_",
+            dataset_id,
+        ).strip("._-") or "emotion_dataset_01"
 
         dataset_dir_text = str(dataset_dir or "").strip()
         if not dataset_dir_text:
-            dataset_dir_text = f"/content/{dataset_id}_emotion_dataset"
+            dataset_dir_text = f"/content/{dataset_slug}_emotion_dataset"
 
         feature_root_text = str(feature_root or "").strip()
         if not feature_root_text:
-            feature_root_text = f"/content/{dataset_id}_emotion_features"
+            feature_root_text = f"/content/{dataset_slug}_emotion_features"
+
+        controller_output_text = str(
+            controller_output or ""
+        ).strip()
+        if not controller_output_text:
+            controller_output_text = (
+                "/content/drive/MyDrive/GPT-SoVITS/"
+                f"{dataset_slug}_emotion_controller.pt"
+            )
 
         dataset_dir = Path(dataset_dir_text).expanduser().resolve()
         feature_root = Path(feature_root_text).expanduser().resolve()
         controller_output = Path(
-            controller_output
+            controller_output_text
         ).expanduser().resolve()
 
         metadata_path = dataset_dir / "metadata.jsonl"
@@ -2937,9 +2951,10 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             )
                             emotion_controller_output = gr.Textbox(
                                 label="Controller 저장 경로",
-                                value=(
-                                    "/content/drive/MyDrive/GPT-SoVITS/"
-                                    "emotion_controller.pt"
+                                value="",
+                                placeholder=(
+                                    "비워두면 Google Drive에 "
+                                    "<데이터셋 ID>_emotion_controller.pt"
                                 ),
                                 interactive=True,
                             )
