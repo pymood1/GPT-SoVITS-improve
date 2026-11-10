@@ -58,3 +58,53 @@ jobs:
             --output-file /tmp/requirements-314.txt
           grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|jieba-pyfast|pydantic|torchmetrics)==' \
             /tmp/requirements-314.txt || true
+
+
+  text_frontend_smoke_314:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install modern text frontend dependencies
+        run: |
+          python -m pip install -q uv
+          uv pip install --system \
+            "mecab-ko>=1.0.3" \
+            "jieba_pyfast>=4.0.1" \
+            "pyopenjtalk-plus>=0.4.1.post10" \
+            g2pk2 ko_pron jamo nltk
+      - name: Prepare NLTK cmudict
+        run: |
+          python - <<'PY'
+          import nltk
+          nltk.download("cmudict", quiet=True)
+          PY
+      - name: Smoke Korean and Japanese frontends
+        env:
+          PYTHONPATH: GPT_SoVITS
+        run: |
+          python - <<'PY'
+          import pyopenjtalk
+          import jieba_pyfast.posseg as psg
+
+          from text.korean import g2p as korean_g2p
+
+          ko = korean_g2p("안녕하세요")
+          if not ko:
+              raise SystemExit("Korean G2P returned no phones")
+
+          ja = pyopenjtalk.g2p("こんにちは")
+          if not ja.strip():
+              raise SystemExit("OpenJTalk returned no phones")
+
+          zh = psg.lcut("你好世界")
+          if not zh:
+              raise SystemExit("jieba_pyfast returned no tokens")
+
+          print("PY314_TEXT_FRONTEND_SMOKE_OK")
+          print("ko_phones=", len(ko))
+          print("ja=", ja)
+          print("zh_tokens=", len(zh))
+          PY
