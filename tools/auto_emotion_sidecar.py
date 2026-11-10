@@ -37,6 +37,12 @@ except ModuleNotFoundError:
 
 
 DEFAULT_MODEL = "iic/emotion2vec_plus_base"
+LOCAL_EMOTION_MODEL = (
+    Path(__file__).resolve().parents[1]
+    / "runtime"
+    / "models"
+    / "emotion2vec_plus_base"
+)
 DEFAULT_EMOTIONS = (
     "neutral",
     "happy",
@@ -217,6 +223,23 @@ def load_dataset_rows(
     return rows
 
 
+def resolve_emotion_model(model_name: str) -> str:
+    """Prefer the Colab-prefetched model for the default emotion backend."""
+    if model_name != DEFAULT_MODEL:
+        return model_name
+
+    required = (
+        LOCAL_EMOTION_MODEL / "model.pt",
+        LOCAL_EMOTION_MODEL / "config.yaml",
+        LOCAL_EMOTION_MODEL / "configuration.json",
+        LOCAL_EMOTION_MODEL / "tokens.txt",
+    )
+    if all(path.is_file() for path in required):
+        return str(LOCAL_EMOTION_MODEL)
+
+    return model_name
+
+
 def load_emotion_model(model_name: str, device: str):
     try:
         from funasr import AutoModel
@@ -225,16 +248,23 @@ def load_emotion_model(model_name: str, device: str):
             "FunASR is required for automatic emotion labeling"
         ) from exc
 
+    model_source = resolve_emotion_model(model_name)
     kwargs: dict[str, Any] = {
-        "model": model_name,
+        "model": model_source,
         "disable_update": True,
     }
 
     if device and device != "auto":
         kwargs["device"] = device
 
+    source_kind = (
+        "local"
+        if model_source != model_name
+        else "hub"
+    )
     print(
-        f"[model] loading {model_name} device={device or 'auto'}",
+        f"[model] loading {model_name} "
+        f"source={source_kind} device={device or 'auto'}",
         flush=True,
     )
     return AutoModel(**kwargs)
