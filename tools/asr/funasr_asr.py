@@ -90,13 +90,18 @@ def create_fun_asr_model(model_sources, device):
                 **model_source,
                 **common_kwargs,
             )
-        except (KeyError, RuntimeError, ValueError) as exc:
-            if not is_unregistered_model_error(exc):
-                raise
+        except Exception as exc:
             last_error = exc
+            print(
+                "[FunASR] model source failed, trying fallback: "
+                f"{model_source.get('hub', 'default')} | {exc}",
+                flush=True,
+            )
 
     if last_error is not None:
-        raise last_error
+        raise RuntimeError(
+            "All configured FunASR model sources failed"
+        ) from last_error
 
     raise RuntimeError("No Fun-ASR model source is configured")
 
