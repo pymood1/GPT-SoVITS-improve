@@ -56,7 +56,7 @@ jobs:
             --python-version 3.14 \
             requirements.txt \
             --output-file /tmp/requirements-314.txt
-          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics|ctranslate2|av)==' \
+          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics|ctranslate2|av|huggingface-hub|hf-xet)==' \
             /tmp/requirements-314.txt || true
 
 
@@ -298,6 +298,78 @@ jobs:
           print("av=", av.__version__)
           print("ctranslate2=", ctranslate2.__version__)
           print("samples=", len(audio))
+          PY
+
+
+  hf_xet_smoke_314:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Hub/Xet transport
+        run: |
+          python -m pip install -q uv
+          uv pip install --system             "huggingface_hub>=0.32,<1"             "hf_xet>=1.7"
+      - name: Download a tiny file with the Colab Xet settings
+        env:
+          HF_HOME: /tmp/huggingface
+          HF_HUB_DISABLE_PROGRESS_BARS: "1"
+          HF_HUB_DISABLE_UPDATE_CHECK: "1"
+          HF_HUB_DOWNLOAD_TIMEOUT: "120"
+          HF_XET_HIGH_PERFORMANCE: "1"
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          import hf_xet
+          import huggingface_hub
+          from huggingface_hub import hf_hub_download
+
+          path = Path(
+              hf_hub_download(
+                  repo_id="emotion2vec/emotion2vec_plus_base",
+                  filename="configuration.json",
+                  local_dir="/tmp/emotion2vec-plus-base",
+                  cache_dir="/tmp/huggingface/hub",
+              )
+          )
+
+          if not path.is_file() or path.stat().st_size == 0:
+              raise SystemExit("HF Xet smoke download produced no file")
+
+          print("PY314_HF_XET_DOWNLOAD_OK")
+          print("huggingface_hub=", huggingface_hub.__version__)
+          print("hf_xet=", getattr(hf_xet, "__version__", "installed"))
+          print("file=", path)
+          PY
+      - name: Verify local emotion model preference
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tools.auto_emotion_sidecar import (
+              DEFAULT_MODEL,
+              LOCAL_EMOTION_MODEL,
+              resolve_emotion_model,
+          )
+
+          LOCAL_EMOTION_MODEL.mkdir(parents=True, exist_ok=True)
+          for name in (
+              "model.pt",
+              "config.yaml",
+              "configuration.json",
+              "tokens.txt",
+          ):
+              (LOCAL_EMOTION_MODEL / name).write_bytes(b"x")
+
+          resolved = resolve_emotion_model(DEFAULT_MODEL)
+          if Path(resolved) != LOCAL_EMOTION_MODEL:
+              raise SystemExit(
+                  f"local emotion model was not preferred: {resolved}"
+              )
+
+          print("PY314_LOCAL_EMOTION_MODEL_OK")
           PY
 
 
