@@ -147,6 +147,10 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
         raise RuntimeError(
             f"ASR input directory has no usable name: {input_folder}"
         )
+    if "|" in input_folder or "|" in output_file_name:
+        raise RuntimeError(
+            "GPT-SoVITS .list paths/speaker names must not contain '|'"
+        )
 
     if language == "auto":
         language = None  # 不设置语种由模型自动输出概率最高的语种
@@ -162,6 +166,14 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
     for file_name in tqdm(input_file_names):
         try:
             file_path = os.path.join(input_folder, file_name)
+
+            if "|" in file_path:
+                print(
+                    "Skipping path that cannot be represented in "
+                    f"GPT-SoVITS .list: {file_path}"
+                )
+                continue
+
             segments, info = model.transcribe(
                 audio=file_path,
                 beam_size=5,
@@ -169,7 +181,9 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 vad_parameters=dict(min_silence_duration_ms=700),
                 language=language,
             )
-            detected_language = str(info.language or "").lower()
+            detected_language = str(
+                info.language or language or ""
+            ).lower()
 
             if detected_language not in GPT_SOVITS_LANGUAGES:
                 print(
@@ -178,7 +192,13 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 )
                 continue
 
-            text = "".join(segment.text for segment in segments).strip()
+            text = "".join(
+                segment.text for segment in segments
+            )
+            text = " ".join(str(text).splitlines()).replace(
+                "|",
+                "｜",
+            ).strip()
 
             if not text:
                 print(f"Empty Whisper transcript: {file_path}")
