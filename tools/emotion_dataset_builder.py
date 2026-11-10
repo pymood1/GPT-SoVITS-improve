@@ -458,9 +458,14 @@ def make_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = make_parser().parse_args()
+    output_dir = Path(args.output).expanduser().resolve()
+    output_existed = output_dir.exists()
+
     try:
         build_dataset(args)
     except (DatasetError, OSError, json.JSONDecodeError) as exc:
+        if not output_existed and output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
         print(f"[FATAL] {exc}", file=sys.stderr)
         return 2
     return 0
