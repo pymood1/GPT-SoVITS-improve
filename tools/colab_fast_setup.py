@@ -14,9 +14,14 @@ DL_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_UVR5 = False
 HF_HOME = Path("/content/huggingface")
 HF_HOME.mkdir(parents=True, exist_ok=True)
-EMOTION_MODEL_DIR = (
-    REPO_DIR / "runtime" / "models" / "emotion2vec_plus_base"
-)
+EMOTION_MODEL_DIRS = {
+    "large": (
+        REPO_DIR / "runtime" / "models" / "emotion2vec_plus_large"
+    ),
+    "base": (
+        REPO_DIR / "runtime" / "models" / "emotion2vec_plus_base"
+    ),
+}
 
 HF_ASSETS = {
     "pretrained_models.zip": (
@@ -248,37 +253,57 @@ def download_one(name, repo_id, filename):
     return dest
 
 
-def download_emotion_model():
-    marker = EMOTION_MODEL_DIR / "model.pt"
-    if marker.is_file():
-        size = marker.stat().st_size / 1024**3
+def download_emotion_models():
+    specs = (
+        (
+            "large",
+            "emotion2vec/emotion2vec_plus_large",
+            EMOTION_MODEL_DIRS["large"],
+        ),
+        (
+            "base",
+            "emotion2vec/emotion2vec_plus_base",
+            EMOTION_MODEL_DIRS["base"],
+        ),
+    )
+    completed = []
+
+    # Download the large model first because it is the default classifier.
+    # Base is kept locally as a fallback/comparison model.
+    for label, repo_id, model_dir in specs:
+        marker = model_dir / "model.pt"
+        if marker.is_file():
+            print(
+                f"[download] reuse emotion2vec+ {label} "
+                f"({marker.stat().st_size / 1024**3:.2f} GiB weight)",
+                flush=True,
+            )
+            completed.append(model_dir)
+            continue
+
+        model_dir.mkdir(parents=True, exist_ok=True)
         print(
-            f"[download] reuse emotion2vec+ base ({size:.2f} GiB weight)",
+            f"[download] start emotion2vec+ {label} "
+            "(HF Xet, progress hidden)",
             flush=True,
         )
-        return EMOTION_MODEL_DIR
-
-    EMOTION_MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    print(
-        "[download] start emotion2vec+ base "
-        "(HF Xet, progress hidden to keep Colab responsive)",
-        flush=True,
-    )
-    snapshot_download(
-        repo_id="emotion2vec/emotion2vec_plus_base",
-        local_dir=str(EMOTION_MODEL_DIR),
-        cache_dir=str(HF_HOME / "hub"),
-    )
-    if not marker.is_file():
-        raise FileNotFoundError(
-            f"emotion2vec model weight missing after download: {marker}"
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(model_dir),
+            cache_dir=str(HF_HOME / "hub"),
         )
-    print(
-        f"[download] done  emotion2vec+ base "
-        f"({marker.stat().st_size / 1024**3:.2f} GiB weight)",
-        flush=True,
-    )
-    return EMOTION_MODEL_DIR
+        if not marker.is_file():
+            raise FileNotFoundError(
+                f"emotion2vec {label} weight missing after download: {marker}"
+            )
+        print(
+            f"[download] done  emotion2vec+ {label} "
+            f"({marker.stat().st_size / 1024**3:.2f} GiB weight)",
+            flush=True,
+        )
+        completed.append(model_dir)
+
+    return completed
 
 
 pip_cmd = [
@@ -321,7 +346,7 @@ with pip_log_path.open("w", encoding="utf-8") as pip_log:
             pool.submit(download_one, name, repo_id, filename): name
             for name, repo_id, filename in jobs
         }
-        emotion_future = pool.submit(download_emotion_model)
+        emotion_future = pool.submit(download_emotion_models)
 
         for future in as_completed(list(futures) + [emotion_future]):
             if future is emotion_future:
@@ -573,18 +598,19 @@ missing = [str(p) for p in needed if not p.exists()]
 if missing:
     raise FileNotFoundError("V5dev assets missing:\n" + "\n".join(missing))
 
-emotion_weight = EMOTION_MODEL_DIR / "model.pt"
-if emotion_weight.is_file():
-    print(
-        "[OK] emotion2vec local model:",
-        emotion_weight,
-        f"({emotion_weight.stat().st_size / 1024**3:.2f} GiB)",
-    )
-else:
-    print(
-        "[warn] emotion2vec local model is not prefetched; "
-        "automatic emotion labeling will use its hub fallback."
-    )
+for emotion_name, emotion_dir in EMOTION_MODEL_DIRS.items():
+    emotion_weight = emotion_dir / "model.pt"
+    if emotion_weight.is_file():
+        print(
+            f"[OK] emotion2vec+ {emotion_name}:",
+            emotion_weight,
+            f"({emotion_weight.stat().st_size / 1024**3:.2f} GiB)",
+        )
+    else:
+        print(
+            f"[warn] emotion2vec+ {emotion_name} is not prefetched; "
+            "automatic labeling may use its hub fallback."
+        )
 
 smoke = r"""
 import sys
