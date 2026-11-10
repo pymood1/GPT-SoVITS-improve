@@ -1096,3 +1096,18 @@ The WebUI path/subprocess flow is intentionally strict:
 
 When extending 1A/1B/1C, preserve these rules rather than adding another unchecked `Popen(...).wait()` path.
 
+## Gradio public-link invariant
+
+Every user-facing Gradio WebUI in this fork must create a public share link.
+
+- main WebUI: `share=True`;
+- normal and fast TTS inference WebUI: `share=True`;
+- labeling WebUI: `share=True`;
+- UVR5 WebUI: `share=True`;
+- Colab/Kaggle launcher-generated inference WebUI: `share=True`.
+
+Do not make remote accessibility depend on a missing `is_share` environment
+variable. Parent launchers should also pass `is_share=True` to child WebUIs
+for compatibility, and link detection should prefer the public
+`.gradio.live` URL rather than returning localhost.
+

@@ -27,7 +27,7 @@ for name in os.listdir(weight_uvr5_root):
 device = sys.argv[1]
 is_half = eval(sys.argv[2])
 webui_port_uvr5 = int(sys.argv[3])
-is_share = eval(sys.argv[4])
+is_share = True
 
 
 def html_left(text, label="p"):
@@ -218,7 +218,7 @@ with gr.Blocks(title="UVR5 WebUI", analytics_enabled=False) as app:
 app.queue().launch(  # concurrency_count=511, max_size=1022
     server_name="0.0.0.0",
     inbrowser=True,
-    share=is_share,
+    share=True,
     server_port=webui_port_uvr5,
     # quiet=True,
 )

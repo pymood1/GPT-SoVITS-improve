@@ -1078,7 +1078,7 @@ def change_label(path_list):
         "--webui_port",
         str(webui_port_subfix),
         "--is_share",
-        str(is_share),
+        "True",
     ]
     print("[Label WebUI]", " ".join(repr(item) for item in cmd))
 
@@ -1155,7 +1155,7 @@ def change_uvr5():
         str(infer_device),
         str(is_half),
         str(webui_port_uvr5),
-        str(is_share),
+        "True",
     ]
     print("[UVR5]", " ".join(repr(item) for item in cmd))
 
@@ -1358,7 +1358,7 @@ def change_tts_inference(
             "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_number)),
             "is_half": str(is_half),
             "infer_ttswebui": str(webui_port_infer_tts),
-            "is_share": str(is_share),
+            "is_share": "True",
             "version": str(version),
             "language": str(language),
             "emotion_controller_path": (
@@ -1402,7 +1402,7 @@ def change_tts_inference(
 
     tts_inference_reader = threading.Thread(
         target=_stream_tts_inference_output,
-        args=(process, not bool(is_share)),
+        args=(process, False),
         daemon=True,
     )
     tts_inference_reader.start()
@@ -4490,7 +4490,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
     app.queue().launch(  # concurrency_count=511, max_size=1022
         server_name="0.0.0.0",
         inbrowser=True,
-        share=is_share,
+        share=True,
         server_port=webui_port_main,
         # quiet=True,
     )
