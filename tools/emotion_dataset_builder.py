@@ -23,7 +23,7 @@ LANGUAGE_ALIASES = {
     "YUE": "yue", "Yue": "yue", "yue": "yue",
 }
 VALID_SPLITS = {"train", "val", "test"}
-VALID_PAIR_SOURCES = {"recording_manifest", "manual", "none", None}
+VALID_PAIR_SOURCES = {"recording_manifest", "manual", "auto_exact_text", "none", None}
 
 
 class DatasetError(RuntimeError):
@@ -155,8 +155,8 @@ def validate_pair_metadata(item: Dict[str, Any]) -> None:
         raise DatasetError(f"Invalid pair_source: {pair_source!r}")
     if pair_group_id and pair_source in {None, "none"}:
         raise DatasetError(
-            "pair_group_id requires explicit pair_source='manual' or "
-            "'recording_manifest'"
+            "pair_group_id requires explicit pair_source such as 'manual', "
+            "'recording_manifest', or 'auto_exact_text'"
         )
     if pair_source not in {None, "none"} and not pair_group_id:
         raise DatasetError("Explicit pair_source requires pair_group_id")
@@ -397,7 +397,8 @@ def build_dataset(args: argparse.Namespace) -> None:
         "notes": [
             "Existing .list transcripts are preserved verbatim.",
             "Punctuation is preserved for text_group_id.",
-            "pair_group_id is never inferred automatically.",
+            "The canonical builder itself does not infer pair groups; "
+            "tools/auto_emotion_sidecar.py can provide auto_exact_text provenance.",
             "Legacy samples without explicit split default to train.",
         ],
     }

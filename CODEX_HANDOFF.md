@@ -102,13 +102,21 @@ Current main WebUI tab flow:
 
 ~~~text
 1A - preprocessing
+     - optional audio -> .list transcription
      - ordinary GPT-SoVITS dataset formatting
-     - optional emotion-pair metadata preparation
+     - optional automatic emotion-pair metadata preparation
 1B - training
      - SoVITS / GPT fine-tuning
      - optional V5dev emotion-controller training
 1C - inference
 ~~~
+
+The 1A transcription shortcut reuses the repository's existing ASR scripts.
+Faster Whisper is the default multilingual path. The UI also exposes the real
+Fun-ASR MLT-Nano checkpoint for multilingual transcription, SenseVoice for the
+five GPT-SoVITS languages, and the classic Chinese backend. ASR and emotion
+classification are separate tasks: emotion2vec+ is used only for emotion
+labels/pair discovery.
 
 This keeps the upstream GPT-SoVITS workflow visible instead of exposing the
 emotion controller as a separate top-level stage. Emotion control remains an
@@ -442,13 +450,27 @@ prompt_0001
   sad take
 ~~~
 
-The canonical dataset builder does not infer emotion pairs automatically.
+The canonical dataset builder still does not invent pair metadata by itself.
+Automatic discovery is implemented as a separate preprocessing helper so the
+canonical ingest remains deterministic.
 
-Primary file:
+Primary files:
 
+tools/auto_emotion_sidecar.py
 tools/emotion_dataset_builder.py
 
-A sidecar JSONL is required for a fresh emotion-pair dataset in the WebUI flow.
+The 1A WebUI can now generate a sidecar JSONL from the user's existing
+GPT-SoVITS .list + audio data. The first implementation is deliberately narrow:
+
+- utterance emotion is predicted with FunASR emotion2vec+ base by default;
+- only neutral / happy / sad / angry are accepted for controller training;
+- predictions below the confidence threshold remain unpaired;
+- automatic groups require the same speaker, language, and exact normalized text;
+- pair_source is recorded as auto_exact_text;
+- a 3-10 second reference is reserved outside usable pair samples;
+- prediction results are cached so interrupted or repeated runs can reuse them.
+
+Manual sidecars remain supported and can replace or edit automatic output.
 
 Important fields:
 
@@ -467,8 +489,9 @@ pair_group_id must refer to one speaker, one language, and exact canonical text.
 
 pair_source must be explicit when pair_group_id is present.
 
-Supported pair sources currently include explicit/manual provenance rather than
-fuzzy automatic pairing.
+Supported pair sources include recording_manifest, manual, and
+auto_exact_text. Fuzzy/semantic text matching is still intentionally not
+implemented.
 
 The same audio bytes with conflicting metadata are rejected.
 
@@ -850,8 +873,7 @@ Do not add these merely because they sound sophisticated.
 - large external emotion encoder in the main inference loop;
 - full decoder/backbone fine-tuning for controller training;
 - token-level tag switching inside one semantic sequence;
-- automatic fuzzy pair inference;
-- automatic emotion relabeling;
+- fuzzy or semantic pair inference beyond exact normalized transcript matching;
 - LLM transcript rewriting;
 - separate S2/CFM emotion adapter;
 - emotion steering inside the acceleration backend;
@@ -877,19 +899,21 @@ Priority validation order:
 5. V5dev is selected;
 6. 1B is initially visible;
 7. 1A preprocessing and the optional 1B emotion-training section render without Gradio component errors;
-8. build a small controlled emotion dataset;
-9. reference auto-selection succeeds;
-10. V5 preprocessing produces a valid build directory;
-11. reference prompt cache is generated;
-12. tiny controller run, for example 3-20 accepted steps;
-13. controller checkpoint is written;
-14. 1C launches inference WebUI;
-15. Gradio public link appears in the parent WebUI;
-16. controller auto-load succeeds;
-17. emotion selector shows checkpoint emotion_names;
-18. strength 0 matches ordinary inference behavior;
-19. nonzero strength changes emotion direction without severe speaker drift;
-20. V5 LoRA + controller provenance path is tested separately.
+8. automatic emotion sidecar generation runs on a small user dataset;
+9. exact-text pair groups and the reserved reference make sense in the generated report;
+10. canonical emotion dataset creation accepts auto_exact_text provenance;
+11. reference auto-selection succeeds;
+12. V5 preprocessing produces a valid build directory;
+13. reference prompt cache is generated;
+14. tiny controller run, for example 3-20 accepted steps;
+15. controller checkpoint is written;
+16. 1C launches inference WebUI;
+17. Gradio public link appears in the parent WebUI;
+18. controller auto-load succeeds;
+19. emotion selector shows checkpoint emotion_names;
+20. strength 0 matches ordinary inference behavior;
+21. nonzero strength changes emotion direction without severe speaker drift;
+22. V5 LoRA + controller provenance path is tested separately.
 
 Do not begin a long 1000-step training run before the tiny smoke run passes.
 
@@ -908,19 +932,19 @@ Priority A: runtime correctness
 
 Priority B: dataset usability
 
-The current sidecar requirement is correct but not beginner-friendly.
+The first automatic sidecar builder is now implemented in 1A. It creates
+conservative exact-text pairs from user data and keeps explicit provenance.
 
-Consider a small dataset-preparation UI that helps users assign:
+Next improvements should be driven by real runs:
 
-- speaker;
-- emotion;
-- pair group;
-- split;
-- pair source.
+- show a compact preview of predicted emotion / confidence / pair group;
+- allow users to exclude or edit questionable rows before training;
+- measure whether the default confidence threshold is appropriate;
+- add better handling for datasets with no repeated exact transcript;
+- only then consider fuzzy or semantic text matching.
 
-Do not auto-infer pairs silently.
-
-A CSV/JSONL preview with validation before training would be useful.
+Do not hide automatic provenance. Auto-generated pairs must remain visibly
+distinguishable from manual or recording-manifest pairs.
 
 Priority C: training results
 
@@ -966,7 +990,11 @@ tools/colab_fast_setup.py
 webui.py
 config.py
 tools/emotion_training_pipeline.py
+tools/auto_emotion_sidecar.py
 tools/emotion_dataset_builder.py
+tools/asr/config.py
+tools/asr/funasr_asr.py
+tools/asr/fasterwhisper_asr.py
 tools/run_emotion_v5_preprocess.py
 tools/export_emotion_reference_prompts.py
 tools/train_emotion_controller.py

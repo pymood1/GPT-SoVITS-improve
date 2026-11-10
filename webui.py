@@ -360,17 +360,158 @@ def stop_emotion_training():
     global p_emotion_training
 
     if p_emotion_training is None:
-        return "### 감정 제어 학습\n\n실행 중인 작업이 없습니다."
+        return "### 감정 작업\n\n실행 중인 작업이 없습니다."
 
     if p_emotion_training.poll() is None:
         kill_process(
             p_emotion_training.pid,
-            "Emotion training ",
+            "Emotion task ",
         )
 
     p_emotion_training = None
 
-    return "### 감정 제어 학습 중지됨"
+    return "### 감정 작업 중지됨"
+
+
+def run_auto_emotion_sidecar(
+    source_list,
+    wav_root,
+    sidecar_output,
+    model_name,
+    min_confidence,
+    device,
+):
+    global p_emotion_training
+
+    if p_emotion_training is not None and p_emotion_training.poll() is None:
+        yield (
+            "### 자동 감정 데이터 생성\n\n"
+            "이미 다른 감정 작업이 실행 중입니다.",
+            {"__type__": "update"},
+        )
+        return
+
+    log_lines = deque(maxlen=120)
+
+    try:
+        source_list = str(source_list or "").strip()
+        wav_root = str(wav_root or "").strip()
+        model_name = str(model_name or "").strip()
+        device = str(device or "auto").strip() or "auto"
+
+        if not source_list:
+            raise EmotionPipelineError(
+                "먼저 GPT-SoVITS 텍스트 표기(.list) 파일을 지정하세요."
+            )
+
+        source_path = Path(source_list).expanduser()
+
+        if not sidecar_output:
+            sidecar_output = str(
+                source_path.with_suffix(
+                    source_path.suffix + ".emotion.auto.jsonl"
+                )
+            )
+
+        output_path = Path(
+            str(sidecar_output)
+        ).expanduser().resolve()
+
+        if not model_name:
+            model_name = "iic/emotion2vec_plus_base"
+
+        min_confidence = float(min_confidence)
+
+        if not 0.0 <= min_confidence <= 1.0:
+            raise EmotionPipelineError(
+                "감정 신뢰도 기준은 0~1 사이여야 합니다."
+            )
+
+        cmd = [
+            python_exec,
+            "-u",
+            "tools/auto_emotion_sidecar.py",
+            "--list",
+            source_list,
+            "--output",
+            str(output_path),
+            "--model",
+            model_name,
+            "--device",
+            device,
+            "--min-confidence",
+            str(min_confidence),
+        ]
+
+        if wav_root:
+            cmd.extend(
+                [
+                    "--wav-root",
+                    wav_root,
+                ]
+            )
+
+        for status in _stream_emotion_command(
+            cmd,
+            log_lines,
+            "음성 감정 분석 및 pair 생성",
+        ):
+            yield (
+                status,
+                {"__type__": "update"},
+            )
+
+        if not output_path.is_file():
+            raise EmotionPipelineError(
+                f"자동 sidecar 파일이 생성되지 않았습니다: {output_path}"
+            )
+
+        report_path = output_path.with_suffix(
+            output_path.suffix + ".report.json"
+        )
+        summary = None
+
+        if report_path.is_file():
+            report = json.loads(
+                report_path.read_text(encoding="utf-8")
+            )
+            summary = (
+                f"샘플 {report.get('samples', 0)}개, "
+                f"pair group {report.get('pair_groups', 0)}개, "
+                f"pair 샘플 {report.get('paired_samples', 0)}개"
+            )
+
+        yield (
+            _emotion_status(
+                "자동 감정 데이터 생성 완료",
+                log_lines,
+                (
+                    f"**Sidecar:** `{output_path}`"
+                    + (f"\n\n{summary}" if summary else "")
+                ),
+            ),
+            {
+                "__type__": "update",
+                "value": str(output_path),
+            },
+        )
+
+    except (
+        EmotionPipelineError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        p_emotion_training = None
+        log_lines.append(f"[ERROR] {exc}")
+        yield (
+            _emotion_status(
+                "자동 감정 데이터 생성 실패",
+                log_lines,
+                str(exc),
+            ),
+            {"__type__": "update"},
+        )
 
 
 def run_emotion_training_pipeline(
@@ -397,8 +538,18 @@ def run_emotion_training_pipeline(
     log_lines = deque(maxlen=120)
 
     try:
-        dataset_dir = Path(dataset_dir).expanduser().resolve()
-        feature_root = Path(feature_root).expanduser().resolve()
+        dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
+
+        dataset_dir_text = str(dataset_dir or "").strip()
+        if not dataset_dir_text:
+            dataset_dir_text = f"/content/{dataset_id}_emotion_dataset"
+
+        feature_root_text = str(feature_root or "").strip()
+        if not feature_root_text:
+            feature_root_text = f"/content/{dataset_id}_emotion_features"
+
+        dataset_dir = Path(dataset_dir_text).expanduser().resolve()
+        feature_root = Path(feature_root_text).expanduser().resolve()
         controller_output = Path(
             controller_output
         ).expanduser().resolve()
@@ -519,7 +670,7 @@ def run_emotion_training_pipeline(
                 "--output",
                 str(dataset_dir),
                 "--dataset-id",
-                str(dataset_id).strip() or "emotion_dataset_01",
+                dataset_id,
                 "--sidecar",
                 sidecar_path,
                 "--stage-mode",
@@ -957,6 +1108,17 @@ def change_tts_inference(
 
 from tools.asr.config import asr_dict
 
+ASR_UI_CHOICES = [
+    ("Faster Whisper (다국어, 권장)", "Faster Whisper (多语种)"),
+    ("Fun-ASR MLT-Nano (다국어)", "Fun-ASR MLT-Nano (多语种)"),
+    ("SenseVoice (5개 언어, 빠름)", "SenseVoice (极速, 5语种)"),
+    ("Damo ASR (중국어)", "达摩 ASR (中文经典)"),
+]
+DEFAULT_ASR_MODEL = "Faster Whisper (多语种)"
+DEFAULT_ASR_SIZE = "large-v3-turbo"
+DEFAULT_ASR_LANGUAGE = "auto"
+DEFAULT_ASR_PRECISION = "float16" if is_half else "float32"
+
 process_name_asr = i18n("语音识别")
 
 
@@ -966,12 +1128,17 @@ def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_
         asr_inp_dir = my_utils.clean_path(asr_inp_dir)
         asr_opt_dir = my_utils.clean_path(asr_opt_dir)
         check_for_existance([asr_inp_dir])
-        cmd = f'"{python_exec}" -s tools/asr/{asr_dict[asr_model]["path"]}'
+        asr_config = asr_dict[asr_model]
+        cmd = f'"{python_exec}" -s tools/asr/{asr_config["path"]}'
         cmd += f' -i "{asr_inp_dir}"'
         cmd += f' -o "{asr_opt_dir}"'
         cmd += f" -s {asr_model_size}"
         cmd += f" -l {asr_lang}"
         cmd += f" -p {asr_precision}"
+
+        backend = asr_config.get("backend")
+        if backend:
+            cmd += f" --backend {backend}"
         output_file_name = os.path.basename(asr_inp_dir)
         output_folder = asr_opt_dir or "output/asr_opt"
         output_file_path = os.path.abspath(f"{output_folder}/{output_file_name}.list")
@@ -1993,7 +2160,10 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     with gr.Column(scale=3):
                         with gr.Row():
                             asr_inp_dir = gr.Textbox(
-                                label=i18n("输入文件夹路径"), value="D:\\GPT-SoVITS\\raw\\xxx", interactive=True
+                                label=i18n("输入文件夹路径"),
+                                value="",
+                                placeholder="/content/drive/MyDrive/data/wav",
+                                interactive=True,
                             )
                             asr_opt_dir = gr.Textbox(
                                 label=i18n("输出文件夹路径"), value="output/asr_opt", interactive=True
@@ -2001,18 +2171,27 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         with gr.Row():
                             asr_model = gr.Dropdown(
                                 label=i18n("ASR 模型"),
-                                choices=list(asr_dict.keys()),
+                                choices=ASR_UI_CHOICES,
                                 interactive=True,
-                                value="达摩 ASR (中文)",
+                                value=DEFAULT_ASR_MODEL,
                             )
                             asr_size = gr.Dropdown(
-                                label=i18n("ASR 模型尺寸"), choices=["large"], interactive=True, value="large"
+                                label=i18n("ASR 模型尺寸"),
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["size"],
+                                interactive=True,
+                                value=DEFAULT_ASR_SIZE,
                             )
                             asr_lang = gr.Dropdown(
-                                label=i18n("ASR 语言设置"), choices=["zh", "yue"], interactive=True, value="zh"
+                                label=i18n("ASR 语言设置"),
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["lang"],
+                                interactive=True,
+                                value=DEFAULT_ASR_LANGUAGE,
                             )
                             asr_precision = gr.Dropdown(
-                                label=i18n("数据类型精度"), choices=["float32"], interactive=True, value="float32"
+                                label=i18n("数据类型精度"),
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["precision"],
+                                interactive=True,
+                                value=DEFAULT_ASR_PRECISION,
                             )
                         with gr.Row():
                             asr_info = gr.Textbox(label=process_info(process_name_asr, "info"))
@@ -2121,12 +2300,99 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
             with gr.Tabs(selected="finetune"):
                 with gr.TabItem("1A-" + i18n("训练集格式化工具"), id="dataset"):
+                    with gr.Accordion(
+                        label="1A0-음성 전사 (.list 자동 생성, 선택)",
+                        open=False,
+                    ):
+                        gr.Markdown(
+                            """
+이미 GPT-SoVITS 형식의 `.list` 파일이 있으면 이 단계는 건너뛰면 됩니다.
+
+음성 파일만 있는 경우 폴더를 지정하고 ASR로 전사하면 아래의
+**텍스트 표기 파일**과 **학습용 음성 폴더**가 자동으로 채워집니다.
+다국어 사용을 고려해 Faster Whisper를 기본값으로 둡니다.
+긴 원본 녹음은 필요하면 0-데이터셋 준비 도구의 음성 자르기를 먼저 사용하세요.
+"""
+                        )
+
+                        with gr.Row():
+                            prep_asr_inp_dir = gr.Textbox(
+                                label="전사할 음성 폴더",
+                                placeholder="/content/drive/MyDrive/data/wav",
+                                interactive=True,
+                            )
+                            prep_asr_opt_dir = gr.Textbox(
+                                label="전사 결과 저장 폴더",
+                                value="output/asr_opt",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            prep_asr_model = gr.Dropdown(
+                                label="ASR 엔진",
+                                choices=ASR_UI_CHOICES,
+                                value=DEFAULT_ASR_MODEL,
+                                interactive=True,
+                            )
+                            prep_asr_size = gr.Dropdown(
+                                label="모델 크기",
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["size"],
+                                value=DEFAULT_ASR_SIZE,
+                                interactive=True,
+                            )
+                            prep_asr_lang = gr.Dropdown(
+                                label="언어",
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["lang"],
+                                value=DEFAULT_ASR_LANGUAGE,
+                                interactive=True,
+                            )
+                            prep_asr_precision = gr.Dropdown(
+                                label="정밀도",
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["precision"],
+                                value=DEFAULT_ASR_PRECISION,
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            prep_asr_open = gr.Button(
+                                value="음성 전사 시작",
+                                variant="primary",
+                                visible=True,
+                            )
+                            prep_asr_close = gr.Button(
+                                value="음성 전사 중지",
+                                variant="stop",
+                                visible=False,
+                            )
+
+                        prep_asr_info = gr.Textbox(
+                            label="전사 상태",
+                            interactive=False,
+                        )
+
+                        prep_asr_model.change(
+                            change_lang_choices,
+                            [prep_asr_model],
+                            [prep_asr_lang],
+                        )
+                        prep_asr_model.change(
+                            change_size_choices,
+                            [prep_asr_model],
+                            [prep_asr_size],
+                        )
+                        prep_asr_model.change(
+                            change_precision_choices,
+                            [prep_asr_model],
+                            [prep_asr_precision],
+                        )
+
                     with gr.Accordion(label=i18n("输出logs/实验名目录下应有23456开头的文件和文件夹")):
                         with gr.Row():
                             with gr.Row():
                                 inp_text = gr.Textbox(
                                     label=i18n("*文本标注文件"),
-                                    value=r"D:\RVC1006\GPT-SoVITS\raw\xxx.list",
+                                    value="",
+                                    placeholder="/content/drive/MyDrive/data/train.list",
                                     interactive=True,
                                     scale=10,
                                 )
@@ -2236,18 +2502,57 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         gr.Markdown(
                             """
 일반 GPT-SoVITS 학습에는 필요하지 않습니다.
-감정 컨트롤러를 함께 학습할 경우 위의 **텍스트 표기 파일**과
-**학습용 음성 폴더**를 그대로 사용하며, 여기서는 감정 pair 메타데이터만 추가합니다.
 
-현재 감정 pair는 자동 추정하지 않습니다. 같은 화자·같은 문장·다른 감정의
-관계가 확인된 sidecar JSONL을 사용해야 합니다.
+감정 제어를 학습하려면 위의 **텍스트 표기(.list)**와
+**학습용 음성 폴더**를 그대로 사용합니다. 위의 Whisper/Fun-ASR은 **전사(ASR)** 용이고,
+여기의 emotion2vec+는 **음성 감정 분류** 용이라 서로 별개의 단계입니다.
+
+자동 생성은 같은 화자·같은 언어·**동일한 전사문**을 가진 음성을 묶고,
+감정 분류 결과가 충분히 확실한 경우에만 서로 다른 감정의 pair를 만듭니다.
+자동 결과가 마음에 들지 않으면 sidecar JSONL을 직접 수정하거나 수동 파일로
+바꿔도 됩니다.
 """
                         )
 
                         with gr.Row():
+                            emotion_auto_model = gr.Dropdown(
+                                label="감정 분석 모델 (ASR과 별개)",
+                                choices=[
+                                    (
+                                        "emotion2vec+ base (기본)",
+                                        "iic/emotion2vec_plus_base",
+                                    ),
+                                    (
+                                        "emotion2vec+ large (정확도 우선)",
+                                        "iic/emotion2vec_plus_large",
+                                    ),
+                                ],
+                                value="iic/emotion2vec_plus_base",
+                                interactive=True,
+                            )
+                            emotion_auto_confidence = gr.Slider(
+                                minimum=0.0,
+                                maximum=1.0,
+                                step=0.05,
+                                label="자동 감정 라벨 최소 신뢰도",
+                                value=0.45,
+                                interactive=True,
+                            )
+                            emotion_auto_device = gr.Dropdown(
+                                label="자동 감정 분석 장치",
+                                choices=["auto", "cuda:0", "cpu"],
+                                value="auto",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
                             emotion_sidecar = gr.Textbox(
-                                label="감정 sidecar JSONL 경로",
-                                placeholder="/content/drive/MyDrive/data/emotion_sidecar.jsonl",
+                                label="감정 sidecar JSONL 경로 (자동 생성/수동 지정)",
+                                value="",
+                                placeholder=(
+                                    "비워두면 .list 파일 옆에 "
+                                    "*.emotion.auto.jsonl로 자동 생성"
+                                ),
                                 interactive=True,
                             )
                             emotion_dataset_id = gr.Textbox(
@@ -2257,16 +2562,89 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             )
 
                         with gr.Row():
+                            emotion_auto_run = gr.Button(
+                                value="음성에서 감정 pair 자동 생성",
+                                variant="primary",
+                            )
+                            emotion_auto_stop = gr.Button(
+                                value="자동 감정 분석 중지",
+                                variant="stop",
+                            )
+
+                        emotion_auto_status = gr.Markdown(
+                            value=(
+                                "동일 전사문 그룹 탐색 → emotion2vec+ 감정 분석 → "
+                                "신뢰도 필터 → reference 예약 → sidecar 생성"
+                            )
+                        )
+
+                        with gr.Row():
                             emotion_dataset_dir = gr.Textbox(
                                 label="감정 canonical dataset 출력 폴더",
-                                value="/content/emotion_dataset",
+                                value="",
+                                placeholder=(
+                                    "비워두면 /content/"
+                                    "<데이터셋 ID>_emotion_dataset"
+                                ),
                                 interactive=True,
                             )
                             emotion_reuse_dataset = gr.Checkbox(
                                 label="기존 감정 canonical dataset 재사용",
-                                value=True,
+                                value=False,
                                 interactive=True,
                             )
+
+                        emotion_auto_run.click(
+                            run_auto_emotion_sidecar,
+                            [
+                                inp_text,
+                                inp_wav_dir,
+                                emotion_sidecar,
+                                emotion_auto_model,
+                                emotion_auto_confidence,
+                                emotion_auto_device,
+                            ],
+                            [
+                                emotion_auto_status,
+                                emotion_sidecar,
+                            ],
+                        )
+
+                        emotion_auto_stop.click(
+                            stop_emotion_training,
+                            [],
+                            [emotion_auto_status],
+                            queue=False,
+                        )
+
+                prep_asr_open.click(
+                    open_asr,
+                    [
+                        prep_asr_inp_dir,
+                        prep_asr_opt_dir,
+                        prep_asr_model,
+                        prep_asr_size,
+                        prep_asr_lang,
+                        prep_asr_precision,
+                    ],
+                    [
+                        prep_asr_info,
+                        prep_asr_open,
+                        prep_asr_close,
+                        path_list,
+                        inp_text,
+                        inp_wav_dir,
+                    ],
+                )
+                prep_asr_close.click(
+                    close_asr,
+                    [],
+                    [
+                        prep_asr_info,
+                        prep_asr_open,
+                        prep_asr_close,
+                    ],
+                )
 
                 pretrained_s2G.change(sync, [pretrained_s2G], [pretrained_s2G_])
                 open_asr_button.click(
@@ -2502,7 +2880,11 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         with gr.Row():
                             emotion_feature_root = gr.Textbox(
                                 label="V5 전처리 feature 폴더",
-                                value="/content/emotion_features",
+                                value="",
+                                placeholder=(
+                                    "비워두면 /content/"
+                                    "<데이터셋 ID>_emotion_features"
+                                ),
                                 interactive=True,
                             )
                             emotion_controller_output = gr.Textbox(
