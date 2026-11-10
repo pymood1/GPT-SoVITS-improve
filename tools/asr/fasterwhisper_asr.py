@@ -81,9 +81,6 @@ def download_model(model_size: str):
 
         files.remove("vocabulary.txt")
 
-    if source == "ModelScope":
-        files = [f"faster-whisper-{model_size}/{file}".replace("whisper-distil", "distil-whisper") for file in files]
-
     if source == "HF":
         print(
             f"Downloading model from HuggingFace: "
