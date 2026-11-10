@@ -345,6 +345,20 @@ def _file_signature(path):
     return stat.st_size, stat.st_mtime_ns
 
 
+def _nonempty_line_count(path):
+    path = Path(path)
+    if not path.is_file():
+        return 0
+    with path.open("r", encoding="utf-8-sig") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
+def _text_preprocess_cache_valid(path_text, inp_text):
+    output_count = _nonempty_line_count(path_text)
+    input_count = _nonempty_line_count(inp_text)
+    return input_count > 0 and output_count == input_count
+
+
 def _resolve_repo_path(value):
     text = _clean_user_path(value)
     if not text:
@@ -3122,9 +3136,9 @@ def open1abc(
         try:
             #############################1a
             path_text = "%s/2-name2text.txt" % opt_dir
-            if os.path.exists(path_text) == False or (
-                os.path.exists(path_text) == True
-                and len(open(path_text, "r", encoding="utf8").read().strip("\n").split("\n")) < 2
+            if not _text_preprocess_cache_valid(
+                path_text,
+                inp_text,
             ):
                 config = {
                     "inp_text": inp_text,
@@ -3187,6 +3201,12 @@ def open1abc(
                     with open(txt_path, "r", encoding="utf8") as f:
                         opt += f.read().strip("\n").split("\n")
                     os.remove(txt_path)
+                expected_rows = _nonempty_line_count(inp_text)
+                if len(opt) != expected_rows:
+                    raise RuntimeError(
+                        "1A text output count mismatch: "
+                        f"expected {expected_rows}, got {len(opt)}"
+                    )
                 with open(path_text, "w", encoding="utf8") as f:
                     f.write("\n".join(opt) + "\n")
                 assert len("".join(opt)) > 0, process_info(process_name_1a, "failed")
