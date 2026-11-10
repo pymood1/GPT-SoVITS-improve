@@ -254,6 +254,10 @@ def execute_asr(
         raise RuntimeError(
             f"ASR input directory has no usable name: {input_folder}"
         )
+    if "|" in input_folder or "|" in output_file_name:
+        raise RuntimeError(
+            "GPT-SoVITS .list paths/speaker names must not contain '|'"
+        )
 
     input_file_names = sorted(os.listdir(input_folder))
     output = []
@@ -269,6 +273,12 @@ def execute_asr(
             file_path = os.path.join(input_folder, file_name)
 
             if not os.path.isfile(file_path):
+                continue
+            if "|" in file_path:
+                print(
+                    "Skipping path that cannot be represented in "
+                    f"GPT-SoVITS .list: {file_path}"
+                )
                 continue
 
             generate_kwargs = {"input": file_path}
@@ -293,7 +303,9 @@ def execute_asr(
 
                 text = rich_transcription_postprocess(text)
 
-            text = str(text or "").strip()
+            text = " ".join(
+                str(text or "").splitlines()
+            ).replace("|", "｜").strip()
             if not text:
                 print(f"Empty ASR transcript: {file_path}")
                 continue
