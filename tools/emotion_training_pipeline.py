@@ -91,6 +91,63 @@ def validate_emotion_dataset(dataset_dir: Path) -> dict:
     return report
 
 
+def detect_pair_emotions(metadata_path: Path) -> list[str]:
+    rows = read_jsonl(metadata_path)
+
+    groups: dict[str, set[str]] = {}
+
+    for row in rows:
+        if row.get("split") != "train":
+            continue
+
+        group_id = str(row.get("pair_group_id") or "").strip()
+        emotion = str(row.get("emotion_intended") or "").strip()
+
+        if not group_id or not emotion:
+            continue
+
+        groups.setdefault(group_id, set()).add(emotion)
+
+    usable_groups = {
+        group_id
+        for group_id, emotions in groups.items()
+        if len(emotions) >= 2
+    }
+
+    detected = {
+        str(row.get("emotion_intended") or "").strip()
+        for row in rows
+        if str(row.get("pair_group_id") or "").strip() in usable_groups
+        and str(row.get("emotion_intended") or "").strip()
+    }
+
+    preferred_order = [
+        "neutral",
+        "happy",
+        "sad",
+        "angry",
+        "disgusted",
+        "fearful",
+        "surprised",
+        "other",
+    ]
+
+    ordered = [
+        emotion for emotion in preferred_order
+        if emotion in detected
+    ]
+    ordered.extend(
+        sorted(detected - set(ordered))
+    )
+
+    if len(ordered) < 2:
+        raise EmotionPipelineError(
+            "Fewer than two emotions are present in usable pair groups"
+        )
+
+    return ordered
+
+
 def _reference_duration_seconds(audio_path: Path) -> float | None:
     try:
         import soundfile as sf
