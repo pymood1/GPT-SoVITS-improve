@@ -239,6 +239,7 @@ p_asr = None
 asr_cancel_requested = False
 p_denoise = None
 p_tts_inference = None
+tts_inference_cancel_requested = False
 p_emotion_training = None
 emotion_task_cancel_requested = False
 latest_emotion_controller_path = os.environ.get(
@@ -322,6 +323,16 @@ def _file_signature(path):
         return None
     stat = path.stat()
     return stat.st_size, stat.st_mtime_ns
+
+
+def _resolve_repo_path(value):
+    text = _clean_user_path(value)
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = Path(now_dir) / path
+    return path.resolve()
 
 
 def _emotion_status(stage, log_lines, final_message=None):
@@ -1050,13 +1061,18 @@ def change_uvr5():
 process_name_tts = i18n("TTS推理WebUI")
 
 
-def _stream_tts_inference_output(process):
+def _stream_tts_inference_output(process, allow_local_url=False):
     global tts_inference_url
 
     if process.stdout is None:
         return
 
-    public_url_pattern = re.compile(r"https://[A-Za-z0-9-]+\.gradio\.live")
+    public_url_pattern = re.compile(
+        r"https://[A-Za-z0-9-]+\.gradio\.live"
+    )
+    local_url_pattern = re.compile(
+        r"https?://(?:127\.0\.0\.1|localhost):\d+"
+    )
 
     for line in process.stdout:
         clean_line = line.rstrip()
@@ -1064,6 +1080,9 @@ def _stream_tts_inference_output(process):
         tts_inference_logs.append(clean_line)
 
         match = public_url_pattern.search(clean_line)
+        if match is None and allow_local_url:
+            match = local_url_pattern.search(clean_line)
+
         if match is not None:
             tts_inference_url = match.group(0)
 
@@ -1086,60 +1105,118 @@ def change_tts_inference(
     global p_tts_inference
     global tts_inference_reader
     global tts_inference_url
+    global tts_inference_cancel_requested
 
-    if p_tts_inference is not None and p_tts_inference.poll() is not None:
+    if p_tts_inference is not None:
+        if p_tts_inference.poll() is None:
+            yield (
+                process_info(process_name_tts, "occupy"),
+                {"__type__": "update", "visible": False},
+                {"__type__": "update", "visible": True},
+            )
+            return
         p_tts_inference = None
 
-    if p_tts_inference is None:
-        gpt_path = name2gpt_path.get(gpt_path, gpt_path)
-        sovits_path = name2sovits_path.get(sovits_path, sovits_path)
+    gpt_value = name2gpt_path.get(gpt_path, gpt_path)
+    sovits_value = name2sovits_path.get(sovits_path, sovits_path)
 
-        controller_available = bool(
-            latest_emotion_controller_path
-            and os.path.isfile(latest_emotion_controller_path)
-        )
+    resolved = {
+        "GPT/S1": (_resolve_repo_path(gpt_value), "file"),
+        "SoVITS/S2": (_resolve_repo_path(sovits_value), "file"),
+        "BERT": (_resolve_repo_path(bert_path), "dir"),
+        "CNHuBERT": (_resolve_repo_path(cnhubert_base_path), "dir"),
+    }
 
-        script_path = (
-            "GPT_SoVITS/inference_webui.py"
-            if controller_available
-            else (
-                "GPT_SoVITS/inference_webui_fast.py"
-                if batched_infer_enabled
-                else "GPT_SoVITS/inference_webui.py"
+    invalid_paths = []
+    for label, (path, kind) in resolved.items():
+        valid = (
+            path is not None
+            and (
+                path.is_file()
+                if kind == "file"
+                else path.is_dir()
             )
         )
+        if not valid:
+            invalid_paths.append(f"{label}: {path or '<empty>'}")
 
-        cmd = [
-            python_exec,
-            "-u",
-            "-s",
-            script_path,
-            language,
-        ]
-
-        child_env = os.environ.copy()
-        child_env.update(
-            {
-                "gpt_path": gpt_path,
-                "sovits_path": sovits_path,
-                "cnhubert_base_path": cnhubert_base_path,
-                "bert_path": bert_path,
-                "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_number)),
-                "is_half": str(is_half),
-                "infer_ttswebui": str(webui_port_infer_tts),
-                "is_share": str(is_share),
-                "version": version,
-                "language": language,
-                "emotion_controller_path": latest_emotion_controller_path,
-                "PYTHONUNBUFFERED": "1",
-            }
+    if invalid_paths:
+        yield (
+            "### TTS 추론 시작 실패\n\n잘못된 모델 경로:\n- "
+            + "\n- ".join(invalid_paths),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
         )
+        return
 
-        tts_inference_url = None
-        tts_inference_logs.clear()
+    gpt_path = str(resolved["GPT/S1"][0])
+    sovits_path = str(resolved["SoVITS/S2"][0])
+    bert_path = str(resolved["BERT"][0])
+    cnhubert_base_path = str(resolved["CNHuBERT"][0])
 
-        print("[TTS] launch:", " ".join(cmd), flush=True)
+    controller_available = bool(
+        latest_emotion_controller_path
+        and os.path.isfile(latest_emotion_controller_path)
+    )
 
+    script_path = (
+        "GPT_SoVITS/inference_webui.py"
+        if controller_available
+        else (
+            "GPT_SoVITS/inference_webui_fast.py"
+            if batched_infer_enabled
+            else "GPT_SoVITS/inference_webui.py"
+        )
+    )
+    script_file = (Path(now_dir) / script_path).resolve()
+
+    if not script_file.is_file():
+        yield (
+            f"### TTS 추론 시작 실패\n\n스크립트가 없습니다: {script_file}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    cmd = [
+        python_exec,
+        "-u",
+        "-s",
+        str(script_file),
+        language,
+    ]
+
+    child_env = os.environ.copy()
+    child_env.update(
+        {
+            "gpt_path": gpt_path,
+            "sovits_path": sovits_path,
+            "cnhubert_base_path": cnhubert_base_path,
+            "bert_path": bert_path,
+            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_number)),
+            "is_half": str(is_half),
+            "infer_ttswebui": str(webui_port_infer_tts),
+            "is_share": str(is_share),
+            "version": str(version),
+            "language": str(language),
+            "emotion_controller_path": str(
+                latest_emotion_controller_path or ""
+            ),
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
+
+    tts_inference_url = None
+    tts_inference_logs.clear()
+    tts_inference_cancel_requested = False
+
+    print(
+        "[TTS] launch:",
+        " ".join(repr(item) for item in cmd),
+        flush=True,
+    )
+
+    try:
         process = Popen(
             cmd,
             cwd=now_dir,
@@ -1149,78 +1226,102 @@ def change_tts_inference(
             text=True,
             bufsize=1,
         )
-        p_tts_inference = process
-
-        tts_inference_reader = threading.Thread(
-            target=_stream_tts_inference_output,
-            args=(process,),
-            daemon=True,
-        )
-        tts_inference_reader.start()
-
+    except (OSError, TypeError) as exc:
         yield (
-            i18n("正在启动TTS推理WebUI，请等待模型加载和公开链接生成。"),
-            {"__type__": "update", "visible": False},
+            f"### TTS 추론 시작 실패\n\n{exc}",
             {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
         )
+        return
 
-        deadline = time.monotonic() + 120
+    p_tts_inference = process
 
-        while time.monotonic() < deadline:
-            if tts_inference_url is not None:
-                yield (
-                    f"### {i18n('TTS推理WebUI已就绪')}\n\n"
-                    f"[{i18n('TTS推理WebUI')}]({tts_inference_url})",
-                    {"__type__": "update", "visible": False},
-                    {"__type__": "update", "visible": True},
-                )
+    tts_inference_reader = threading.Thread(
+        target=_stream_tts_inference_output,
+        args=(process, not bool(is_share)),
+        daemon=True,
+    )
+    tts_inference_reader.start()
+
+    yield (
+        i18n("正在启动TTS推理WebUI，请等待模型加载和公开链接生成。"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
+
+    deadline = time.monotonic() + 120
+
+    while time.monotonic() < deadline:
+        if tts_inference_url is not None:
+            yield (
+                f"### {i18n('TTS推理WebUI已就绪')}\n\n"
+                f"[{i18n('TTS推理WebUI')}]({tts_inference_url})",
+                {"__type__": "update", "visible": False},
+                {"__type__": "update", "visible": True},
+            )
+            return
+
+        return_code = process.poll()
+        if return_code is not None:
+            p_tts_inference = None
+
+            if tts_inference_cancel_requested:
+                tts_inference_cancel_requested = False
                 return
 
-            return_code = process.poll()
-            if return_code is not None:
-                log_tail = _tts_log_tail()
-                p_tts_inference = None
+            log_tail = _tts_log_tail()
+            message = (
+                f"### {i18n('TTS推理WebUI启动失败')} "
+                f"(exit code {return_code})"
+            )
 
-                message = (
-                    f"### {i18n('TTS推理WebUI启动失败')} "
-                    f"(exit code {return_code})"
-                )
+            if log_tail:
+                message += "\n\n" + log_tail
 
-                if log_tail:
-                    message += f"\n\n```text\n{log_tail}\n```"
+            yield (
+                message,
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
 
-                yield (
-                    message,
-                    {"__type__": "update", "visible": True},
-                    {"__type__": "update", "visible": False},
-                )
-                return
+        time.sleep(0.25)
 
-            time.sleep(0.25)
+    log_tail = _tts_log_tail()
+    message = f"### {i18n('未能生成公开链接，请查看日志')}"
 
-        log_tail = _tts_log_tail()
-        message = f"### {i18n('未能生成公开链接，请查看日志')}"
+    if log_tail:
+        message += "\n\n" + log_tail
 
-        if log_tail:
-            message += f"\n\n```text\n{log_tail}\n```"
+    yield (
+        message,
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
 
-        yield (
-            message,
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-        )
 
-    else:
+def close_tts_inference():
+    global p_tts_inference
+    global tts_inference_url
+    global tts_inference_cancel_requested
+
+    tts_inference_cancel_requested = True
+
+    if (
+        p_tts_inference is not None
+        and p_tts_inference.poll() is None
+    ):
         kill_process(p_tts_inference.pid, process_name_tts)
-        p_tts_inference = None
-        tts_inference_url = None
-        tts_inference_logs.clear()
 
-        yield (
-            process_info(process_name_tts, "closed"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-        )
+    p_tts_inference = None
+    tts_inference_url = None
+    tts_inference_logs.clear()
+
+    return (
+        process_info(process_name_tts, "closed"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
 
 
 from tools.asr.config import asr_dict
@@ -3256,15 +3357,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             [tts_info, open_tts, close_tts],
                         )
                         close_tts.click(
-                            change_tts_inference,
-                            [
-                                bert_pretrained_dir,
-                                cnhubert_base_dir,
-                                gpu_number_1C,
-                                GPT_dropdown,
-                                SoVITS_dropdown,
-                                batched_infer_enabled,
-                            ],
+                            close_tts_inference,
+                            [],
                             [tts_info, open_tts, close_tts],
                         )
                 button1Ba_open.click(
