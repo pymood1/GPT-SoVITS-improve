@@ -56,7 +56,7 @@ jobs:
             --python-version 3.14 \
             requirements.txt \
             --output-file /tmp/requirements-314.txt
-          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics)==' \
+          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics|ctranslate2|av)==' \
             /tmp/requirements-314.txt || true
 
 
@@ -247,6 +247,58 @@ jobs:
           print("keywords_checked=", checked)
           PY
 
+
+
+  asr_decode_smoke_314:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install released faster-whisper stack
+        run: |
+          python -m pip install -q uv
+          uv pip install --system             "faster-whisper==1.2.1"             "av>=11,<19"             "ctranslate2>=4.6.1,<5"
+      - name: Decode a WAV with faster-whisper on Python 3.14
+        run: |
+          python - <<'PY'
+          import math
+          import struct
+          import tempfile
+          import wave
+
+          import av
+          import ctranslate2
+          import faster_whisper
+          from faster_whisper.audio import decode_audio
+
+          sample_rate = 16000
+          frame_count = sample_rate // 4
+
+          with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+              with wave.open(f.name, "wb") as wav:
+                  wav.setnchannels(1)
+                  wav.setsampwidth(2)
+                  wav.setframerate(sample_rate)
+                  for i in range(frame_count):
+                      sample = int(5000 * math.sin(2 * math.pi * 440 * i / sample_rate))
+                      wav.writeframesraw(struct.pack("<h", sample))
+
+              audio = decode_audio(f.name, sampling_rate=sample_rate)
+
+          if len(audio) == 0:
+              raise SystemExit("faster-whisper decoded zero samples")
+
+          if int(av.__version__.split(".", 1)[0]) >= 19:
+              raise SystemExit(f"PyAV regression: resolved av={av.__version__}")
+
+          print("PY314_FASTER_WHISPER_DECODE_OK")
+          print("faster_whisper=", faster_whisper.__version__)
+          print("av=", av.__version__)
+          print("ctranslate2=", ctranslate2.__version__)
+          print("samples=", len(audio))
+          PY
 
 
   shell_syntax:
