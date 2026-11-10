@@ -277,6 +277,11 @@ def execute_asr(
         except Exception:
             print(traceback.format_exc())
 
+    if not output:
+        raise RuntimeError(
+            "FunASR produced no usable GPT-SoVITS transcripts"
+        )
+
     output_folder = output_folder or "output/asr_opt"
     os.makedirs(output_folder, exist_ok=True)
     output_file_path = os.path.abspath(
