@@ -10,7 +10,6 @@ from modelscope import snapshot_download as snapshot_download_ms
 from tqdm import tqdm
 
 from tools.asr.config import get_models
-from tools.asr.funasr_asr import only_asr
 from tools.my_utils import load_cudnn
 
 # fmt: off
@@ -34,7 +33,7 @@ language_code_list = [
     "sr", "su", "sv", "sw", "ta", 
     "te", "tg", "th", "tk", "tl", 
     "tr", "tt", "uk", "ur", "uz", 
-    "vi", "yi", "yo", "zh", "yue",
+    "vi", "yi", "yo", "zh",
     "auto"] 
 # fmt: on
 
@@ -124,16 +123,16 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 vad_parameters=dict(min_silence_duration_ms=700),
                 language=language,
             )
-            text = ""
+            text = "".join(segment.text for segment in segments).strip()
 
-            if info.language in ["zh", "yue"]:
-                print("检测为中文文本, 转 FunASR 处理")
-                text = only_asr(file_path, language=info.language.lower())
+            if not text:
+                print(f"Empty Whisper transcript: {file_path}")
+                continue
 
-            if text == "":
-                for segment in segments:
-                    text += segment.text
-            output.append(f"{file_path}|{output_file_name}|{info.language.upper()}|{text}")
+            output.append(
+                f"{file_path}|{output_file_name}|"
+                f"{info.language.upper()}|{text}"
+            )
         except Exception as e:
             print(e)
             traceback.print_exc()
