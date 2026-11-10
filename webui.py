@@ -2039,74 +2039,187 @@ ps1b = []
 process_name_1b = i18n("语音自监督特征提取")
 
 
-def open1b(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, ssl_pretrained_dir):
+def open1b(
+    version,
+    inp_text,
+    inp_wav_dir,
+    exp_name,
+    gpu_numbers,
+    ssl_pretrained_dir,
+):
     global ps1b
+
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
-    if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
-        check_details([inp_text, inp_wav_dir], is_dataset_processing=True)
+
+    if not check_for_existance(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    ):
+        yield (
+            process_info(process_name_1b, "failed"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    check_details(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    )
+
     exp_name = exp_name.rstrip(" ")
-    if ps1b == []:
-        config = {
-            "inp_text": inp_text,
-            "inp_wav_dir": inp_wav_dir,
-            "exp_name": exp_name,
-            "opt_dir": "%s/%s" % (exp_root, exp_name),
-            "cnhubert_base_dir": ssl_pretrained_dir,
-            "sv_path": sv_path,
-            "is_half": str(is_half),
-        }
-        gpu_names = gpu_numbers.split("-")
-        all_parts = len(gpu_names)
-        for i_part in range(all_parts):
-            config.update(
-                {
-                    "i_part": str(i_part),
-                    "all_parts": str(all_parts),
-                    "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                }
-            )
-            os.environ.update(config)
-            cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py' % python_exec
-            print(cmd)
-            p = Popen(cmd, shell=True)
-            ps1b.append(p)
-        yield (
-            process_info(process_name_1b, "running"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-        )
-        for p in ps1b:
-            p.wait()
-        ps1b = []
-        if "Pro" in version:
-            for i_part in range(all_parts):
-                config.update(
-                    {
-                        "i_part": str(i_part),
-                        "all_parts": str(all_parts),
-                        "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                    }
-                )
-                os.environ.update(config)
-                cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-sv.py' % python_exec
-                print(cmd)
-                p = Popen(cmd, shell=True)
-                ps1b.append(p)
-            for p in ps1b:
-                p.wait()
-            ps1b = []
-        yield (
-            process_info(process_name_1b, "finish"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-        )
-    else:
+
+    if ps1b != []:
         yield (
             process_info(process_name_1b, "occupy"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
+        return
+
+    opt_dir = Path(exp_root) / exp_name
+    base_config = {
+        "inp_text": inp_text,
+        "inp_wav_dir": inp_wav_dir,
+        "exp_name": exp_name,
+        "opt_dir": str(opt_dir),
+        "cnhubert_base_dir": ssl_pretrained_dir,
+        "sv_path": sv_path,
+        "is_half": str(is_half),
+    }
+    gpu_names = gpu_numbers.split("-")
+    all_parts = len(gpu_names)
+
+    try:
+        for i_part in range(all_parts):
+            child_env = os.environ.copy()
+            child_env.update(
+                {
+                    **base_config,
+                    "i_part": str(i_part),
+                    "all_parts": str(all_parts),
+                    "_CUDA_VISIBLE_DEVICES": str(
+                        fix_gpu_number(gpu_names[i_part])
+                    ),
+                }
+            )
+            cmd = [
+                python_exec,
+                "-s",
+                "GPT_SoVITS/prepare_datasets/"
+                "2-get-hubert-wav32k.py",
+            ]
+            print("[1B]", " ".join(repr(item) for item in cmd))
+            ps1b.append(
+                Popen(
+                    cmd,
+                    cwd=now_dir,
+                    env=child_env,
+                )
+            )
+    except OSError as exc:
+        for process in ps1b:
+            if process.poll() is None:
+                kill_process(process.pid, process_name_1b)
+        ps1b = []
+        yield (
+            process_info(process_name_1b, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    yield (
+        process_info(process_name_1b, "running"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
+
+    return_codes = [process.wait() for process in ps1b]
+    ps1b = []
+
+    if any(code != 0 for code in return_codes):
+        yield (
+            process_info(process_name_1b, "failed")
+            + f" (exit codes: {return_codes})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    if "Pro" in version:
+        try:
+            for i_part in range(all_parts):
+                child_env = os.environ.copy()
+                child_env.update(
+                    {
+                        **base_config,
+                        "i_part": str(i_part),
+                        "all_parts": str(all_parts),
+                        "_CUDA_VISIBLE_DEVICES": str(
+                            fix_gpu_number(gpu_names[i_part])
+                        ),
+                    }
+                )
+                cmd = [
+                    python_exec,
+                    "-s",
+                    "GPT_SoVITS/prepare_datasets/2-get-sv.py",
+                ]
+                print("[1B-SV]", " ".join(repr(item) for item in cmd))
+                ps1b.append(
+                    Popen(
+                        cmd,
+                        cwd=now_dir,
+                        env=child_env,
+                    )
+                )
+        except OSError as exc:
+            for process in ps1b:
+                if process.poll() is None:
+                    kill_process(process.pid, process_name_1b)
+            ps1b = []
+            yield (
+                process_info(process_name_1b, "failed") + f": {exc}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
+
+        sv_return_codes = [process.wait() for process in ps1b]
+        ps1b = []
+
+        if any(code != 0 for code in sv_return_codes):
+            yield (
+                process_info(process_name_1b, "failed")
+                + f" (SV exit codes: {sv_return_codes})",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
+
+    hubert_dir = opt_dir / "4-cnhubert"
+    wav32k_dir = opt_dir / "5-wav32k"
+    if (
+        not hubert_dir.is_dir()
+        or not wav32k_dir.is_dir()
+        or not any(hubert_dir.iterdir())
+        or not any(wav32k_dir.iterdir())
+    ):
+        yield (
+            process_info(process_name_1b, "failed")
+            + ": expected feature outputs are missing or empty",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    yield (
+        process_info(process_name_1b, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
 
 
 def close1b():
@@ -2129,70 +2242,186 @@ ps1c = []
 process_name_1c = i18n("语义Token提取")
 
 
-def open1c(version, inp_text, inp_wav_dir, exp_name, gpu_numbers, pretrained_s2G_path):
+def open1c(
+    version,
+    inp_text,
+    inp_wav_dir,
+    exp_name,
+    gpu_numbers,
+    pretrained_s2G_path,
+):
     global ps1c
+
     inp_text = my_utils.clean_path(inp_text)
-    if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
-        check_details([inp_text, inp_wav_dir], is_dataset_processing=True)
+    inp_wav_dir = my_utils.clean_path(inp_wav_dir)
+
+    if not check_for_existance(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    ):
+        yield (
+            process_info(process_name_1c, "failed"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    check_details(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    )
+
+    pretrained_s2G_path = _clean_user_path(pretrained_s2G_path)
+    s2_path = _resolve_repo_path(pretrained_s2G_path)
+    if s2_path is None or not s2_path.is_file():
+        yield (
+            process_info(process_name_1c, "failed")
+            + f": S2 checkpoint not found: {s2_path or '<empty>'}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
     exp_name = exp_name.rstrip(" ")
-    if ps1c == []:
-        opt_dir = "%s/%s" % (exp_root, exp_name)
-        config_file = (
-            "GPT_SoVITS/configs/s2.json"
-            if version not in {"v2Pro", "v2ProPlus"}
-            else f"GPT_SoVITS/configs/s2{version}.json"
-        )
-        config = {
-            "inp_text": inp_text,
-            "exp_name": exp_name,
-            "opt_dir": opt_dir,
-            "pretrained_s2G": pretrained_s2G_path,
-            "s2config_path": config_file,
-            "is_half": str(is_half),
-        }
-        gpu_names = gpu_numbers.split("-")
-        all_parts = len(gpu_names)
-        for i_part in range(all_parts):
-            config.update(
-                {
-                    "i_part": str(i_part),
-                    "all_parts": str(all_parts),
-                    "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                }
-            )
-            os.environ.update(config)
-            cmd = '"%s" -s GPT_SoVITS/prepare_datasets/3-get-semantic.py' % python_exec
-            print(cmd)
-            p = Popen(cmd, shell=True)
-            ps1c.append(p)
-        yield (
-            process_info(process_name_1c, "running"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-        )
-        for p in ps1c:
-            p.wait()
-        opt = ["item_name\tsemantic_audio"]
-        path_semantic = "%s/6-name2semantic.tsv" % opt_dir
-        for i_part in range(all_parts):
-            semantic_path = "%s/6-name2semantic-%s.tsv" % (opt_dir, i_part)
-            with open(semantic_path, "r", encoding="utf8") as f:
-                opt += f.read().strip("\n").split("\n")
-            os.remove(semantic_path)
-        with open(path_semantic, "w", encoding="utf8") as f:
-            f.write("\n".join(opt) + "\n")
-        ps1c = []
-        yield (
-            process_info(process_name_1c, "finish"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-        )
-    else:
+
+    if ps1c != []:
         yield (
             process_info(process_name_1c, "occupy"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
+        return
+
+    opt_dir = Path(exp_root) / exp_name
+    config_file = (
+        "GPT_SoVITS/configs/s2.json"
+        if version not in {"v2Pro", "v2ProPlus"}
+        else f"GPT_SoVITS/configs/s2{version}.json"
+    )
+    config_path = _resolve_repo_path(config_file)
+    if config_path is None or not config_path.is_file():
+        yield (
+            process_info(process_name_1c, "failed")
+            + f": config not found: {config_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    base_config = {
+        "inp_text": inp_text,
+        "exp_name": exp_name,
+        "opt_dir": str(opt_dir),
+        "pretrained_s2G": str(s2_path),
+        "s2config_path": str(config_path),
+        "is_half": str(is_half),
+    }
+    gpu_names = gpu_numbers.split("-")
+    all_parts = len(gpu_names)
+
+    try:
+        for i_part in range(all_parts):
+            child_env = os.environ.copy()
+            child_env.update(
+                {
+                    **base_config,
+                    "i_part": str(i_part),
+                    "all_parts": str(all_parts),
+                    "_CUDA_VISIBLE_DEVICES": str(
+                        fix_gpu_number(gpu_names[i_part])
+                    ),
+                }
+            )
+            cmd = [
+                python_exec,
+                "-s",
+                "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
+            ]
+            print("[1C]", " ".join(repr(item) for item in cmd))
+            ps1c.append(
+                Popen(
+                    cmd,
+                    cwd=now_dir,
+                    env=child_env,
+                )
+            )
+    except OSError as exc:
+        for process in ps1c:
+            if process.poll() is None:
+                kill_process(process.pid, process_name_1c)
+        ps1c = []
+        yield (
+            process_info(process_name_1c, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    yield (
+        process_info(process_name_1c, "running"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
+
+    return_codes = [process.wait() for process in ps1c]
+    ps1c = []
+
+    if any(code != 0 for code in return_codes):
+        yield (
+            process_info(process_name_1c, "failed")
+            + f" (exit codes: {return_codes})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    opt = ["item_name\tsemantic_audio"]
+    path_semantic = opt_dir / "6-name2semantic.tsv"
+
+    try:
+        for i_part in range(all_parts):
+            semantic_path = (
+                opt_dir / f"6-name2semantic-{i_part}.tsv"
+            )
+            if not semantic_path.is_file():
+                raise FileNotFoundError(
+                    f"1C output missing: {semantic_path}"
+                )
+            with semantic_path.open("r", encoding="utf8") as handle:
+                opt += handle.read().strip("
+").split("
+")
+            semantic_path.unlink()
+
+        path_semantic.parent.mkdir(parents=True, exist_ok=True)
+        path_semantic.write_text(
+            "
+".join(opt) + "
+",
+            encoding="utf8",
+        )
+    except OSError as exc:
+        yield (
+            process_info(process_name_1c, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    if len(opt) <= 1:
+        yield (
+            process_info(process_name_1c, "failed")
+            + ": semantic output is empty",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    yield (
+        process_info(process_name_1c, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
 
 
 def close1c():
