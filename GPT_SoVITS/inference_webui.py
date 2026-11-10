@@ -1721,8 +1721,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 label=i18n("目标情感"),
                 choices=initial_emotion_choices,
                 value=initial_emotion_value,
-                interactive=True,
-                scale=5,
+                interactive=False,
+                visible=False,
             )
             emotion_strength_slider = gr.Slider(
                 minimum=0.0,
@@ -1730,13 +1730,18 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 step=0.05,
                 value=1.0,
                 label=i18n("情感控制强度"),
-                interactive=True,
-                scale=5,
+                interactive=False,
+                visible=False,
             )
         emotion_status = gr.Textbox(
             label=i18n("情感控制器状态"),
             value=initial_emotion_status,
             interactive=False,
+        )
+        gr.Markdown(
+            i18n(
+                "情感标签示例：[happy] 你好。 [sad:0.5] 今天有点遗憾。"
+            )
         )
         emotion_load_button.click(
             load_emotion_controller_webui,
@@ -1821,7 +1826,16 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
         gr.Markdown(html_center(i18n("*请填写需要合成的目标文本和语种模式"), "h3"))
         with gr.Row():
             with gr.Column(scale=13):
-                text = gr.Textbox(label=i18n("需要合成的文本"), value="", lines=26, max_lines=26)
+                text = gr.Textbox(
+                    label=i18n("需要合成的文本（支持情感标签）"),
+                    value="",
+                    placeholder=(
+                        "[happy] 오늘은 정말 좋은 날이야.\n"
+                        "[sad:0.5] 그래도 조금 아쉽네."
+                    ),
+                    lines=26,
+                    max_lines=26,
+                )
             with gr.Column(scale=7):
                 text_language = gr.Dropdown(
                     label=i18n("需要合成的语种") + i18n(".限制范围越小判别效果越好。"),
@@ -1899,7 +1913,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             output = gr.Audio(label=i18n("输出的语音"), scale=14)
 
         inference_button.click(
-            get_tts_wav,
+            get_tts_wav_with_emotion_tags,
             [
                 inp_ref,
                 prompt_text,
