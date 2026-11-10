@@ -1,4 +1,4 @@
-name: Python syntax check
+name: Python compatibility check
 
 on:
   pull_request:
@@ -12,15 +12,20 @@ permissions:
 jobs:
   py_compile:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Compile touched Python entry points
+          python-version: ${{ matrix.python-version }}
+      - name: Compile Python entry points
         run: |
           python -m py_compile \
             webui.py \
+            tools/colab_fast_setup.py \
             tools/asr/config.py \
             tools/asr/fasterwhisper_asr.py \
             tools/asr/funasr_asr.py \
@@ -31,4 +36,25 @@ jobs:
             tools/train_emotion_controller.py \
             GPT_SoVITS/inference_webui.py \
             GPT_SoVITS/prepare_datasets/1-get-text.py \
-            GPT_SoVITS/prepare_datasets/3-get-semantic.py
+            GPT_SoVITS/prepare_datasets/3-get-semantic.py \
+            GPT_SoVITS/text/chinese.py \
+            GPT_SoVITS/text/chinese2.py \
+            GPT_SoVITS/text/korean.py
+
+  dependency_resolve_314:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install uv
+        run: python -m pip install -q uv
+      - name: Resolve Python 3.14 dependencies
+        run: |
+          uv pip compile \
+            --python-version 3.14 \
+            requirements.txt \
+            --output-file /tmp/requirements-314.txt
+          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|jieba-pyfast|pydantic|torchmetrics)==' \
+            /tmp/requirements-314.txt || true
