@@ -2214,17 +2214,13 @@ def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
                     f"1A output missing: {txt_path}"
                 )
             with txt_path.open("r", encoding="utf8") as handle:
-                opt += handle.read().strip("
-").split("
-")
+                opt += handle.read().strip("\n").split("\n")
             txt_path.unlink()
 
         path_text = Path(opt_dir) / "2-name2text.txt"
         path_text.parent.mkdir(parents=True, exist_ok=True)
         path_text.write_text(
-            "
-".join(opt) + "
-",
+            "\n".join(opt) + "\n",
             encoding="utf8",
         )
     except OSError as exc:
@@ -2619,16 +2615,12 @@ def open1c(
                     f"1C output missing: {semantic_path}"
                 )
             with semantic_path.open("r", encoding="utf8") as handle:
-                opt += handle.read().strip("
-").split("
-")
+                opt += handle.read().strip("\n").split("\n")
             semantic_path.unlink()
 
         path_semantic.parent.mkdir(parents=True, exist_ok=True)
         path_semantic.write_text(
-            "
-".join(opt) + "
-",
+            "\n".join(opt) + "\n",
             encoding="utf8",
         )
     except OSError as exc:
