@@ -24,6 +24,9 @@ torch>=2.10; python_version >= "3.14"
 torchaudio; python_version < "3.14"
 torchaudio>=2.10; python_version >= "3.14"
 modelscope
+# Hugging Face Xet is the preferred Colab download path for large model files.
+huggingface_hub>=0.32,<1
+hf_xet>=1.7
 sentencepiece
 transformers>=4.51,<5
 peft<0.18.0
