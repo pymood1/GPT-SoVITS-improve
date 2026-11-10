@@ -1421,6 +1421,127 @@ def get_tts_wav(
     yield opt_sr, (audio_opt * 32767).astype(np.int16)
 
 
+
+def get_tts_wav_with_emotion_tags(
+    ref_wav_path,
+    prompt_text,
+    prompt_language,
+    text,
+    text_language,
+    how_to_cut=i18n("不切"),
+    top_k=20,
+    top_p=0.6,
+    temperature=0.6,
+    ref_free=False,
+    speed=1,
+    if_freeze=False,
+    inp_refs=None,
+    sample_steps=None,
+    if_sr=False,
+    pause_second=0.3,
+    use_cuda_graph=True,
+    use_flash_attention=True,
+    cfg_rate=None,
+    _legacy_emotion_id=None,
+    _legacy_emotion_strength=1.0,
+):
+    segments = parse_emotion_tagged_text(text)
+    has_tags = bool(
+        EMOTION_TAG_PATTERN.search(str(text or ""))
+    )
+
+    if not has_tags:
+        yield from get_tts_wav(
+            ref_wav_path,
+            prompt_text,
+            prompt_language,
+            text,
+            text_language,
+            how_to_cut,
+            top_k,
+            top_p,
+            temperature,
+            ref_free,
+            speed,
+            if_freeze,
+            inp_refs,
+            sample_steps,
+            if_sr,
+            pause_second,
+            use_cuda_graph,
+            use_flash_attention,
+            cfg_rate,
+            None,
+            0.0,
+        )
+        return
+
+    if if_freeze:
+        gr.Warning(
+            i18n(
+                "情感标签启用时自动关闭语义缓存冻结，避免跨情感复用 token"
+            )
+        )
+        if_freeze = False
+
+    combined_audio = []
+    output_sr = None
+
+    for segment_text, emotion_id, emotion_strength in segments:
+        result = None
+
+        for result in get_tts_wav(
+            ref_wav_path,
+            prompt_text,
+            prompt_language,
+            segment_text,
+            text_language,
+            how_to_cut,
+            top_k,
+            top_p,
+            temperature,
+            ref_free,
+            speed,
+            if_freeze,
+            inp_refs,
+            sample_steps,
+            if_sr,
+            pause_second,
+            use_cuda_graph,
+            use_flash_attention,
+            cfg_rate,
+            emotion_id,
+            emotion_strength,
+        ):
+            pass
+
+        if result is None:
+            raise gr.Error(
+                i18n("情感标签分段合成没有返回音频")
+            )
+
+        segment_sr, segment_audio = result
+
+        if output_sr is None:
+            output_sr = segment_sr
+        elif segment_sr != output_sr:
+            raise gr.Error(
+                i18n("情感标签分段的采样率不一致")
+            )
+
+        combined_audio.append(
+            np.asarray(segment_audio, dtype=np.int16)
+        )
+
+    if not combined_audio or output_sr is None:
+        raise gr.Error(
+            i18n("没有可输出的情感标签音频")
+        )
+
+    yield output_sr, np.concatenate(combined_audio)
+
+
+
 def split(todo_text):
     todo_text = todo_text.replace("……", "。").replace("——", "，")
     if todo_text[-1] not in splits:
