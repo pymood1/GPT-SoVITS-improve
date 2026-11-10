@@ -442,13 +442,27 @@ prompt_0001
   sad take
 ~~~
 
-The canonical dataset builder does not infer emotion pairs automatically.
+The canonical dataset builder still does not invent pair metadata by itself.
+Automatic discovery is implemented as a separate preprocessing helper so the
+canonical ingest remains deterministic.
 
-Primary file:
+Primary files:
 
+tools/auto_emotion_sidecar.py
 tools/emotion_dataset_builder.py
 
-A sidecar JSONL is required for a fresh emotion-pair dataset in the WebUI flow.
+The 1A WebUI can now generate a sidecar JSONL from the user's existing
+GPT-SoVITS .list + audio data. The first implementation is deliberately narrow:
+
+- utterance emotion is predicted with FunASR emotion2vec+ base by default;
+- only neutral / happy / sad / angry are accepted for controller training;
+- predictions below the confidence threshold remain unpaired;
+- automatic groups require the same speaker, language, and exact normalized text;
+- pair_source is recorded as auto_exact_text;
+- a 3-10 second reference is reserved outside usable pair samples;
+- prediction results are cached so interrupted or repeated runs can reuse them.
+
+Manual sidecars remain supported and can replace or edit automatic output.
 
 Important fields:
 
@@ -467,8 +481,9 @@ pair_group_id must refer to one speaker, one language, and exact canonical text.
 
 pair_source must be explicit when pair_group_id is present.
 
-Supported pair sources currently include explicit/manual provenance rather than
-fuzzy automatic pairing.
+Supported pair sources include recording_manifest, manual, and
+auto_exact_text. Fuzzy/semantic text matching is still intentionally not
+implemented.
 
 The same audio bytes with conflicting metadata are rejected.
 
@@ -908,19 +923,19 @@ Priority A: runtime correctness
 
 Priority B: dataset usability
 
-The current sidecar requirement is correct but not beginner-friendly.
+The first automatic sidecar builder is now implemented in 1A. It creates
+conservative exact-text pairs from user data and keeps explicit provenance.
 
-Consider a small dataset-preparation UI that helps users assign:
+Next improvements should be driven by real runs:
 
-- speaker;
-- emotion;
-- pair group;
-- split;
-- pair source.
+- show a compact preview of predicted emotion / confidence / pair group;
+- allow users to exclude or edit questionable rows before training;
+- measure whether the default confidence threshold is appropriate;
+- add better handling for datasets with no repeated exact transcript;
+- only then consider fuzzy or semantic text matching.
 
-Do not auto-infer pairs silently.
-
-A CSV/JSONL preview with validation before training would be useful.
+Do not hide automatic provenance. Auto-generated pairs must remain visibly
+distinguishable from manual or recording-manifest pairs.
 
 Priority C: training results
 
@@ -966,6 +981,7 @@ tools/colab_fast_setup.py
 webui.py
 config.py
 tools/emotion_training_pipeline.py
+tools/auto_emotion_sidecar.py
 tools/emotion_dataset_builder.py
 tools/run_emotion_v5_preprocess.py
 tools/export_emotion_reference_prompts.py
