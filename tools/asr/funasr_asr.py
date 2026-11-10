@@ -230,6 +230,13 @@ def execute_asr(
             result = model.generate(input=file_path)
             text = result[0]["text"]
 
+            if backend == "sensevoice":
+                from funasr.utils.postprocess_utils import (
+                    rich_transcription_postprocess,
+                )
+
+                text = rich_transcription_postprocess(text)
+
             output.append(
                 f"{file_path}|{output_file_name}|"
                 f"{language.upper()}|{text}"
