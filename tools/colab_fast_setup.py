@@ -12,27 +12,43 @@ DL_DIR = Path("/content/gpt_sovits_downloads")
 DL_DIR.mkdir(parents=True, exist_ok=True)
 
 DOWNLOAD_UVR5 = False
-HF_BASE = "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main"
-ASSETS = {
-    "pretrained_models.zip": f"{HF_BASE}/pretrained_models.zip",
-    "G2PWModel.zip": f"{HF_BASE}/G2PWModel.zip",
-    "nltk_data.zip": f"{HF_BASE}/nltk_data.zip",
-    "open_jtalk_dic_utf_8-1.11.tar.gz": f"{HF_BASE}/open_jtalk_dic_utf_8-1.11.tar.gz",
+HF_HOME = Path("/content/huggingface")
+HF_HOME.mkdir(parents=True, exist_ok=True)
+EMOTION_MODEL_DIR = (
+    REPO_DIR / "runtime" / "models" / "emotion2vec_plus_base"
+)
 
-    # V5 is newer than the legacy pretrained_models.zip bundle.
-    # Download the V5dev base model and V5 vocoder directly from the official
-    # GPT-SoVITS model repository while the large legacy ZIP is downloading.
+HF_ASSETS = {
+    "pretrained_models.zip": (
+        "XXXXRT/GPT-SoVITS-Pretrained",
+        "pretrained_models.zip",
+    ),
+    "G2PWModel.zip": (
+        "XXXXRT/GPT-SoVITS-Pretrained",
+        "G2PWModel.zip",
+    ),
+    "nltk_data.zip": (
+        "XXXXRT/GPT-SoVITS-Pretrained",
+        "nltk_data.zip",
+    ),
+    "open_jtalk_dic_utf_8-1.11.tar.gz": (
+        "XXXXRT/GPT-SoVITS-Pretrained",
+        "open_jtalk_dic_utf_8-1.11.tar.gz",
+    ),
     "s2Gv5dev.pth": (
-        "https://huggingface.co/lj1995/GPT-SoVITS/"
-        "resolve/main/gsv-v5-pretrained/s2Gv5dev.pth"
+        "lj1995/GPT-SoVITS",
+        "gsv-v5-pretrained/s2Gv5dev.pth",
     ),
     "v5-vocoder.pth": (
-        "https://huggingface.co/lj1995/GPT-SoVITS/"
-        "resolve/main/gsv-v5-pretrained/vocoder.pth"
+        "lj1995/GPT-SoVITS",
+        "gsv-v5-pretrained/vocoder.pth",
     ),
 }
 if DOWNLOAD_UVR5:
-    ASSETS["uvr5_weights.zip"] = f"{HF_BASE}/uvr5_weights.zip"
+    HF_ASSETS["uvr5_weights.zip"] = (
+        "XXXXRT/GPT-SoVITS-Pretrained",
+        "uvr5_weights.zip",
+    )
 
 
 def elapsed(label, start):
@@ -112,9 +128,35 @@ uv_env.update({
     "UV_CONCURRENT_BUILDS": "4",
     "UV_CONCURRENT_INSTALLS": "8",
     "UV_HTTP_TIMEOUT": "120",
+    "HF_HOME": str(HF_HOME),
+    "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+    "HF_HUB_DISABLE_UPDATE_CHECK": "1",
+    "HF_HUB_DOWNLOAD_TIMEOUT": "120",
+    "HF_XET_HIGH_PERFORMANCE": "1",
 })
+os.environ.update({
+    key: value
+    for key, value in uv_env.items()
+    if key.startswith("HF_")
+})
+
 run([UV, "--version"], env=uv_env)
-t = elapsed("uv bootstrap", t)
+print("[setup] enabling Hugging Face Xet transport...", flush=True)
+run(
+    [
+        UV,
+        "pip",
+        "install",
+        "--system",
+        "--quiet",
+        "huggingface_hub>=0.32,<1",
+        "hf_xet>=1.7",
+    ],
+    env=uv_env,
+)
+from huggingface_hub import hf_hub_download, snapshot_download
+
+t = elapsed("uv + HF Xet bootstrap", t)
 
 
 # 3. Keep the COMPLETE repository requirements.
@@ -139,15 +181,15 @@ else:
 print("No GPT-SoVITS dependency is intentionally excluded.")
 
 
-# 4. Download all original installer assets while uv installs all Python deps.
-def download_one(name, url):
+# 4. Download installer/model assets while uv installs Python deps.
+#    HF progress bars are disabled because Colab stores every redraw in the
+#    cell output and eventually becomes sluggish. We print only phase changes.
+def _fallback_curl(name, repo_id, filename):
     dest = DL_DIR / name
     part = DL_DIR / f"{name}.part"
-    if dest.exists() and dest.stat().st_size > 0:
-        print(f"[download] reuse {name} ({dest.stat().st_size / 1024**2:.1f} MiB)")
-        return dest
-
-    print(f"[download] start {name}")
+    url = (
+        f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    )
     cmd = [
         "curl", "-L", "--fail", "--silent", "--show-error",
         "--retry", "8", "--retry-delay", "2",
@@ -157,42 +199,183 @@ def download_one(name, url):
     ]
     subprocess.run(cmd, check=True)
     part.replace(dest)
-    print(f"[download] done  {name} ({dest.stat().st_size / 1024**2:.1f} MiB)")
     return dest
 
 
+def download_one(name, repo_id, filename):
+    dest = DL_DIR / name
+    if dest.exists() and dest.stat().st_size > 0:
+        print(
+            f"[download] reuse {name} "
+            f"({dest.stat().st_size / 1024**2:.1f} MiB)",
+            flush=True,
+        )
+        return dest
+
+    print(f"[download] start {name} (HF Xet)", flush=True)
+    try:
+        downloaded = Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=str(DL_DIR),
+                cache_dir=str(HF_HOME / "hub"),
+            )
+        )
+        if downloaded.resolve() != dest.resolve():
+            if dest.exists() or dest.is_symlink():
+                dest.unlink()
+            try:
+                dest.symlink_to(downloaded)
+            except OSError:
+                shutil.copy2(downloaded, dest)
+    except Exception as exc:
+        print(
+            f"[download] Xet fallback for {name}: "
+            f"{type(exc).__name__}",
+            flush=True,
+        )
+        _fallback_curl(name, repo_id, filename)
+
+    print(
+        f"[download] done  {name} "
+        f"({dest.stat().st_size / 1024**2:.1f} MiB)",
+        flush=True,
+    )
+    return dest
+
+
+def download_emotion_model():
+    marker = EMOTION_MODEL_DIR / "model.pt"
+    if marker.is_file():
+        size = marker.stat().st_size / 1024**3
+        print(
+            f"[download] reuse emotion2vec+ base ({size:.2f} GiB weight)",
+            flush=True,
+        )
+        return EMOTION_MODEL_DIR
+
+    EMOTION_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    print(
+        "[download] start emotion2vec+ base "
+        "(HF Xet, progress hidden to keep Colab responsive)",
+        flush=True,
+    )
+    snapshot_download(
+        repo_id="emotion2vec/emotion2vec_plus_base",
+        local_dir=str(EMOTION_MODEL_DIR),
+        cache_dir=str(HF_HOME / "hub"),
+    )
+    if not marker.is_file():
+        raise FileNotFoundError(
+            f"emotion2vec model weight missing after download: {marker}"
+        )
+    print(
+        f"[download] done  emotion2vec+ base "
+        f"({marker.stat().st_size / 1024**3:.2f} GiB weight)",
+        flush=True,
+    )
+    return EMOTION_MODEL_DIR
+
+
 pip_cmd = [
-    UV, "pip", "install", "--system",
+    UV, "pip", "install", "--system", "--quiet",
     "-r", str(full_req),
     "torchcodec",
 ]
-print("[setup] installing full Python dependencies while downloading assets...", flush=True)
-print("+", " ".join(pip_cmd), flush=True)
-pip_proc = subprocess.Popen(pip_cmd, cwd=str(REPO_DIR), env=uv_env, text=True)
+pip_log_path = Path("/content/gpt_sovits_dependency_install.log")
+print(
+    "[setup] dependencies + model downloads running in parallel...",
+    flush=True,
+)
+print(
+    "[setup] detailed dependency output -> "
+    f"{pip_log_path}",
+    flush=True,
+)
 
-errors = []
-with ThreadPoolExecutor(max_workers=min(6, len(ASSETS))) as pool:
-    futures = {pool.submit(download_one, n, u): n for n, u in ASSETS.items()}
-    for future in as_completed(futures):
-        name = futures[future]
-        try:
-            future.result()
-        except Exception as exc:
-            errors.append((name, repr(exc)))
+with pip_log_path.open("w", encoding="utf-8") as pip_log:
+    pip_proc = subprocess.Popen(
+        pip_cmd,
+        cwd=str(REPO_DIR),
+        env=uv_env,
+        text=True,
+        stdout=pip_log,
+        stderr=subprocess.STDOUT,
+    )
 
-rc = pip_proc.wait()
+    errors = []
+    emotion_error = None
+    jobs = [
+        (name, repo_id, filename)
+        for name, (repo_id, filename) in HF_ASSETS.items()
+    ]
+
+    # Xet already performs internal adaptive concurrency. Keep outer
+    # concurrency low so multiple large transfers do not fight each other.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {
+            pool.submit(download_one, name, repo_id, filename): name
+            for name, repo_id, filename in jobs
+        }
+        emotion_future = pool.submit(download_emotion_model)
+
+        for future in as_completed(list(futures) + [emotion_future]):
+            if future is emotion_future:
+                try:
+                    future.result()
+                except Exception as exc:
+                    emotion_error = repr(exc)
+                continue
+
+            name = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                errors.append((name, repr(exc)))
+
+    rc = pip_proc.wait()
+
 if rc:
+    tail = pip_log_path.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines()[-80:]
+    print("\n".join(tail), file=sys.stderr)
     raise subprocess.CalledProcessError(rc, pip_cmd)
 
-# Same behavior as upstream install.sh for faster-whisper.
-run([
-    UV, "pip", "install", "--system",
-    "-r", str(repo_extra), "--no-deps",
-], cwd=REPO_DIR, env=uv_env)
+print("[deps] full Python dependency install complete", flush=True)
+
+# Same behavior as upstream install.sh for faster-whisper, but keep normal
+# successful output out of the Colab cell.
+extra = subprocess.run(
+    [
+        UV, "pip", "install", "--system", "--quiet",
+        "-r", str(repo_extra), "--no-deps",
+    ],
+    cwd=str(REPO_DIR),
+    env=uv_env,
+    text=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+)
+if extra.returncode:
+    print(extra.stdout, file=sys.stderr)
+    raise subprocess.CalledProcessError(extra.returncode, extra.args)
 
 if errors:
-    raise RuntimeError("Asset download failed:\n" + "\n".join(f"{n}: {e}" for n, e in errors))
-t = elapsed("full dependencies + parallel downloads", t)
+    raise RuntimeError(
+        "Asset download failed:\n"
+        + "\n".join(f"{n}: {e}" for n, e in errors)
+    )
+if emotion_error:
+    print(
+        "[warn] emotion2vec prefetch failed; automatic labeling may "
+        "download it later:\n" + emotion_error,
+        file=sys.stderr,
+        flush=True,
+    )
+
+t = elapsed("full dependencies + Xet downloads", t)
 
 
 # 5. Extract independent archives in parallel.
@@ -333,6 +516,8 @@ mods = [
     ("transformers", "Transformers"),
     ("pytorch_lightning", "PyTorch Lightning"),
     ("pyopenjtalk", "OpenJTalk"),
+    ("huggingface_hub", "Hugging Face Hub"),
+    ("hf_xet", "HF Xet"),
 ]
 failed = []
 for module_name, label in mods:
@@ -384,6 +569,19 @@ needed = [
 missing = [str(p) for p in needed if not p.exists()]
 if missing:
     raise FileNotFoundError("V5dev assets missing:\n" + "\n".join(missing))
+
+emotion_weight = EMOTION_MODEL_DIR / "model.pt"
+if emotion_weight.is_file():
+    print(
+        "[OK] emotion2vec local model:",
+        emotion_weight,
+        f"({emotion_weight.stat().st_size / 1024**3:.2f} GiB)",
+    )
+else:
+    print(
+        "[warn] emotion2vec local model is not prefetched; "
+        "automatic emotion labeling will use its hub fallback."
+    )
 
 smoke = r"""
 import sys
