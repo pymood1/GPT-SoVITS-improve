@@ -40,10 +40,31 @@ FUN_ASR_MLT_NANO_MODEL_SOURCES = (
 )
 
 
+FUN_ASR_LANGUAGE_NAMES = {
+    "zh": "中文",
+    "en": "英文",
+    "yue": "粤语",
+    "ja": "日文",
+    "ko": "韩文",
+}
+
+
 def only_asr(input_file, language, backend="fun-asr-nano"):
     try:
         model = create_model(language, backend=backend)
-        text = model.generate(input=input_file)[0]["text"]
+        generate_kwargs = {"input": input_file}
+
+        if backend in {"fun-asr-nano", "fun-asr-mlt-nano"}:
+            generate_kwargs["language"] = FUN_ASR_LANGUAGE_NAMES.get(
+                language,
+                language,
+            )
+            generate_kwargs["itn"] = True
+        elif backend == "sensevoice":
+            generate_kwargs["language"] = language
+            generate_kwargs["use_itn"] = True
+
+        text = model.generate(**generate_kwargs)[0]["text"]
     except Exception:
         text = ""
         print(traceback.format_exc())
@@ -227,7 +248,19 @@ def execute_asr(
             if not os.path.isfile(file_path):
                 continue
 
-            result = model.generate(input=file_path)
+            generate_kwargs = {"input": file_path}
+
+            if backend in {"fun-asr-nano", "fun-asr-mlt-nano"}:
+                generate_kwargs["language"] = FUN_ASR_LANGUAGE_NAMES.get(
+                    language,
+                    language,
+                )
+                generate_kwargs["itn"] = True
+            elif backend == "sensevoice":
+                generate_kwargs["language"] = language
+                generate_kwargs["use_itn"] = True
+
+            result = model.generate(**generate_kwargs)
             text = result[0]["text"]
 
             if backend == "sensevoice":
