@@ -1659,7 +1659,8 @@ def close_asr():
 
     if p_asr is not None:
         asr_cancel_requested = True
-        kill_process(p_asr.pid, process_name_asr)
+        if p_asr.poll() is None:
+            kill_process(p_asr.pid, process_name_asr)
         p_asr = None
 
     return (
@@ -2601,8 +2602,9 @@ def close1a():
     if ps1a != []:
         for p1a in ps1a:
             try:
-                kill_process(p1a.pid, process_name_1a)
-            except:
+                if p1a.poll() is None:
+                    kill_process(p1a.pid, process_name_1a)
+            except Exception:
                 traceback.print_exc()
         ps1a = []
     return (
@@ -2827,8 +2829,9 @@ def close1b():
     if ps1b != []:
         for p1b in ps1b:
             try:
-                kill_process(p1b.pid, process_name_1b)
-            except:
+                if p1b.poll() is None:
+                    kill_process(p1b.pid, process_name_1b)
+            except Exception:
                 traceback.print_exc()
         ps1b = []
     return (
@@ -3039,8 +3042,9 @@ def close1c():
     if ps1c != []:
         for p1c in ps1c:
             try:
-                kill_process(p1c.pid, process_name_1c)
-            except:
+                if p1c.poll() is None:
+                    kill_process(p1c.pid, process_name_1c)
+            except Exception:
                 traceback.print_exc()
         ps1c = []
     return (
@@ -3379,8 +3383,9 @@ def close1abc():
     if ps1abc != []:
         for p1abc in ps1abc:
             try:
-                kill_process(p1abc.pid, process_name_1abc)
-            except:
+                if p1abc.poll() is None:
+                    kill_process(p1abc.pid, process_name_1abc)
+            except Exception:
                 traceback.print_exc()
         ps1abc = []
     return (
