@@ -1,0 +1,54 @@
+name: Tone sandhi backend regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  tone_sandhi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install version-appropriate segmentation dependencies
+        run: |
+          python -m pip install \
+            pypinyin \
+            "setuptools<81; python_version < '3.13'" \
+            "jieba_fast; python_version < '3.13'" \
+            "jieba; python_version < '3.13'" \
+            "jieba-py>=0.46.12; python_version >= '3.13'"
+      - name: Exercise tone sandhi with and without the fast backend
+        run: python -m unittest discover -s tests -p test_tone_sandhi_backend.py -v
+
+  korean_windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Korean frontend dependencies
+        run: python -m pip install "mecab-ko>=1.0.3" g2pk2 ko_pron jamo nltk
+      - name: Import and exercise Korean frontend
+        env:
+          PYTHONPATH: GPT_SoVITS
+        run: |
+          python -c "from text.korean import g2p; assert g2p('안녕하세요'); print('KOREAN_IMPORT_OK')"

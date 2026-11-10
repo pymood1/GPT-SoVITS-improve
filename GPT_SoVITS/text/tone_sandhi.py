@@ -14,7 +14,11 @@
 from typing import List
 from typing import Tuple
 
-import jieba_fast as jieba
+try:
+    import jieba_fast as jieba
+except ImportError:
+    # Python >=3.13 installs jieba-py, which exposes the same jieba API.
+    import jieba
 from pypinyin import lazy_pinyin
 from pypinyin import Style
 

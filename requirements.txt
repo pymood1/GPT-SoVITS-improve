@@ -46,7 +46,7 @@ ko_pron
 opencc>=1.4.2; python_version >= "3.13"
 opencc; python_version < "3.13"
 python_mecab_ko; sys_platform != "win32" and python_version < "3.13"
-mecab-ko>=1.0.3; python_version >= "3.13"
+mecab-ko>=1.0.3; python_version >= "3.13" or sys_platform == "win32"
 fastapi[standard]>=0.115.2,<0.116; python_version < "3.14"
 starlette>=0.40,<0.47; python_version < "3.14"
 fastapi[standard]>=0.115.2,<1; python_version >= "3.14"

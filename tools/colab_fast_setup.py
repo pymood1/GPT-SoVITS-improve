@@ -509,6 +509,8 @@ syntax_targets = [
     REPO_DIR / "GPT_SoVITS/inference_webui.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/1-get-text.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
+    REPO_DIR / "GPT_SoVITS/text/tone_sandhi.py",
+    REPO_DIR / "tools/export_emotion_reference_prompts.py",
     REPO_DIR / "GPT_SoVITS/text/chinese.py",
     REPO_DIR / "GPT_SoVITS/text/chinese2.py",
     REPO_DIR / "GPT_SoVITS/text/korean.py",
@@ -622,11 +624,16 @@ from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from module.models import Generator
 from module.models_v5 import V5_VERSIONS
 from text.cleaner import clean_text
+from text.tone_sandhi import ToneSandhi
+from TTS_infer_pack.TextPreprocessor import TextPreprocessor
 if sys.version_info >= (3, 14):
     from importlib.metadata import version
     from packaging.version import Version
     if Version(version("torch").split("+", 1)[0]) < Version("2.10"):
         raise RuntimeError("Python 3.14 requires PyTorch >=2.10")
+
+sandhi = ToneSandhi()
+assert sandhi.modified_tone("你好", "l", ["i3", "ao3"]) == ["i2", "ao3"]
 
 phones, _, normalized = clean_text("안녕하세요", "ko", "v2")
 if not phones:
