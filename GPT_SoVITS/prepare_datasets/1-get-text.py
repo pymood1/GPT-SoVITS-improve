@@ -153,7 +153,9 @@ if True:
             if language in language_v1_to_language_v2.keys():
                 todo.append([wav_name, text, language_v1_to_language_v2.get(language, language)])
             else:
-                print(f"\033[33m[Waring] The {language = } of {wav_name} is not supported for training.\033[0m")
+                raise ValueError(
+                    f"The {language = } of {wav_name} is not supported for training."
+                )
         except Exception:
             tb = traceback.format_exc()
             failures.append((line, "", tb))
