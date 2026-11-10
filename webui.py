@@ -649,6 +649,17 @@ def run_emotion_training_pipeline(
             controller_output_text
         ).expanduser().resolve()
 
+        if (
+            os.name != "nt"
+            and str(controller_output).startswith("/content/drive/")
+            and not os.path.ismount("/content/drive")
+        ):
+            raise EmotionPipelineError(
+                "Controller 저장 경로가 Google Drive 아래이지만 "
+                "/content/drive가 실제로 mount되어 있지 않습니다. "
+                "Drive를 다시 mount하거나 로컬 저장 경로를 지정하세요."
+            )
+
         metadata_path = dataset_dir / "metadata.jsonl"
         train_list = dataset_dir / "train.list"
         reference_map_path = dataset_dir / "reference_map.json"
