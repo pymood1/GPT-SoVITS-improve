@@ -180,3 +180,11 @@ jobs:
           print("starlette=", starlette.__version__)
           print("pydantic=", pydantic.__version__)
           PY
+
+
+  shell_syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate installers
+        run: bash -n install.sh
