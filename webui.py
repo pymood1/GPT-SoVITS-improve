@@ -316,6 +316,14 @@ def _clean_user_path(value):
     return text.strip(chr(39) + chr(34))
 
 
+def _file_signature(path):
+    path = Path(path)
+    if not path.is_file():
+        return None
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
 def _emotion_status(stage, log_lines, final_message=None):
     tail = list(log_lines)[-28:]
     message = f"### {stage}"
@@ -458,6 +466,8 @@ def run_auto_emotion_sidecar(
                 "감정 신뢰도 기준은 0~1 사이여야 합니다."
             )
 
+        output_before = _file_signature(output_path)
+
         cmd = [
             python_exec,
             "-u",
@@ -492,9 +502,15 @@ def run_auto_emotion_sidecar(
                 {"__type__": "update"},
             )
 
-        if not output_path.is_file():
+        output_after = _file_signature(output_path)
+        if output_after is None:
             raise EmotionPipelineError(
                 f"자동 sidecar 파일이 생성되지 않았습니다: {output_path}"
+            )
+        if output_before is not None and output_after == output_before:
+            raise EmotionPipelineError(
+                "자동 sidecar subprocess가 성공 종료됐지만 "
+                "출력 파일이 갱신되지 않았습니다."
             )
 
         report_path = output_path.with_suffix(
@@ -741,12 +757,17 @@ def run_emotion_training_pipeline(
                     ]
                 )
 
-            for status in _stream_emotion_command(
-                cmd,
-                log_lines,
-                "1/5 감정 데이터셋 생성",
-            ):
-                yield status
+            try:
+                for status in _stream_emotion_command(
+                    cmd,
+                    log_lines,
+                    "1/5 감정 데이터셋 생성",
+                ):
+                    yield status
+            except (EmotionTaskCancelled, EmotionPipelineError):
+                if dataset_dir.is_dir():
+                    shutil.rmtree(dataset_dir, ignore_errors=True)
+                raise
 
         report = validate_emotion_dataset(dataset_dir)
         summary = format_dataset_summary(report)
@@ -878,6 +899,8 @@ def run_emotion_training_pipeline(
             exist_ok=True,
         )
 
+        controller_before = _file_signature(controller_output)
+
         train_cmd = [
             python_exec,
             "-u",
@@ -911,10 +934,19 @@ def run_emotion_training_pipeline(
         ):
             yield status
 
-        if not controller_output.is_file():
+        controller_after = _file_signature(controller_output)
+        if controller_after is None:
             raise EmotionPipelineError(
                 "학습 프로세스는 종료됐지만 controller 파일이 없습니다: "
                 f"{controller_output}"
+            )
+        if (
+            controller_before is not None
+            and controller_after == controller_before
+        ):
+            raise EmotionPipelineError(
+                "controller subprocess가 성공 종료됐지만 "
+                "출력 체크포인트가 갱신되지 않았습니다."
             )
 
         latest_emotion_controller_path = str(controller_output)
@@ -1280,6 +1312,7 @@ def open_asr(
     if not output_root.is_absolute():
         output_root = Path(now_dir) / output_root
     output_file_path = (output_root / f"{input_name}.list").resolve()
+    output_before = _file_signature(output_file_path)
 
     yield (
         process_info(process_name_asr, "opened"),
@@ -1317,7 +1350,16 @@ def open_asr(
         asr_cancel_requested = False
         return
 
-    if return_code != 0 or not output_file_path.is_file():
+    output_after = _file_signature(output_file_path)
+
+    if (
+        return_code != 0
+        or output_after is None
+        or (
+            output_before is not None
+            and output_after == output_before
+        )
+    ):
         yield (
             (
                 process_info(process_name_asr, "failed")
