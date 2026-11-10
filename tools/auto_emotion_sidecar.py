@@ -36,13 +36,23 @@ except ModuleNotFoundError:
     )
 
 
-DEFAULT_MODEL = "iic/emotion2vec_plus_base"
-LOCAL_EMOTION_MODEL = (
-    Path(__file__).resolve().parents[1]
-    / "runtime"
-    / "models"
-    / "emotion2vec_plus_base"
-)
+DEFAULT_MODEL = "iic/emotion2vec_plus_large"
+LOCAL_EMOTION_MODELS = {
+    "iic/emotion2vec_plus_large": (
+        Path(__file__).resolve().parents[1]
+        / "runtime"
+        / "models"
+        / "emotion2vec_plus_large"
+    ),
+    "iic/emotion2vec_plus_base": (
+        Path(__file__).resolve().parents[1]
+        / "runtime"
+        / "models"
+        / "emotion2vec_plus_base"
+    ),
+}
+# Kept as a compatibility alias for callers/tests that import this name.
+LOCAL_EMOTION_MODEL = LOCAL_EMOTION_MODELS[DEFAULT_MODEL]
 DEFAULT_EMOTIONS = (
     "neutral",
     "happy",
@@ -224,18 +234,19 @@ def load_dataset_rows(
 
 
 def resolve_emotion_model(model_name: str) -> str:
-    """Prefer the Colab-prefetched model for the default emotion backend."""
-    if model_name != DEFAULT_MODEL:
+    """Prefer a prefetched local emotion2vec+ model when available."""
+    local_dir = LOCAL_EMOTION_MODELS.get(model_name)
+    if local_dir is None:
         return model_name
 
     required = (
-        LOCAL_EMOTION_MODEL / "model.pt",
-        LOCAL_EMOTION_MODEL / "config.yaml",
-        LOCAL_EMOTION_MODEL / "configuration.json",
-        LOCAL_EMOTION_MODEL / "tokens.txt",
+        local_dir / "model.pt",
+        local_dir / "config.yaml",
+        local_dir / "configuration.json",
+        local_dir / "tokens.txt",
     )
     if all(path.is_file() for path in required):
-        return str(LOCAL_EMOTION_MODEL)
+        return str(local_dir)
 
     return model_name
 
