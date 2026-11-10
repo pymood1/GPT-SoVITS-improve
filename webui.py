@@ -240,6 +240,7 @@ asr_cancel_requested = False
 p_denoise = None
 p_tts_inference = None
 p_emotion_training = None
+emotion_task_cancel_requested = False
 latest_emotion_controller_path = os.environ.get(
     "emotion_controller_path",
     "",
@@ -306,6 +307,10 @@ def process_info(process_name="", indicator=""):
 
 
 
+class EmotionTaskCancelled(EmotionPipelineError):
+    pass
+
+
 def _emotion_status(stage, log_lines, final_message=None):
     tail = list(log_lines)[-28:]
     message = f"### {stage}"
@@ -323,23 +328,33 @@ def _emotion_status(stage, log_lines, final_message=None):
 
 def _stream_emotion_command(cmd, log_lines, stage):
     global p_emotion_training
+    global emotion_task_cancel_requested
 
     child_env = os.environ.copy()
     child_env["PYTHONUNBUFFERED"] = "1"
 
-    command_text = " ".join(str(item) for item in cmd)
+    command_text = " ".join(repr(str(item)) for item in cmd)
     log_lines.append(f"$ {command_text}")
     print(f"[Emotion] {command_text}", flush=True)
 
-    process = Popen(
-        cmd,
-        cwd=now_dir,
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    emotion_task_cancel_requested = False
+
+    try:
+        process = Popen(
+            cmd,
+            cwd=now_dir,
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        p_emotion_training = None
+        raise EmotionPipelineError(
+            f"{stage} failed to start: {exc}"
+        ) from exc
+
     p_emotion_training = process
 
     if process.stdout is not None:
@@ -350,7 +365,13 @@ def _stream_emotion_command(cmd, log_lines, stage):
             yield _emotion_status(stage, log_lines)
 
     return_code = process.wait()
+    cancelled = emotion_task_cancel_requested
+
     p_emotion_training = None
+    emotion_task_cancel_requested = False
+
+    if cancelled:
+        raise EmotionTaskCancelled(stage)
 
     if return_code != 0:
         raise EmotionPipelineError(
@@ -360,11 +381,13 @@ def _stream_emotion_command(cmd, log_lines, stage):
 
 def stop_emotion_training():
     global p_emotion_training
+    global emotion_task_cancel_requested
 
     if p_emotion_training is None:
         return "### 감정 작업\n\n실행 중인 작업이 없습니다."
 
     if p_emotion_training.poll() is None:
+        emotion_task_cancel_requested = True
         kill_process(
             p_emotion_training.pid,
             "Emotion task ",
@@ -496,6 +519,16 @@ def run_auto_emotion_sidecar(
                 "__type__": "update",
                 "value": str(output_path),
             },
+        )
+
+    except EmotionTaskCancelled:
+        p_emotion_training = None
+        yield (
+            _emotion_status(
+                "자동 감정 데이터 생성 중지됨",
+                log_lines,
+            ),
+            {"__type__": "update"},
         )
 
     except (
@@ -889,6 +922,13 @@ def run_emotion_training_pipeline(
                 f"**Controller:** `{controller_output}`\n\n"
                 "이 파일을 1C-추론의 감정 컨트롤러에서 불러오면 됩니다."
             ),
+        )
+
+    except EmotionTaskCancelled:
+        p_emotion_training = None
+        yield _emotion_status(
+            "감정 제어 학습 중지됨",
+            log_lines,
         )
 
     except (
