@@ -2,10 +2,9 @@
 """Build emotion-pair sidecar metadata from an existing GPT-SoVITS dataset.
 
 The tool deliberately starts with the most conservative automatic pairing rule:
-same speaker + same language + exact normalized transcript. It predicts an
-utterance-level emotion for each audio file, keeps only confident supported
-labels for training, reserves a 3-10 second reference per usable speaker, and
-writes explicit pair provenance for the existing emotion dataset builder.
+same speaker + same language + exact normalized transcript. It predicts utterance-level emotion scores, calibrates them against each
+speaker's own median voice profile, and writes conservative per-sample labels
+for controller training. Ambiguous samples become neutral/default.
 """
 
 from __future__ import annotations
@@ -398,35 +397,39 @@ def assign_speaker_relative_labels(
                 emotion: clr[emotion] - baseline[emotion]
                 for emotion in supported
             }
-            candidate_logits = {
+            comparison_logits = {
                 emotion: relative[emotion]
-                for emotion in trainable
+                for emotion in supported
             }
-
-            best_emotion = max(
-                candidate_logits,
-                key=candidate_logits.get,
+            best_overall = max(
+                comparison_logits,
+                key=comparison_logits.get,
+            )
+            best_non_neutral = max(
+                trainable,
+                key=lambda emotion: relative[emotion],
             )
             best_relative = float(
-                candidate_logits[best_emotion]
+                relative[best_non_neutral]
             )
 
-            max_logit = max(candidate_logits.values())
+            max_logit = max(comparison_logits.values())
             exp_values = {
                 emotion: math.exp(value - max_logit)
-                for emotion, value in candidate_logits.items()
+                for emotion, value in comparison_logits.items()
             }
             denom = sum(exp_values.values())
             relative_confidence = (
-                exp_values[best_emotion] / denom
+                exp_values[best_non_neutral] / denom
                 if denom > 0
                 else 0.0
             )
 
             accepted = (
-                best_emotion
+                best_non_neutral
                 if (
-                    best_relative >= min_relative_score
+                    best_overall == best_non_neutral
+                    and best_relative >= min_relative_score
                     and relative_confidence >= min_confidence
                 )
                 else (
@@ -445,191 +448,6 @@ def assign_speaker_relative_labels(
             row["emotion_is_default"] = accepted == "neutral"
 
     return baselines
-
-
-def prepare_pair_candidates(
-    rows: list[dict[str, Any]],
-    allowed_emotions: set[str],
-    min_confidence: float,
-) -> tuple[
-    dict[tuple[str, str, str], list[dict[str, Any]]],
-    set[tuple[str, str, str]],
-]:
-    groups: dict[
-        tuple[str, str, str],
-        list[dict[str, Any]],
-    ] = defaultdict(list)
-
-    for row in rows:
-        predicted = str(
-            row.get("emotion_predicted") or "unknown"
-        )
-        confidence = float(
-            row.get("emotion_predicted_confidence") or 0.0
-        )
-
-        accepted = (
-            predicted
-            if predicted in allowed_emotions
-            and confidence >= min_confidence
-            else None
-        )
-        row["accepted_emotion"] = accepted
-
-        key = (
-            row["speaker"],
-            row["language"],
-            row["canonical_text"],
-        )
-        row["group_key"] = key
-        groups[key].append(row)
-
-    potential: set[tuple[str, str, str]] = set()
-
-    for key, group_rows in groups.items():
-        emotions = {
-            row["accepted_emotion"]
-            for row in group_rows
-            if row["accepted_emotion"]
-        }
-        if len(emotions) >= 2:
-            potential.add(key)
-
-    return groups, potential
-
-
-def reference_rank(
-    row: dict[str, Any],
-    inside_potential_group: bool,
-) -> tuple[int, int, float, float]:
-    emotion = row.get("accepted_emotion")
-    confidence = float(
-        row.get("emotion_predicted_confidence") or 0.0
-    )
-    duration = float(row.get("duration") or 0.0)
-
-    group_penalty = 1 if inside_potential_group else 0
-
-    if emotion == "neutral":
-        emotion_priority = 0
-    elif emotion is None:
-        emotion_priority = 1
-    else:
-        emotion_priority = 2
-
-    return (
-        group_penalty,
-        emotion_priority,
-        abs(duration - 6.0),
-        -confidence,
-    )
-
-
-def group_emotions_after_removal(
-    group_rows: list[dict[str, Any]],
-    removed_index: int | None,
-) -> set[str]:
-    return {
-        row["accepted_emotion"]
-        for row in group_rows
-        if row["accepted_emotion"]
-        and row["index"] != removed_index
-    }
-
-
-def choose_references(
-    rows: list[dict[str, Any]],
-    groups: dict[
-        tuple[str, str, str],
-        list[dict[str, Any]],
-    ],
-    potential_groups: set[tuple[str, str, str]],
-    min_duration: float,
-    max_duration: float,
-) -> tuple[dict[str, int], list[str]]:
-    potential_speakers = {
-        key[0]
-        for key in potential_groups
-    }
-    references: dict[str, int] = {}
-    missing: list[str] = []
-
-    by_speaker: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        by_speaker[row["speaker"]].append(row)
-
-    for speaker in sorted(potential_speakers):
-        options: list[dict[str, Any]] = []
-
-        for row in by_speaker[speaker]:
-            duration = row.get("duration")
-            if (
-                duration is None
-                or duration < min_duration
-                or duration > max_duration
-            ):
-                continue
-
-            key = row["group_key"]
-            if key in potential_groups:
-                remaining = group_emotions_after_removal(
-                    groups[key],
-                    row["index"],
-                )
-                if len(remaining) < 2:
-                    continue
-
-            options.append(row)
-
-        if not options:
-            missing.append(speaker)
-            continue
-
-        options.sort(
-            key=lambda row: reference_rank(
-                row,
-                row["group_key"] in potential_groups,
-            )
-        )
-        references[speaker] = options[0]["index"]
-
-    return references, missing
-
-
-def assign_pairs(
-    groups: dict[
-        tuple[str, str, str],
-        list[dict[str, Any]],
-    ],
-    potential_groups: set[tuple[str, str, str]],
-    references: dict[str, int],
-) -> dict[tuple[str, str, str], str]:
-    assigned: dict[tuple[str, str, str], str] = {}
-
-    for key in sorted(potential_groups):
-        speaker, language, text = key
-        reference_index = references.get(speaker)
-
-        if reference_index is None:
-            continue
-
-        remaining_emotions = group_emotions_after_removal(
-            groups[key],
-            reference_index,
-        )
-
-        if len(remaining_emotions) < 2:
-            continue
-
-        pair_id = "auto_exact_" + stable_hash(
-            "auto_exact_text",
-            speaker,
-            language,
-            text,
-        )[:16]
-        assigned[key] = pair_id
-
-    return assigned
 
 
 def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
@@ -839,7 +657,7 @@ def make_parser() -> argparse.ArgumentParser:
         "--min-confidence",
         type=float,
         default=0.45,
-        help="Minimum top-class probability used as emotion_intended",
+        help="Minimum speaker-relative confidence for a non-neutral label",
     )
     parser.add_argument(
         "--min-relative-score",
