@@ -75,9 +75,10 @@ def audio_duration_seconds(path: Path) -> float | None:
         return None
 
 
-def prediction_cache_key(path: Path) -> str:
+def prediction_cache_key(path: Path, model_name: str) -> str:
     stat = path.stat()
     return stable_hash(
+        model_name,
         str(path),
         str(stat.st_size),
         str(stat.st_mtime_ns),
@@ -245,7 +246,7 @@ def predict_emotions(
 
     for number, row in enumerate(rows, 1):
         audio_path = row["resolved_path"]
-        cache_key = prediction_cache_key(audio_path)
+        cache_key = prediction_cache_key(audio_path, model_name)
         cached = cache.get(cache_key)
 
         if cached is not None:
