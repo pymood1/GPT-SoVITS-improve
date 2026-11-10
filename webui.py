@@ -1599,66 +1599,9 @@ def open1Ba(
     lora_rank,
 ):
     global p_train_SoVITS
-    if p_train_SoVITS == None:
-        exp_name = exp_name.rstrip(" ")
-        config_file = (
-            "GPT_SoVITS/configs/s2.json"
-            if version not in {"v2Pro", "v2ProPlus"}
-            else f"GPT_SoVITS/configs/s2{version}.json"
-        )
-        with open(config_file) as f:
-            data = f.read()
-            data = json.loads(data)
-        s2_dir = "%s/%s" % (exp_root, exp_name)
-        os.makedirs("%s/logs_s2_%s" % (s2_dir, version), exist_ok=True)
-        if check_for_existance([s2_dir], is_train=True):
-            check_details([s2_dir], is_train=True)
-        if is_half == False:
-            data["train"]["fp16_run"] = False
-            batch_size = max(1, batch_size // 2)
-        data["train"]["batch_size"] = batch_size
-        data["train"]["epochs"] = total_epoch
-        data["train"]["text_low_lr_rate"] = text_low_lr_rate
-        data["train"]["pretrained_s2G"] = pretrained_s2G
-        data["train"]["pretrained_s2D"] = pretrained_s2D
-        data["train"]["if_save_latest"] = if_save_latest
-        data["train"]["if_save_every_weights"] = if_save_every_weights
-        data["train"]["save_every_epoch"] = save_every_epoch
-        data["train"]["gpu_numbers"] = gpu_numbers1Ba
-        data["train"]["grad_ckpt"] = if_grad_ckpt
-        data["train"]["lora_rank"] = lora_rank
-        data["model"]["version"] = version
-        data["data"]["exp_dir"] = data["s2_ckpt_dir"] = s2_dir
-        data["save_weight_dir"] = SoVITS_weight_version2root[version]
-        data["name"] = exp_name
-        data["version"] = version
-        tmp_config_path = "%s/tmp_s2.json" % tmp
-        with open(tmp_config_path, "w") as f:
-            f.write(json.dumps(data))
-        if version in ["v1", "v2", "v2Pro", "v2ProPlus"]:
-            cmd = '"%s" -s GPT_SoVITS/s2_train.py --config "%s"' % (python_exec, tmp_config_path)
-        else:
-            cmd = '"%s" -s GPT_SoVITS/s2_train_v3_lora.py --config "%s"' % (python_exec, tmp_config_path)
-        yield (
-            process_info(process_name_sovits, "opened"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-            {"__type__": "update"},
-            {"__type__": "update"},
-        )
-        print(cmd)
-        p_train_SoVITS = Popen(cmd, shell=True)
-        p_train_SoVITS.wait()
-        p_train_SoVITS = None
-        SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
-        yield (
-            process_info(process_name_sovits, "finish"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-            SoVITS_dropdown_update,
-            GPT_dropdown_update,
-        )
-    else:
+    global sovits_train_cancel_requested
+
+    if p_train_SoVITS is not None:
         yield (
             process_info(process_name_sovits, "occupy"),
             {"__type__": "update", "visible": False},
@@ -1666,13 +1609,181 @@ def open1Ba(
             {"__type__": "update"},
             {"__type__": "update"},
         )
+        return
+
+    exp_name = str(exp_name or "").strip()
+    if not exp_name:
+        yield (
+            process_info(process_name_sovits, "failed")
+            + ": experiment name is empty",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    s2_dir = Path(exp_root) / exp_name
+    if not check_for_existance(
+        [str(s2_dir)],
+        is_train=True,
+    ):
+        yield (
+            process_info(process_name_sovits, "failed"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    check_details([str(s2_dir)], is_train=True)
+
+    config_file = (
+        "GPT_SoVITS/configs/s2.json"
+        if version not in {"v2Pro", "v2ProPlus"}
+        else f"GPT_SoVITS/configs/s2{version}.json"
+    )
+    config_path = _resolve_repo_path(config_file)
+    if config_path is None or not config_path.is_file():
+        yield (
+            process_info(process_name_sovits, "failed")
+            + f": config not found: {config_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    try:
+        data = json.loads(
+            config_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        yield (
+            process_info(process_name_sovits, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    (s2_dir / f"logs_s2_{version}").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if is_half is False:
+        data["train"]["fp16_run"] = False
+        batch_size = max(1, batch_size // 2)
+
+    data["train"]["batch_size"] = batch_size
+    data["train"]["epochs"] = total_epoch
+    data["train"]["text_low_lr_rate"] = text_low_lr_rate
+    data["train"]["pretrained_s2G"] = pretrained_s2G
+    data["train"]["pretrained_s2D"] = pretrained_s2D
+    data["train"]["if_save_latest"] = if_save_latest
+    data["train"]["if_save_every_weights"] = if_save_every_weights
+    data["train"]["save_every_epoch"] = save_every_epoch
+    data["train"]["gpu_numbers"] = gpu_numbers1Ba
+    data["train"]["grad_ckpt"] = if_grad_ckpt
+    data["train"]["lora_rank"] = lora_rank
+    data["model"]["version"] = version
+    data["data"]["exp_dir"] = data["s2_ckpt_dir"] = str(s2_dir)
+    data["save_weight_dir"] = SoVITS_weight_version2root[version]
+    data["name"] = exp_name
+    data["version"] = version
+
+    tmp_config_path = Path(tmp) / "tmp_s2.json"
+    tmp_config_path.write_text(
+        json.dumps(data),
+        encoding="utf-8",
+    )
+
+    script = (
+        "GPT_SoVITS/s2_train.py"
+        if version in ["v1", "v2", "v2Pro", "v2ProPlus"]
+        else "GPT_SoVITS/s2_train_v3_lora.py"
+    )
+    cmd = [
+        python_exec,
+        "-s",
+        script,
+        "--config",
+        str(tmp_config_path),
+    ]
+    print("[SoVITS train]", " ".join(repr(x) for x in cmd))
+    sovits_train_cancel_requested = False
+
+    try:
+        p_train_SoVITS = Popen(
+            cmd,
+            cwd=now_dir,
+        )
+    except OSError as exc:
+        p_train_SoVITS = None
+        yield (
+            process_info(process_name_sovits, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    yield (
+        process_info(process_name_sovits, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        {"__type__": "update"},
+        {"__type__": "update"},
+    )
+
+    process = p_train_SoVITS
+    return_code = process.wait()
+    p_train_SoVITS = None
+
+    if sovits_train_cancel_requested:
+        sovits_train_cancel_requested = False
+        return
+
+    if return_code != 0:
+        yield (
+            process_info(process_name_sovits, "failed")
+            + f" (exit code {return_code})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
+    yield (
+        process_info(process_name_sovits, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+        SoVITS_dropdown_update,
+        GPT_dropdown_update,
+    )
 
 
 def close1Ba():
     global p_train_SoVITS
-    if p_train_SoVITS is not None:
+    global sovits_train_cancel_requested
+
+    sovits_train_cancel_requested = True
+
+    if (
+        p_train_SoVITS is not None
+        and p_train_SoVITS.poll() is None
+    ):
         kill_process(p_train_SoVITS.pid, process_name_sovits)
-        p_train_SoVITS = None
+
+    p_train_SoVITS = None
+
     return (
         process_info(process_name_sovits, "closed"),
         {"__type__": "update", "visible": True},
@@ -1696,61 +1807,9 @@ def open1Bb(
     pretrained_s1,
 ):
     global p_train_GPT
-    if p_train_GPT == None:
-        exp_name = exp_name.rstrip(" ")
-        with open(
-            "GPT_SoVITS/configs/s1longer.yaml" if version == "v1" else "GPT_SoVITS/configs/s1longer-v2.yaml"
-        ) as f:
-            data = f.read()
-            data = yaml.load(data, Loader=yaml.FullLoader)
-        s1_dir = "%s/%s" % (exp_root, exp_name)
-        os.makedirs("%s/logs_s1" % (s1_dir), exist_ok=True)
-        if check_for_existance([s1_dir], is_train=True):
-            check_details([s1_dir], is_train=True)
-        if is_half == False:
-            data["train"]["precision"] = "32"
-            batch_size = max(1, batch_size // 2)
-        data["train"]["batch_size"] = batch_size
-        data["train"]["epochs"] = total_epoch
-        data["pretrained_s1"] = pretrained_s1
-        data["train"]["save_every_n_epoch"] = save_every_epoch
-        data["train"]["if_save_every_weights"] = if_save_every_weights
-        data["train"]["if_save_latest"] = if_save_latest
-        data["train"]["if_dpo"] = if_dpo
-        data["train"]["half_weights_save_dir"] = GPT_weight_version2root[version]
-        data["train"]["exp_name"] = exp_name
-        data["train_semantic_path"] = "%s/6-name2semantic.tsv" % s1_dir
-        data["train_phoneme_path"] = "%s/2-name2text.txt" % s1_dir
-        data["output_dir"] = "%s/logs_s1_%s" % (s1_dir, version)
-        # data["version"]=version
+    global gpt_train_cancel_requested
 
-        os.environ["_CUDA_VISIBLE_DEVICES"] = str(fix_gpu_numbers(gpu_numbers.replace("-", ",")))
-        os.environ["hz"] = "25hz"
-        tmp_config_path = "%s/tmp_s1.yaml" % tmp
-        with open(tmp_config_path, "w") as f:
-            f.write(yaml.dump(data, default_flow_style=False))
-        # cmd = '"%s" GPT_SoVITS/s1_train.py --config_file "%s" --train_semantic_path "%s/6-name2semantic.tsv" --train_phoneme_path "%s/2-name2text.txt" --output_dir "%s/logs_s1"'%(python_exec,tmp_config_path,s1_dir,s1_dir,s1_dir)
-        cmd = '"%s" -s GPT_SoVITS/s1_train.py --config_file "%s" ' % (python_exec, tmp_config_path)
-        yield (
-            process_info(process_name_gpt, "opened"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-            {"__type__": "update"},
-            {"__type__": "update"},
-        )
-        print(cmd)
-        p_train_GPT = Popen(cmd, shell=True)
-        p_train_GPT.wait()
-        p_train_GPT = None
-        SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
-        yield (
-            process_info(process_name_gpt, "finish"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-            SoVITS_dropdown_update,
-            GPT_dropdown_update,
-        )
-    else:
+    if p_train_GPT is not None:
         yield (
             process_info(process_name_gpt, "occupy"),
             {"__type__": "update", "visible": False},
@@ -1758,13 +1817,185 @@ def open1Bb(
             {"__type__": "update"},
             {"__type__": "update"},
         )
+        return
+
+    exp_name = str(exp_name or "").strip()
+    if not exp_name:
+        yield (
+            process_info(process_name_gpt, "failed")
+            + ": experiment name is empty",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    s1_dir = Path(exp_root) / exp_name
+    if not check_for_existance(
+        [str(s1_dir)],
+        is_train=True,
+    ):
+        yield (
+            process_info(process_name_gpt, "failed"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    check_details([str(s1_dir)], is_train=True)
+
+    config_path = _resolve_repo_path(
+        "GPT_SoVITS/configs/s1longer.yaml"
+        if version == "v1"
+        else "GPT_SoVITS/configs/s1longer-v2.yaml"
+    )
+    if config_path is None or not config_path.is_file():
+        yield (
+            process_info(process_name_gpt, "failed")
+            + f": config not found: {config_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    try:
+        data = yaml.load(
+            config_path.read_text(encoding="utf-8"),
+            Loader=yaml.FullLoader,
+        )
+    except (OSError, yaml.YAMLError) as exc:
+        yield (
+            process_info(process_name_gpt, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    (s1_dir / "logs_s1").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if is_half is False:
+        data["train"]["precision"] = "32"
+        batch_size = max(1, batch_size // 2)
+
+    data["train"]["batch_size"] = batch_size
+    data["train"]["epochs"] = total_epoch
+    data["pretrained_s1"] = pretrained_s1
+    data["train"]["save_every_n_epoch"] = save_every_epoch
+    data["train"]["if_save_every_weights"] = if_save_every_weights
+    data["train"]["if_save_latest"] = if_save_latest
+    data["train"]["if_dpo"] = if_dpo
+    data["train"]["half_weights_save_dir"] = GPT_weight_version2root[version]
+    data["train"]["exp_name"] = exp_name
+    data["train_semantic_path"] = str(
+        s1_dir / "6-name2semantic.tsv"
+    )
+    data["train_phoneme_path"] = str(
+        s1_dir / "2-name2text.txt"
+    )
+    data["output_dir"] = str(
+        s1_dir / f"logs_s1_{version}"
+    )
+
+    child_env = os.environ.copy()
+    child_env["_CUDA_VISIBLE_DEVICES"] = str(
+        fix_gpu_numbers(gpu_numbers.replace("-", ","))
+    )
+    child_env["hz"] = "25hz"
+
+    tmp_config_path = Path(tmp) / "tmp_s1.yaml"
+    tmp_config_path.write_text(
+        yaml.dump(data, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    cmd = [
+        python_exec,
+        "-s",
+        "GPT_SoVITS/s1_train.py",
+        "--config_file",
+        str(tmp_config_path),
+    ]
+    print("[GPT train]", " ".join(repr(x) for x in cmd))
+    gpt_train_cancel_requested = False
+
+    try:
+        p_train_GPT = Popen(
+            cmd,
+            cwd=now_dir,
+            env=child_env,
+        )
+    except OSError as exc:
+        p_train_GPT = None
+        yield (
+            process_info(process_name_gpt, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    yield (
+        process_info(process_name_gpt, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        {"__type__": "update"},
+        {"__type__": "update"},
+    )
+
+    process = p_train_GPT
+    return_code = process.wait()
+    p_train_GPT = None
+
+    if gpt_train_cancel_requested:
+        gpt_train_cancel_requested = False
+        return
+
+    if return_code != 0:
+        yield (
+            process_info(process_name_gpt, "failed")
+            + f" (exit code {return_code})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
+    yield (
+        process_info(process_name_gpt, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+        SoVITS_dropdown_update,
+        GPT_dropdown_update,
+    )
 
 
 def close1Bb():
     global p_train_GPT
-    if p_train_GPT is not None:
+    global gpt_train_cancel_requested
+
+    gpt_train_cancel_requested = True
+
+    if (
+        p_train_GPT is not None
+        and p_train_GPT.poll() is None
+    ):
         kill_process(p_train_GPT.pid, process_name_gpt)
-        p_train_GPT = None
+
+    p_train_GPT = None
+
     return (
         process_info(process_name_gpt, "closed"),
         {"__type__": "update", "visible": True},
