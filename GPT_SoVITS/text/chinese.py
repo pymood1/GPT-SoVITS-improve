@@ -23,8 +23,8 @@ try:
     import jieba_fast.posseg as psg
 except ImportError:
     # jieba_fast has no current CPython 3.13/3.14 wheels.
-    # The maintained jieba_pyfast fork does not ship posseg, which this
-    # frontend needs for tone-sandhi POS tags, so fall back to pure jieba.
+    # On modern Python, requirements.txt installs the maintained jieba-py
+    # drop-in package, which keeps the jieba.posseg API used for tone sandhi.
     import jieba as jieba_backend
     import jieba.posseg as psg
 
