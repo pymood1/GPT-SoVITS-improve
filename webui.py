@@ -369,6 +369,24 @@ def _resolve_repo_path(value):
     return path.resolve()
 
 
+def _emotion_dataset_slug(dataset_id):
+    value = str(dataset_id or "").strip() or "emotion_dataset_01"
+    return (
+        re.sub(r"[^0-9A-Za-z._-]+", "_", value).strip("._-")
+        or "emotion_dataset_01"
+    )[:80]
+
+
+def _emotion_output_dir(dataset_id):
+    return (
+        Path(now_dir)
+        / "output"
+        / "emotion_opt"
+        / _emotion_dataset_slug(dataset_id)
+    ).resolve()
+
+
+
 def _emotion_status(stage, log_lines, final_message=None):
     tail = list(log_lines)[-28:]
     message = f"### {stage}"
@@ -461,6 +479,7 @@ def run_auto_emotion_sidecar(
     source_list,
     wav_root,
     sidecar_output,
+    dataset_id,
     model_name,
     min_confidence,
     device,
@@ -493,9 +512,8 @@ def run_auto_emotion_sidecar(
 
         if not sidecar_output:
             sidecar_output = str(
-                source_path.with_suffix(
-                    source_path.suffix + ".emotion.auto.jsonl"
-                )
+                _emotion_output_dir(dataset_id)
+                / "emotion_sidecar.jsonl"
             )
 
         output_path = Path(
@@ -503,7 +521,7 @@ def run_auto_emotion_sidecar(
         ).expanduser().resolve()
 
         if not model_name:
-            model_name = "iic/emotion2vec_plus_base"
+            model_name = "iic/emotion2vec_plus_large"
 
         min_confidence = float(min_confidence)
 
@@ -641,28 +659,22 @@ def run_emotion_training_pipeline(
 
     try:
         dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
-        dataset_slug = (
-            re.sub(
-                r"[^0-9A-Za-z._-]+",
-                "_",
-                dataset_id,
-            ).strip("._-")
-            or "emotion_dataset_01"
-        )[:80]
+        dataset_slug = _emotion_dataset_slug(dataset_id)
+        emotion_output_dir = _emotion_output_dir(dataset_id)
 
         dataset_dir_text = _clean_user_path(dataset_dir)
         if not dataset_dir_text:
-            dataset_dir_text = f"/content/{dataset_slug}_emotion_dataset"
+            dataset_dir_text = str(emotion_output_dir / "dataset")
 
         feature_root_text = _clean_user_path(feature_root)
         if not feature_root_text:
-            feature_root_text = f"/content/{dataset_slug}_emotion_features"
+            feature_root_text = str(emotion_output_dir / "features")
 
         controller_output_text = _clean_user_path(controller_output)
         if not controller_output_text:
-            controller_output_text = (
-                "/content/drive/MyDrive/GPT-SoVITS/"
-                f"{dataset_slug}_emotion_controller.pt"
+            controller_output_text = str(
+                emotion_output_dir
+                / f"{dataset_slug}_emotion_controller.pt"
             )
 
         dataset_dir = Path(dataset_dir_text).expanduser().resolve()
@@ -3943,6 +3955,9 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 화자 기준에서 뚜렷한 편차가 없는 샘플은 neutral/default로 처리하고,
 controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 필요하지 않습니다.
 자동 결과가 마음에 들지 않으면 sidecar JSONL을 직접 수정할 수 있습니다.
+
+경로를 비워두면 감정 관련 산출물은 다른 전처리 도구와 마찬가지로
+`output/emotion_opt/<데이터셋 ID>/` 아래에 정리됩니다.
 """
                         )
 
@@ -3951,15 +3966,15 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 label="감정 분석 모델 (ASR과 별개)",
                                 choices=[
                                     (
-                                        "emotion2vec+ base (기본)",
-                                        "iic/emotion2vec_plus_base",
-                                    ),
-                                    (
-                                        "emotion2vec+ large (정확도 우선)",
+                                        "emotion2vec+ large (기본, 정확도 우선)",
                                         "iic/emotion2vec_plus_large",
                                     ),
+                                    (
+                                        "emotion2vec+ base (가벼운 대안)",
+                                        "iic/emotion2vec_plus_base",
+                                    ),
                                 ],
-                                value="iic/emotion2vec_plus_base",
+                                value="iic/emotion2vec_plus_large",
                                 interactive=True,
                             )
                             emotion_auto_confidence = gr.Slider(
@@ -3982,8 +3997,8 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 label="감정 sidecar JSONL 경로 (자동 생성/수동 지정)",
                                 value="",
                                 placeholder=(
-                                    "비워두면 .list 파일 옆에 "
-                                    "*.emotion.auto.jsonl로 자동 생성"
+                                    "비워두면 output/emotion_opt/"
+                                    "<데이터셋 ID>/emotion_sidecar.jsonl"
                                 ),
                                 interactive=True,
                             )
@@ -4015,8 +4030,8 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 label="감정 canonical dataset 출력 폴더",
                                 value="",
                                 placeholder=(
-                                    "비워두면 /content/"
-                                    "<데이터셋 ID>_emotion_dataset"
+                                    "비워두면 output/emotion_opt/"
+                                    "<데이터셋 ID>/dataset"
                                 ),
                                 interactive=True,
                             )
@@ -4032,6 +4047,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 inp_text,
                                 inp_wav_dir,
                                 emotion_sidecar,
+                                emotion_dataset_id,
                                 emotion_auto_model,
                                 emotion_auto_confidence,
                                 emotion_auto_device,
@@ -4314,8 +4330,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 label="V5 전처리 feature 폴더",
                                 value="",
                                 placeholder=(
-                                    "비워두면 /content/"
-                                    "<데이터셋 ID>_emotion_features"
+                                    "비워두면 output/emotion_opt/"
+                                    "<데이터셋 ID>/features"
                                 ),
                                 interactive=True,
                             )
@@ -4323,7 +4339,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 label="Controller 저장 경로",
                                 value="",
                                 placeholder=(
-                                    "비워두면 Google Drive에 "
+                                    "비워두면 output/emotion_opt/<데이터셋 ID>/"
                                     "<데이터셋 ID>_emotion_controller.pt"
                                 ),
                                 interactive=True,
