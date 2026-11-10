@@ -234,16 +234,23 @@ acceleration backend owns a separate sampler.
 In the main WebUI:
 
 ```text
-1A - dataset formatting
-1B - GPT-SoVITS fine-tuning
-1C - emotion controller training
-1D - inference
+1A - preprocessing
+     - ordinary GPT-SoVITS dataset formatting
+     - optional emotion-pair metadata
+1B - training
+     - SoVITS / GPT fine-tuning
+     - optional emotion controller
+1C - inference
 ```
 
-The emotion tab runs the existing scripts in order instead of reimplementing
-their training logic. A sidecar JSONL is required when building a fresh
-emotion dataset. Each usable pair group must explicitly identify the intended
-emotion and pair provenance, for example:
+The optional emotion controls are integrated into the normal GPT-SoVITS stages
+rather than exposed as a separate top-level tab. The controller path still runs
+the existing scripts in order instead of reimplementing their training logic.
+
+The emotion pipeline reuses the same .list and audio-directory inputs shown in
+1A. A sidecar JSONL is required when building a fresh emotion dataset. Each
+usable pair group must explicitly identify the intended emotion and pair
+provenance, for example:
 
 ```json
 {"wav":"neutral_001.wav","split":"train","emotion_intended":"neutral","pair_group_id":"prompt_0001","pair_source":"recording_manifest"}
@@ -253,8 +260,8 @@ emotion and pair provenance, for example:
 Keep at least one 3-10 second train sample per paired speaker outside all
 `pair_group_id` groups. The WebUI selects that sample as the fixed reference.
 
-When training finishes, the controller path is passed to the normal inference
-WebUI and loaded automatically when its S1/S2 provenance matches.
+When optional emotion training in 1B finishes, the controller path is passed to
+the 1C inference WebUI and loaded automatically when its S1/S2 provenance matches.
 
 ## 10. Not implemented on purpose
 

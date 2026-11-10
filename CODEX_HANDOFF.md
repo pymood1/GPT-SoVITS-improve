@@ -101,11 +101,18 @@ is_share = True
 Current main WebUI tab flow:
 
 ~~~text
-1A - dataset formatting
-1B - GPT-SoVITS fine-tuning
-1C - emotion controller training
-1D - inference
+1A - preprocessing
+     - ordinary GPT-SoVITS dataset formatting
+     - optional emotion-pair metadata preparation
+1B - training
+     - SoVITS / GPT fine-tuning
+     - optional V5dev emotion-controller training
+1C - inference
 ~~~
+
+This keeps the upstream GPT-SoVITS workflow visible instead of exposing the
+emotion controller as a separate top-level stage. Emotion control remains an
+optional extension inside the normal preprocessing/training/inference flow.
 
 Fast-v2 was deleted. Only Colab-Inference-Fast.ipynb should be maintained.
 
@@ -599,7 +606,7 @@ The checkpoint also stores S1/S2 provenance hashes.
 
 ---
 
-## 15. Current 1C emotion-training WebUI pipeline
+## 15. Current 1B emotion-training WebUI pipeline
 
 Implemented in:
 
@@ -628,7 +635,7 @@ This is required because S1 provenance must match the model used during
 inference.
 
 If the user fine-tunes GPT in 1B, the final GPT checkpoint must be selected in
-1C when training the controller.
+the optional emotion-training section of 1B when training the controller.
 
 Current controller training uses V5dev base S2 for semantic preprocessing.
 
@@ -685,8 +692,8 @@ The controller is rejected if:
 - semantic S2 provenance does not match;
 - hidden dimension does not match the active S1.
 
-When 1C training completes, webui.py stores the controller path and passes it
-to the child inference process through emotion_controller_path.
+When optional emotion training in 1B completes, webui.py stores the controller
+path and passes it to the child inference process through emotion_controller_path.
 
 inference_webui.py reads that path and attempts to load the controller
 automatically after S1/S2 are loaded.
@@ -869,14 +876,14 @@ Priority validation order:
 4. webui.py launches in Korean;
 5. V5dev is selected;
 6. 1B is initially visible;
-7. 1C renders without Gradio component errors;
+7. 1A preprocessing and the optional 1B emotion-training section render without Gradio component errors;
 8. build a small controlled emotion dataset;
 9. reference auto-selection succeeds;
 10. V5 preprocessing produces a valid build directory;
 11. reference prompt cache is generated;
 12. tiny controller run, for example 3-20 accepted steps;
 13. controller checkpoint is written;
-14. 1D launches inference WebUI;
+14. 1C launches inference WebUI;
 15. Gradio public link appears in the parent WebUI;
 16. controller auto-load succeeds;
 17. emotion selector shows checkpoint emotion_names;
@@ -1018,8 +1025,8 @@ First read CODEX_HANDOFF.md and EMOTION_V5.md, then inspect the current source
 files referenced there. Do not redesign the project from scratch.
 
 The current priority is end-to-end validation and stabilization of:
-Colab fast setup -> V5dev main WebUI -> 1C emotion controller training ->
-1D inference -> automatic controller loading.
+Colab fast setup -> V5dev main WebUI -> 1A preprocessing -> 1B training
+(optional emotion controller) -> 1C inference -> automatic controller loading.
 
 Preserve ordinary GPT-SoVITS behavior and the existing full dependency/model
 scope. Prefer minimal fixes over new abstractions. Do not remove packages or
