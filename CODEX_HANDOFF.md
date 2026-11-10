@@ -703,8 +703,11 @@ The inference WebUI supports:
 - controller path input;
 - load controller;
 - unload controller;
-- target emotion selector;
-- emotion strength slider.
+- inline emotion tags inside the synthesis text.
+
+The user-facing global emotion selector and strength slider are intentionally
+hidden. Emotion control is expressed in the text itself so one request can
+change emotion between segments.
 
 The controller is rejected if:
 
@@ -729,9 +732,9 @@ script rather than the accelerated inference script.
 
 ---
 
-## 18. Future emotion tag interface
+## 18. Emotion tag interface
 
-Desired future user-facing syntax:
+Implemented user-facing syntax:
 
 ~~~text
 [neutral] 안녕하세요.
@@ -739,7 +742,7 @@ Desired future user-facing syntax:
 [sad:0.5] 그런데 조금 아쉽기도 해요.
 ~~~
 
-Recommended architecture:
+Current architecture:
 
 ~~~text
 raw text
@@ -753,28 +756,32 @@ map emotion name using controller checkpoint emotion_names
   |
 existing GPT-SoVITS inference per segment
   |
-short boundary smoothing / crossfade if needed
+concatenate segment audio
 ~~~
 
-Important design decision:
-do not initially implement token-level emotion switching inside a single S1
-generation. That would require text -> phoneme -> semantic-token alignment and
-adds complexity before segment-level control is validated.
+The first implementation deliberately uses tag boundaries as TTS segment
+boundaries. It does not attempt token-level emotion switching inside one S1
+generation because that would require text -> phoneme -> semantic-token
+alignment and substantially more complexity.
 
-First version should use tag boundaries as TTS segment boundaries.
+Tag strings such as [happy] are removed before BERT/phoneme preprocessing.
 
-Do not feed strings such as [happy] into BERT/phoneme preprocessing. Parse and
-remove tags before text preprocessing.
-
-Possible later syntax:
+Strength can be specified per tag:
 
 ~~~text
 [happy:0.8]
 [sad:0.3]
 ~~~
 
-Emotion names must come from checkpoint metadata rather than a hardcoded ID
-table.
+If strength is omitted, 1.0 is used. The accepted range is 0 through 2.
+
+Text before the first emotion tag uses ordinary GPT-SoVITS inference. If no
+emotion tags exist at all, inference is exactly the ordinary non-emotion path.
+
+Emotion names come from checkpoint metadata rather than a hardcoded ID table.
+
+Boundary crossfade/smoothing is not implemented yet. The current path keeps the
+ordinary sentence pause behavior between tag segments.
 
 ---
 
@@ -910,10 +917,11 @@ Priority validation order:
 16. 1C launches inference WebUI;
 17. Gradio public link appears in the parent WebUI;
 18. controller auto-load succeeds;
-19. emotion selector shows checkpoint emotion_names;
-20. strength 0 matches ordinary inference behavior;
-21. nonzero strength changes emotion direction without severe speaker drift;
-22. V5 LoRA + controller provenance path is tested separately.
+19. loaded-controller status shows checkpoint emotion_names as available tags;
+20. text without emotion tags matches ordinary inference behavior;
+21. [emotion] and [emotion:strength] change emotion per segment without severe speaker drift;
+22. mixed-emotion text switches at tag boundaries without leaking tag text into speech;
+23. V5 LoRA + controller provenance path is tested separately.
 
 Do not begin a long 1000-step training run before the tiny smoke run passes.
 
@@ -958,14 +966,20 @@ After the pipeline is stable:
 
 Priority D: emotion tags
 
-Only after controller quality is demonstrated:
+The first tag-based inference path is implemented:
 
-- add tag parser;
-- map names through checkpoint metadata;
-- segment text at tag boundaries;
-- synthesize segments;
-- add small crossfade/boundary smoothing;
-- keep tag strings out of text preprocessing.
+- parser is active;
+- names map through checkpoint metadata;
+- tag boundaries become synthesis segments;
+- tag strings do not enter text preprocessing;
+- per-tag strength is supported.
+
+Next work here should be driven by listening tests:
+
+- decide whether the ordinary pause between tag segments is sufficient;
+- only add a small crossfade/boundary smoother if audible joins are a real
+  problem;
+- avoid token-level switching until segment-level behavior is validated.
 
 Priority E: performance
 

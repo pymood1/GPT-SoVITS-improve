@@ -295,13 +295,20 @@ def load_emotion_controller_webui(controller_path):
         str(i) for i in range(controller.num_emotions)
     ]
     choices = [(f"{i}: {name}", i) for i, name in enumerate(names)]
+    tag_examples = " ".join(f"[{name}]" for name in names)
     return (
         {
             "__type__": "update",
             "choices": choices,
             "value": choices[0][1] if choices else None,
         },
-        i18n("情感控制器已加载") + f": {os.path.basename(controller_path)}",
+        (
+            i18n("情感控制器已加载")
+            + f": {os.path.basename(controller_path)}"
+            + "\n"
+            + i18n("可用情感标签")
+            + f": {tag_examples}"
+        ),
     )
 
 
@@ -314,6 +321,112 @@ def unload_emotion_controller_webui():
         {"__type__": "update", "choices": [], "value": None},
         i18n("情感控制器已卸载"),
     )
+
+
+EMOTION_TAG_PATTERN = re.compile(
+    r"\[\s*([^\[\]:\n]+?)\s*"
+    r"(?::\s*([0-9]+(?:\.[0-9]+)?))?\s*\]"
+)
+
+
+def _emotion_names_from_controller():
+    controller = getattr(
+        getattr(t2s_model, "model", None),
+        "emotion_controller",
+        None,
+    )
+    if controller is None:
+        return []
+
+    names = (
+        emotion_controller_metadata or {}
+    ).get("emotion_names")
+    if not names:
+        names = [str(i) for i in range(controller.num_emotions)]
+
+    return [str(name).strip() for name in names]
+
+
+def parse_emotion_tagged_text(text):
+    text = str(text or "")
+    matches = list(EMOTION_TAG_PATTERN.finditer(text))
+
+    if not matches:
+        return [(text, None, 0.0)]
+
+    emotion_names = _emotion_names_from_controller()
+    if not emotion_names:
+        raise gr.Error(
+            i18n("检测到情感标签，但尚未加载情感控制器")
+        )
+
+    name_to_id = {
+        name.casefold(): index
+        for index, name in enumerate(emotion_names)
+    }
+    available = ", ".join(
+        f"[{name}]" for name in emotion_names
+    )
+
+    segments = []
+    cursor = 0
+    current_emotion_id = None
+    current_strength = 0.0
+
+    for match in matches:
+        prefix = text[cursor:match.start()]
+        if prefix.strip():
+            segments.append(
+                (
+                    prefix,
+                    current_emotion_id,
+                    current_strength,
+                )
+            )
+
+        name = match.group(1).strip()
+        emotion_id = name_to_id.get(name.casefold())
+        if emotion_id is None:
+            raise gr.Error(
+                i18n("未知情感标签")
+                + f": [{name}]\n"
+                + i18n("可用情感标签")
+                + f": {available}"
+            )
+
+        strength_text = match.group(2)
+        strength = (
+            1.0
+            if strength_text is None
+            else float(strength_text)
+        )
+        if (
+            not np.isfinite(strength)
+            or strength < 0.0
+            or strength > 2.0
+        ):
+            raise gr.Error(
+                i18n("情感标签强度必须在 0 到 2 之间")
+            )
+
+        current_emotion_id = emotion_id
+        current_strength = strength
+        cursor = match.end()
+
+    suffix = text[cursor:]
+    if suffix.strip():
+        segments.append(
+            (
+                suffix,
+                current_emotion_id,
+                current_strength,
+            )
+        )
+
+    if not segments:
+        raise gr.Error(i18n("情感标签后没有可合成的文本"))
+
+    return segments
 
 
 def change_sovits_weights(sovits_path, prompt_language=None, text_language=None):
@@ -1308,6 +1421,127 @@ def get_tts_wav(
     yield opt_sr, (audio_opt * 32767).astype(np.int16)
 
 
+
+def get_tts_wav_with_emotion_tags(
+    ref_wav_path,
+    prompt_text,
+    prompt_language,
+    text,
+    text_language,
+    how_to_cut=i18n("不切"),
+    top_k=20,
+    top_p=0.6,
+    temperature=0.6,
+    ref_free=False,
+    speed=1,
+    if_freeze=False,
+    inp_refs=None,
+    sample_steps=None,
+    if_sr=False,
+    pause_second=0.3,
+    use_cuda_graph=True,
+    use_flash_attention=True,
+    cfg_rate=None,
+    _legacy_emotion_id=None,
+    _legacy_emotion_strength=1.0,
+):
+    segments = parse_emotion_tagged_text(text)
+    has_tags = bool(
+        EMOTION_TAG_PATTERN.search(str(text or ""))
+    )
+
+    if not has_tags:
+        yield from get_tts_wav(
+            ref_wav_path,
+            prompt_text,
+            prompt_language,
+            text,
+            text_language,
+            how_to_cut,
+            top_k,
+            top_p,
+            temperature,
+            ref_free,
+            speed,
+            if_freeze,
+            inp_refs,
+            sample_steps,
+            if_sr,
+            pause_second,
+            use_cuda_graph,
+            use_flash_attention,
+            cfg_rate,
+            None,
+            0.0,
+        )
+        return
+
+    if if_freeze:
+        gr.Warning(
+            i18n(
+                "情感标签启用时自动关闭语义缓存冻结，避免跨情感复用 token"
+            )
+        )
+        if_freeze = False
+
+    combined_audio = []
+    output_sr = None
+
+    for segment_text, emotion_id, emotion_strength in segments:
+        result = None
+
+        for result in get_tts_wav(
+            ref_wav_path,
+            prompt_text,
+            prompt_language,
+            segment_text,
+            text_language,
+            how_to_cut,
+            top_k,
+            top_p,
+            temperature,
+            ref_free,
+            speed,
+            if_freeze,
+            inp_refs,
+            sample_steps,
+            if_sr,
+            pause_second,
+            use_cuda_graph,
+            use_flash_attention,
+            cfg_rate,
+            emotion_id,
+            emotion_strength,
+        ):
+            pass
+
+        if result is None:
+            raise gr.Error(
+                i18n("情感标签分段合成没有返回音频")
+            )
+
+        segment_sr, segment_audio = result
+
+        if output_sr is None:
+            output_sr = segment_sr
+        elif segment_sr != output_sr:
+            raise gr.Error(
+                i18n("情感标签分段的采样率不一致")
+            )
+
+        combined_audio.append(
+            np.asarray(segment_audio, dtype=np.int16)
+        )
+
+    if not combined_audio or output_sr is None:
+        raise gr.Error(
+            i18n("没有可输出的情感标签音频")
+        )
+
+    yield output_sr, np.concatenate(combined_audio)
+
+
+
 def split(todo_text):
     todo_text = todo_text.replace("……", "。").replace("——", "，")
     if todo_text[-1] not in splits:
@@ -1487,8 +1721,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 label=i18n("目标情感"),
                 choices=initial_emotion_choices,
                 value=initial_emotion_value,
-                interactive=True,
-                scale=5,
+                interactive=False,
+                visible=False,
             )
             emotion_strength_slider = gr.Slider(
                 minimum=0.0,
@@ -1496,13 +1730,18 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 step=0.05,
                 value=1.0,
                 label=i18n("情感控制强度"),
-                interactive=True,
-                scale=5,
+                interactive=False,
+                visible=False,
             )
         emotion_status = gr.Textbox(
             label=i18n("情感控制器状态"),
             value=initial_emotion_status,
             interactive=False,
+        )
+        gr.Markdown(
+            i18n(
+                "情感标签示例：[happy] 你好。 [sad:0.5] 今天有点遗憾。"
+            )
         )
         emotion_load_button.click(
             load_emotion_controller_webui,
@@ -1587,7 +1826,16 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
         gr.Markdown(html_center(i18n("*请填写需要合成的目标文本和语种模式"), "h3"))
         with gr.Row():
             with gr.Column(scale=13):
-                text = gr.Textbox(label=i18n("需要合成的文本"), value="", lines=26, max_lines=26)
+                text = gr.Textbox(
+                    label=i18n("需要合成的文本（支持情感标签）"),
+                    value="",
+                    placeholder=(
+                        "[happy] 오늘은 정말 좋은 날이야.\n"
+                        "[sad:0.5] 그래도 조금 아쉽네."
+                    ),
+                    lines=26,
+                    max_lines=26,
+                )
             with gr.Column(scale=7):
                 text_language = gr.Dropdown(
                     label=i18n("需要合成的语种") + i18n(".限制范围越小判别效果越好。"),
@@ -1665,7 +1913,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             output = gr.Audio(label=i18n("输出的语音"), scale=14)
 
         inference_button.click(
-            get_tts_wav,
+            get_tts_wav_with_emotion_tags,
             [
                 inp_ref,
                 prompt_text,
