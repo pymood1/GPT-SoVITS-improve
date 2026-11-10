@@ -1,0 +1,33 @@
+name: Python syntax check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  py_compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile touched Python entry points
+        run: |
+          python -m py_compile \
+            webui.py \
+            tools/asr/config.py \
+            tools/asr/fasterwhisper_asr.py \
+            tools/asr/funasr_asr.py \
+            tools/auto_emotion_sidecar.py \
+            tools/emotion_dataset_builder.py \
+            tools/emotion_training_pipeline.py \
+            tools/run_emotion_v5_preprocess.py \
+            tools/train_emotion_controller.py \
+            GPT_SoVITS/inference_webui.py \
+            GPT_SoVITS/prepare_datasets/3-get-semantic.py
