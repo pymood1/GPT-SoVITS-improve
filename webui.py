@@ -1098,6 +1098,17 @@ def change_tts_inference(
 
 from tools.asr.config import asr_dict
 
+ASR_UI_CHOICES = [
+    ("Faster Whisper (다국어, 권장)", "Faster Whisper (多语种)"),
+    ("Fun-ASR Nano (31개 언어)", "Fun-ASR-Nano (31语种+方言, 推荐)"),
+    ("SenseVoice (5개 언어, 빠름)", "SenseVoice (极速, 5语种)"),
+    ("Damo ASR (중국어)", "达摩 ASR (中文经典)"),
+]
+DEFAULT_ASR_MODEL = "Faster Whisper (多语种)"
+DEFAULT_ASR_SIZE = "large-v3-turbo"
+DEFAULT_ASR_LANGUAGE = "auto"
+DEFAULT_ASR_PRECISION = "float16" if is_half else "float32"
+
 process_name_asr = i18n("语音识别")
 
 
@@ -2142,18 +2153,27 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         with gr.Row():
                             asr_model = gr.Dropdown(
                                 label=i18n("ASR 模型"),
-                                choices=list(asr_dict.keys()),
+                                choices=ASR_UI_CHOICES,
                                 interactive=True,
-                                value="达摩 ASR (中文)",
+                                value=DEFAULT_ASR_MODEL,
                             )
                             asr_size = gr.Dropdown(
-                                label=i18n("ASR 模型尺寸"), choices=["large"], interactive=True, value="large"
+                                label=i18n("ASR 模型尺寸"),
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["size"],
+                                interactive=True,
+                                value=DEFAULT_ASR_SIZE,
                             )
                             asr_lang = gr.Dropdown(
-                                label=i18n("ASR 语言设置"), choices=["zh", "yue"], interactive=True, value="zh"
+                                label=i18n("ASR 语言设置"),
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["lang"],
+                                interactive=True,
+                                value=DEFAULT_ASR_LANGUAGE,
                             )
                             asr_precision = gr.Dropdown(
-                                label=i18n("数据类型精度"), choices=["float32"], interactive=True, value="float32"
+                                label=i18n("数据类型精度"),
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["precision"],
+                                interactive=True,
+                                value=DEFAULT_ASR_PRECISION,
                             )
                         with gr.Row():
                             asr_info = gr.Textbox(label=process_info(process_name_asr, "info"))
@@ -2262,12 +2282,99 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
             with gr.Tabs(selected="finetune"):
                 with gr.TabItem("1A-" + i18n("训练集格式化工具"), id="dataset"):
+                    with gr.Accordion(
+                        label="1A0-음성 전사 (.list 자동 생성, 선택)",
+                        open=False,
+                    ):
+                        gr.Markdown(
+                            """
+이미 GPT-SoVITS 형식의 `.list` 파일이 있으면 이 단계는 건너뛰면 됩니다.
+
+음성 파일만 있는 경우 폴더를 지정하고 ASR로 전사하면 아래의
+**텍스트 표기 파일**과 **학습용 음성 폴더**가 자동으로 채워집니다.
+다국어 사용을 고려해 Faster Whisper를 기본값으로 둡니다.
+긴 원본 녹음은 필요하면 0-데이터셋 준비 도구의 음성 자르기를 먼저 사용하세요.
+"""
+                        )
+
+                        with gr.Row():
+                            prep_asr_inp_dir = gr.Textbox(
+                                label="전사할 음성 폴더",
+                                placeholder="/content/drive/MyDrive/data/wav",
+                                interactive=True,
+                            )
+                            prep_asr_opt_dir = gr.Textbox(
+                                label="전사 결과 저장 폴더",
+                                value="output/asr_opt",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            prep_asr_model = gr.Dropdown(
+                                label="ASR 엔진",
+                                choices=ASR_UI_CHOICES,
+                                value=DEFAULT_ASR_MODEL,
+                                interactive=True,
+                            )
+                            prep_asr_size = gr.Dropdown(
+                                label="모델 크기",
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["size"],
+                                value=DEFAULT_ASR_SIZE,
+                                interactive=True,
+                            )
+                            prep_asr_lang = gr.Dropdown(
+                                label="언어",
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["lang"],
+                                value=DEFAULT_ASR_LANGUAGE,
+                                interactive=True,
+                            )
+                            prep_asr_precision = gr.Dropdown(
+                                label="정밀도",
+                                choices=asr_dict[DEFAULT_ASR_MODEL]["precision"],
+                                value=DEFAULT_ASR_PRECISION,
+                                interactive=True,
+                            )
+
+                        with gr.Row():
+                            prep_asr_open = gr.Button(
+                                value="음성 전사 시작",
+                                variant="primary",
+                                visible=True,
+                            )
+                            prep_asr_close = gr.Button(
+                                value="음성 전사 중지",
+                                variant="stop",
+                                visible=False,
+                            )
+
+                        prep_asr_info = gr.Textbox(
+                            label="전사 상태",
+                            interactive=False,
+                        )
+
+                        prep_asr_model.change(
+                            change_lang_choices,
+                            [prep_asr_model],
+                            [prep_asr_lang],
+                        )
+                        prep_asr_model.change(
+                            change_size_choices,
+                            [prep_asr_model],
+                            [prep_asr_size],
+                        )
+                        prep_asr_model.change(
+                            change_precision_choices,
+                            [prep_asr_model],
+                            [prep_asr_precision],
+                        )
+
                     with gr.Accordion(label=i18n("输出logs/实验名目录下应有23456开头的文件和文件夹")):
                         with gr.Row():
                             with gr.Row():
                                 inp_text = gr.Textbox(
                                     label=i18n("*文本标注文件"),
-                                    value=r"D:\RVC1006\GPT-SoVITS\raw\xxx.list",
+                                    value="",
+                                    placeholder="/content/drive/MyDrive/data/train.list",
                                     interactive=True,
                                     scale=10,
                                 )
@@ -2379,16 +2486,29 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 일반 GPT-SoVITS 학습에는 필요하지 않습니다.
 
 감정 제어를 학습하려면 위의 **텍스트 표기(.list)**와
-**학습용 음성 폴더**를 그대로 사용합니다. 자동 생성은 같은 화자·같은 언어·
-**동일한 전사문**을 가진 음성을 묶고, 음성 감정 분류 결과가 충분히 확실한 경우에만
-서로 다른 감정의 pair를 만듭니다. 자동 결과가 마음에 들지 않으면 sidecar JSONL을
-직접 수정하거나 수동 파일로 바꿔도 됩니다.
+**학습용 음성 폴더**를 그대로 사용합니다. 위의 Whisper/Fun-ASR은 **전사(ASR)** 용이고,
+여기의 emotion2vec+는 **음성 감정 분류** 용이라 서로 별개의 단계입니다.
+
+자동 생성은 같은 화자·같은 언어·**동일한 전사문**을 가진 음성을 묶고,
+감정 분류 결과가 충분히 확실한 경우에만 서로 다른 감정의 pair를 만듭니다.
+자동 결과가 마음에 들지 않으면 sidecar JSONL을 직접 수정하거나 수동 파일로
+바꿔도 됩니다.
 """
                         )
 
                         with gr.Row():
-                            emotion_auto_model = gr.Textbox(
-                                label="자동 감정 분석 모델",
+                            emotion_auto_model = gr.Dropdown(
+                                label="감정 분석 모델 (ASR과 별개)",
+                                choices=[
+                                    (
+                                        "emotion2vec+ base (기본)",
+                                        "iic/emotion2vec_plus_base",
+                                    ),
+                                    (
+                                        "emotion2vec+ large (정확도 우선)",
+                                        "iic/emotion2vec_plus_large",
+                                    ),
+                                ],
                                 value="iic/emotion2vec_plus_base",
                                 interactive=True,
                             )
@@ -2470,6 +2590,35 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             [emotion_auto_status],
                             queue=False,
                         )
+
+                prep_asr_open.click(
+                    open_asr,
+                    [
+                        prep_asr_inp_dir,
+                        prep_asr_opt_dir,
+                        prep_asr_model,
+                        prep_asr_size,
+                        prep_asr_lang,
+                        prep_asr_precision,
+                    ],
+                    [
+                        prep_asr_info,
+                        prep_asr_open,
+                        prep_asr_close,
+                        path_list,
+                        inp_text,
+                        inp_wav_dir,
+                    ],
+                )
+                prep_asr_close.click(
+                    close_asr,
+                    [],
+                    [
+                        prep_asr_info,
+                        prep_asr_open,
+                        prep_asr_close,
+                    ],
+                )
 
                 pretrained_s2G.change(sync, [pretrained_s2G], [pretrained_s2G_])
                 open_asr_button.click(
