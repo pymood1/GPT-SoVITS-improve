@@ -93,6 +93,7 @@ from tools import my_utils
 from tools.emotion_training_pipeline import (
     EmotionPipelineError,
     create_reference_map,
+    detect_pair_emotions,
     format_dataset_summary,
     latest_feature_build,
     validate_emotion_dataset,
@@ -600,20 +601,20 @@ def run_emotion_training_pipeline(
                     f"{label} path not found: {required_path}"
                 )
 
-        parsed_emotions = [
+        requested_emotions = [
             item.strip()
             for item in str(emotion_names).split(",")
             if item.strip()
         ]
 
-        if len(parsed_emotions) < 2:
-            raise EmotionPipelineError(
-                "감정은 최소 2개 이상 지정해야 합니다."
-            )
-
-        if len(set(parsed_emotions)) != len(parsed_emotions):
+        if len(set(requested_emotions)) != len(requested_emotions):
             raise EmotionPipelineError(
                 "감정 이름이 중복되어 있습니다."
+            )
+
+        if requested_emotions and len(requested_emotions) < 2:
+            raise EmotionPipelineError(
+                "감정을 직접 지정할 경우 최소 2개가 필요합니다."
             )
 
         steps = int(steps)
@@ -695,6 +696,27 @@ def run_emotion_training_pipeline(
         report = validate_emotion_dataset(dataset_dir)
         summary = format_dataset_summary(report)
         log_lines.append(f"[dataset] {summary}")
+
+        detected_emotions = detect_pair_emotions(metadata_path)
+
+        if requested_emotions:
+            missing_emotions = [
+                emotion
+                for emotion in requested_emotions
+                if emotion not in detected_emotions
+            ]
+            if missing_emotions:
+                raise EmotionPipelineError(
+                    "사용 가능한 pair 데이터가 없는 감정: "
+                    + ", ".join(missing_emotions)
+                )
+            parsed_emotions = requested_emotions
+        else:
+            parsed_emotions = detected_emotions
+            log_lines.append(
+                "[emotions] auto-detected: "
+                + ",".join(parsed_emotions)
+            )
 
         create_reference_map(
             metadata_path,
@@ -2934,8 +2956,12 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
 
                         with gr.Row():
                             emotion_names = gr.Textbox(
-                                label="감정 목록",
-                                value="neutral,happy,sad,angry",
+                                label="감정 목록 (선택)",
+                                value="",
+                                placeholder=(
+                                    "비워두면 실제 pair 데이터에서 자동 감지 "
+                                    "(예: neutral,happy,sad)"
+                                ),
                                 interactive=True,
                             )
                             emotion_steps = gr.Number(
