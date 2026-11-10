@@ -82,8 +82,8 @@ cnhubert_base_path = os.environ.get("cnhubert_base_path", "GPT_SoVITS/pretrained
 bert_path = os.environ.get("bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large")
 infer_ttswebui = os.environ.get("infer_ttswebui", 9872)
 infer_ttswebui = int(infer_ttswebui)
-is_share = os.environ.get("is_share", "False")
-is_share = eval(is_share)
+# Public link is required for remote/Colab access.
+is_share = True
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
@@ -1737,7 +1737,7 @@ if __name__ == "__main__":
     app.queue().launch(  # concurrency_count=511, max_size=1022
         server_name="0.0.0.0",
         inbrowser=True,
-        share=is_share,
+        share=True,
         server_port=infer_ttswebui,
         # quiet=True,
     )
