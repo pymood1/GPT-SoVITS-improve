@@ -399,8 +399,9 @@ def stop_emotion_training():
     if p_emotion_training is None:
         return "### 감정 작업\n\n실행 중인 작업이 없습니다."
 
+    emotion_task_cancel_requested = True
+
     if p_emotion_training.poll() is None:
-        emotion_task_cancel_requested = True
         kill_process(
             p_emotion_training.pid,
             "Emotion task ",
