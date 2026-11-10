@@ -2690,8 +2690,21 @@ def open1abc(
     global ps1abc
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
-    if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
-        check_details([inp_text, inp_wav_dir], is_dataset_processing=True)
+    if not check_for_existance(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    ):
+        yield (
+            process_info(process_name_1abc, "failed"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    check_details(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    )
     exp_name = exp_name.rstrip(" ")
     if ps1abc == []:
         opt_dir = "%s/%s" % (exp_root, exp_name)
@@ -2730,8 +2743,12 @@ def open1abc(
                     {"__type__": "update", "visible": False},
                     {"__type__": "update", "visible": True},
                 )
-                for p in ps1abc:
-                    p.wait()
+                return_codes = [p.wait() for p in ps1abc]
+                if any(code != 0 for code in return_codes):
+                    raise RuntimeError(
+                        "preprocessing subprocess failed: "
+                        + str(return_codes)
+                    )
 
                 opt = []
                 for i_part in range(all_parts):  # txt_path="%s/2-name2text-%s.txt"%(opt_dir,i_part)
@@ -2794,8 +2811,12 @@ def open1abc(
                     print(cmd)
                     p = Popen(cmd, shell=True)
                     ps1abc.append(p)
-                for p in ps1abc:
-                    p.wait()
+                return_codes = [p.wait() for p in ps1abc]
+                if any(code != 0 for code in return_codes):
+                    raise RuntimeError(
+                        "preprocessing subprocess failed: "
+                        + str(return_codes)
+                    )
                 ps1abc = []
             yield (
                 i18n("进度") + ": 1A-Done, 1B-Done",
@@ -2839,8 +2860,12 @@ def open1abc(
                     {"__type__": "update", "visible": False},
                     {"__type__": "update", "visible": True},
                 )
-                for p in ps1abc:
-                    p.wait()
+                return_codes = [p.wait() for p in ps1abc]
+                if any(code != 0 for code in return_codes):
+                    raise RuntimeError(
+                        "preprocessing subprocess failed: "
+                        + str(return_codes)
+                    )
 
                 opt = ["item_name\tsemantic_audio"]
                 for i_part in range(all_parts):
