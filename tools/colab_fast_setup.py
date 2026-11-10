@@ -284,8 +284,12 @@ print("[check] Python syntax for WebUI/emotion pipeline", flush=True)
 
 syntax_targets = [
     REPO_DIR / "webui.py",
+    REPO_DIR / "tools/asr/config.py",
+    REPO_DIR / "tools/asr/fasterwhisper_asr.py",
+    REPO_DIR / "tools/asr/funasr_asr.py",
     REPO_DIR / "tools/emotion_training_pipeline.py",
     REPO_DIR / "tools/auto_emotion_sidecar.py",
+    REPO_DIR / "tools/train_emotion_controller.py",
     REPO_DIR / "GPT_SoVITS/inference_webui.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
 ]
