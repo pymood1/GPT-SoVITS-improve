@@ -27,7 +27,21 @@ For development context and current architectural decisions, read
 The older `emotion-v5` branch checkout flow is historical and should not be
 treated as the current source of truth.
 
-## 2. Build emotion metadata from an existing user dataset
+## 2. Transcription and emotion analysis are separate
+
+When the user only has audio, 1A can first create the ordinary GPT-SoVITS
+`.list` file with the existing ASR backends.
+
+The default UI path is Faster Whisper because it provides broad multilingual
+transcription. The alternative FunASR option uses the separate
+`FunAudioLLM/Fun-ASR-MLT-Nano-2512` multilingual checkpoint rather than
+claiming 31-language coverage for the standard Nano checkpoint. SenseVoice and
+the classic Chinese backend remain available.
+
+This ASR step only creates transcript/language metadata. It does not assign the
+emotion labels used by the controller.
+
+## 3. Build emotion metadata from an existing user dataset
 
 The 1A WebUI can generate a first-pass emotion sidecar directly from the same
 GPT-SoVITS .list and audio folder used by ordinary preprocessing.
@@ -66,7 +80,7 @@ This is intentionally a first implementation. It does not do fuzzy transcript
 matching or pretend uncertain predictions are ground truth. The generated
 sidecar remains editable and can be replaced by a manual sidecar.
 
-## 3. Canonicalize an existing wav + .list dataset
+## 4. Canonicalize an existing wav + .list dataset
 
 ```bash
 python tools/emotion_dataset_builder.py \
@@ -102,7 +116,7 @@ Rules enforced by the builder:
 - source/text/pair groups may not cross splits;
 - `pair_group_id` must be explicit and must contain one speaker/language/exact text.
 
-## 4. Run the official V5 preprocessing in an isolated build
+## 5. Run the official V5 preprocessing in an isolated build
 
 Use only `/content/data_ready/train.list` for training features.
 
@@ -135,7 +149,7 @@ It creates an isolated directory such as:
 If any fingerprinted input changes, a different build ID is used. A partial
 directory without a valid `build.json` is never reused.
 
-## 5. Choose one fixed train reference per speaker
+## 6. Choose one fixed train reference per speaker
 
 Create `reference_map.json`:
 
@@ -153,7 +167,7 @@ The reference must:
 
 A normal legacy/base-training utterance is a good choice.
 
-## 6. Export inference-exact reference prompts
+## 7. Export inference-exact reference prompts
 
 GPT-SoVITS TTS appends 0.3 seconds of silence when extracting the reference
 semantic prefix and also applies prompt-text punctuation preprocessing.
@@ -170,7 +184,7 @@ python tools/export_emotion_reference_prompts.py \
 The TTS config must point to `v5dev` or `v5turbo` and the intended V5
 pretrained/fine-tuned models.
 
-## 7. Train only the emotion controller
+## 8. Train only the emotion controller
 
 ```bash
 python tools/train_emotion_controller.py \
@@ -218,7 +232,7 @@ The trainer uses the same default inference sampling settings:
 A target token contributes to the preference loss only if it survives the
 original GPT-SoVITS sampler support.
 
-## 8. Load the controller in TTS
+## 9. Load the controller in TTS
 
 Python example:
 
@@ -253,7 +267,7 @@ of assuming IDs for other checkpoints.
 
 `emotion_strength` is an intervention strength, not a perceptual percentage.
 
-## 9. Behavior when emotion control is off
+## 10. Behavior when emotion control is off
 
 If:
 
@@ -268,7 +282,7 @@ Normal requests can still use the existing acceleration backend. Emotion-enabled
 requests currently fall back to the ordinary `infer_panel` path because the
 acceleration backend owns a separate sampler.
 
-## 10. WebUI flow
+## 11. WebUI flow
 
 In the main WebUI:
 
@@ -302,7 +316,7 @@ Keep at least one 3-10 second train sample per paired speaker outside all
 When optional emotion training in 1B finishes, the controller path is passed to
 the 1C inference WebUI and loaded automatically when its S1/S2 provenance matches.
 
-## 11. Not implemented on purpose
+## 12. Not implemented on purpose
 
 The current branch includes a WebUI pipeline for:
 
