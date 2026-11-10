@@ -1,11 +1,14 @@
---no-binary=opencc
-numpy<2.0
+numpy<2.0; python_version < "3.13"
+numpy>=2.4,<3; python_version >= "3.13"
 scipy
 tensorboard
-librosa==0.10.2
-numba
+librosa==0.10.2; python_version < "3.13"
+librosa>=0.11,<0.12; python_version >= "3.13"
+numba; python_version < "3.13"
+numba>=0.68.1; python_version >= "3.13"
 pytorch-lightning>=2.4
-gradio<5
+gradio>=4.44.1,<5
+audioop-lts<=0.2.2; python_version >= "3.13"
 ffmpeg-python
 onnxruntime; platform_machine == "aarch64" or platform_machine == "arm64"
 onnxruntime-gpu; platform_machine == "x86_64" or platform_machine == "AMD64"
@@ -13,7 +16,8 @@ tqdm
 funasr>=1.4.1
 cn2an
 pypinyin
-pyopenjtalk>=0.4.1
+pyopenjtalk>=0.4.1; python_version < "3.13"
+pyopenjtalk-plus>=0.4.1.post10; python_version >= "3.13"
 g2p_en
 torchaudio
 modelscope
@@ -23,22 +27,26 @@ peft<0.18.0
 chardet
 PyYAML
 psutil
-jieba_fast
+jieba_fast; python_version < "3.13"
+jieba_pyfast>=4.0.1; python_version >= "3.13"
 jieba
 split-lang
-fast_langdetect>=0.3.1
+fast_langdetect>=1.0.1
 wordsegment
 rotary_embedding_torch
-ToJyutping 
+ToJyutping
 g2pk2
 ko_pron
-opencc
-python_mecab_ko; sys_platform != 'win32'
+opencc>=1.4.2; python_version >= "3.13"
+opencc; python_version < "3.13"
+python_mecab_ko; sys_platform != "win32" and python_version < "3.13"
+mecab-ko>=1.0.3; python_version >= "3.13"
 fastapi[standard]>=0.115.2,<0.116
-starlette>=0.40,<0.47
+starlette>=0.37.2,<0.39
 x_transformers
-torchmetrics<=1.5
-pydantic<=2.10.6
+torchmetrics<=1.5; python_version < "3.14"
+torchmetrics>=1.5,<2; python_version >= "3.14"
+pydantic<=2.10.6; python_version < "3.14"
+pydantic>=2.12,<3; python_version >= "3.14"
 ctranslate2>=4.0,<5
 av>=11
-tqdm
