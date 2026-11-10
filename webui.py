@@ -1457,10 +1457,11 @@ def open_asr(
     asr_cancel_requested = False
 
     try:
-        p_asr = Popen(
+        process = Popen(
             cmd,
             cwd=now_dir,
         )
+        p_asr = process
     except OSError as exc:
         p_asr = None
         yield (
@@ -1483,9 +1484,10 @@ def open_asr(
     )
 
     try:
-        return_code = p_asr.wait()
+        return_code = process.wait()
     finally:
-        p_asr = None
+        if p_asr is process:
+            p_asr = None
 
     if asr_cancel_requested:
         asr_cancel_requested = False
@@ -1735,10 +1737,11 @@ def open1Ba(
     sovits_train_cancel_requested = False
 
     try:
-        p_train_SoVITS = Popen(
+        process = Popen(
             cmd,
             cwd=now_dir,
         )
+        p_train_SoVITS = process
     except OSError as exc:
         p_train_SoVITS = None
         yield (
@@ -1758,9 +1761,9 @@ def open1Ba(
         {"__type__": "update"},
     )
 
-    process = p_train_SoVITS
     return_code = process.wait()
-    p_train_SoVITS = None
+    if p_train_SoVITS is process:
+        p_train_SoVITS = None
 
     if sovits_train_cancel_requested:
         sovits_train_cancel_requested = False
@@ -1946,11 +1949,12 @@ def open1Bb(
     gpt_train_cancel_requested = False
 
     try:
-        p_train_GPT = Popen(
+        process = Popen(
             cmd,
             cwd=now_dir,
             env=child_env,
         )
+        p_train_GPT = process
     except OSError as exc:
         p_train_GPT = None
         yield (
@@ -1970,9 +1974,9 @@ def open1Bb(
         {"__type__": "update"},
     )
 
-    process = p_train_GPT
     return_code = process.wait()
-    p_train_GPT = None
+    if p_train_GPT is process:
+        p_train_GPT = None
 
     if gpt_train_cancel_requested:
         gpt_train_cancel_requested = False
