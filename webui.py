@@ -276,9 +276,19 @@ system = platform.system()
 
 def kill_process(pid, process_name=""):
     if system == "Windows":
-        cmd = "taskkill /t /f /pid %s" % pid
-        # os.system(cmd)
-        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cmd = [
+            "taskkill",
+            "/t",
+            "/f",
+            "/pid",
+            str(pid),
+        ]
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
     else:
         kill_proc_tree(pid)
     print(process_name + i18n("进程已终止"))
@@ -2801,10 +2811,22 @@ def open1abc(
                             "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
                         }
                     )
-                    os.environ.update(config)
-                    cmd = '"%s" -s GPT_SoVITS/prepare_datasets/1-get-text.py' % python_exec
-                    print(cmd)
-                    p = Popen(cmd, shell=True)
+                    child_env = os.environ.copy()
+                    child_env.update(config)
+                    cmd = [
+                        python_exec,
+                        "-s",
+                        "GPT_SoVITS/prepare_datasets/1-get-text.py",
+                    ]
+                    print(
+                        "[1Aabc-1A]",
+                        " ".join(repr(item) for item in cmd),
+                    )
+                    p = Popen(
+                        cmd,
+                        cwd=now_dir,
+                        env=child_env,
+                    )
                     ps1abc.append(p)
 
                 stage_processes = list(ps1abc)
@@ -2860,10 +2882,22 @@ def open1abc(
                         "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
                     }
                 )
-                os.environ.update(config)
-                cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py' % python_exec
-                print(cmd)
-                p = Popen(cmd, shell=True)
+                child_env = os.environ.copy()
+                child_env.update(config)
+                cmd = [
+                    python_exec,
+                    "-s",
+                    "GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py",
+                ]
+                print(
+                    "[1Aabc-1B]",
+                    " ".join(repr(item) for item in cmd),
+                )
+                p = Popen(
+                    cmd,
+                    cwd=now_dir,
+                    env=child_env,
+                )
                 ps1abc.append(p)
 
             stage_processes = list(ps1abc)
@@ -2894,10 +2928,22 @@ def open1abc(
                             "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
                         }
                     )
-                    os.environ.update(config)
-                    cmd = '"%s" -s GPT_SoVITS/prepare_datasets/2-get-sv.py' % python_exec
-                    print(cmd)
-                    p = Popen(cmd, shell=True)
+                    child_env = os.environ.copy()
+                    child_env.update(config)
+                    cmd = [
+                        python_exec,
+                        "-s",
+                        "GPT_SoVITS/prepare_datasets/2-get-sv.py",
+                    ]
+                    print(
+                        "[1Aabc-SV]",
+                        " ".join(repr(item) for item in cmd),
+                    )
+                    p = Popen(
+                        cmd,
+                        cwd=now_dir,
+                        env=child_env,
+                    )
                     ps1abc.append(p)
 
                 stage_processes = list(ps1abc)
@@ -2946,10 +2992,22 @@ def open1abc(
                             "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
                         }
                     )
-                    os.environ.update(config)
-                    cmd = '"%s" -s GPT_SoVITS/prepare_datasets/3-get-semantic.py' % python_exec
-                    print(cmd)
-                    p = Popen(cmd, shell=True)
+                    child_env = os.environ.copy()
+                    child_env.update(config)
+                    cmd = [
+                        python_exec,
+                        "-s",
+                        "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
+                    ]
+                    print(
+                        "[1Aabc-1C]",
+                        " ".join(repr(item) for item in cmd),
+                    )
+                    p = Popen(
+                        cmd,
+                        cwd=now_dir,
+                        env=child_env,
+                    )
                     ps1abc.append(p)
 
                 stage_processes = list(ps1abc)
