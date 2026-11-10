@@ -231,9 +231,27 @@ def execute_asr(
     language,
     backend="fun-asr-nano",
 ):
+    input_folder = os.path.abspath(
+        os.path.expanduser(str(input_folder))
+    )
+    if not os.path.isdir(input_folder):
+        raise RuntimeError(
+            f"ASR input directory not found: {input_folder}"
+        )
+
+    output_folder = os.path.abspath(
+        os.path.expanduser(output_folder or "output/asr_opt")
+    )
+    output_file_name = os.path.basename(
+        os.path.normpath(input_folder)
+    )
+    if not output_file_name:
+        raise RuntimeError(
+            f"ASR input directory has no usable name: {input_folder}"
+        )
+
     input_file_names = sorted(os.listdir(input_folder))
     output = []
-    output_file_name = os.path.basename(input_folder)
 
     model = create_model(
         language,
@@ -270,6 +288,11 @@ def execute_asr(
 
                 text = rich_transcription_postprocess(text)
 
+            text = str(text or "").strip()
+            if not text:
+                print(f"Empty ASR transcript: {file_path}")
+                continue
+
             output.append(
                 f"{file_path}|{output_file_name}|"
                 f"{language.upper()}|{text}"
@@ -282,7 +305,6 @@ def execute_asr(
             "FunASR produced no usable GPT-SoVITS transcripts"
         )
 
-    output_folder = output_folder or "output/asr_opt"
     os.makedirs(output_folder, exist_ok=True)
     output_file_path = os.path.abspath(
         f"{output_folder}/{output_file_name}.list"
