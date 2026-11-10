@@ -22,12 +22,11 @@ try:
     import jieba_fast as jieba_backend
     import jieba_fast.posseg as psg
 except ImportError:
-    try:
-        import jieba_pyfast as jieba_backend
-        import jieba_pyfast.posseg as psg
-    except ImportError:
-        import jieba as jieba_backend
-        import jieba.posseg as psg
+    # jieba_fast has no current CPython 3.13/3.14 wheels.
+    # The maintained jieba_pyfast fork does not ship posseg, which this
+    # frontend needs for tone-sandhi POS tags, so fall back to pure jieba.
+    import jieba as jieba_backend
+    import jieba.posseg as psg
 
 jieba_backend.setLogLevel(logging.CRITICAL)
 
