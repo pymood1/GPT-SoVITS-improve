@@ -360,17 +360,158 @@ def stop_emotion_training():
     global p_emotion_training
 
     if p_emotion_training is None:
-        return "### 감정 제어 학습\n\n실행 중인 작업이 없습니다."
+        return "### 감정 작업\n\n실행 중인 작업이 없습니다."
 
     if p_emotion_training.poll() is None:
         kill_process(
             p_emotion_training.pid,
-            "Emotion training ",
+            "Emotion task ",
         )
 
     p_emotion_training = None
 
-    return "### 감정 제어 학습 중지됨"
+    return "### 감정 작업 중지됨"
+
+
+def run_auto_emotion_sidecar(
+    source_list,
+    wav_root,
+    sidecar_output,
+    model_name,
+    min_confidence,
+    device,
+):
+    global p_emotion_training
+
+    if p_emotion_training is not None and p_emotion_training.poll() is None:
+        yield (
+            "### 자동 감정 데이터 생성\n\n"
+            "이미 다른 감정 작업이 실행 중입니다.",
+            {"__type__": "update"},
+        )
+        return
+
+    log_lines = deque(maxlen=120)
+
+    try:
+        source_list = str(source_list or "").strip()
+        wav_root = str(wav_root or "").strip()
+        model_name = str(model_name or "").strip()
+        device = str(device or "auto").strip() or "auto"
+
+        if not source_list:
+            raise EmotionPipelineError(
+                "먼저 GPT-SoVITS 텍스트 표기(.list) 파일을 지정하세요."
+            )
+
+        source_path = Path(source_list).expanduser()
+
+        if not sidecar_output:
+            sidecar_output = str(
+                source_path.with_suffix(
+                    source_path.suffix + ".emotion.auto.jsonl"
+                )
+            )
+
+        output_path = Path(
+            str(sidecar_output)
+        ).expanduser().resolve()
+
+        if not model_name:
+            model_name = "iic/emotion2vec_plus_base"
+
+        min_confidence = float(min_confidence)
+
+        if not 0.0 <= min_confidence <= 1.0:
+            raise EmotionPipelineError(
+                "감정 신뢰도 기준은 0~1 사이여야 합니다."
+            )
+
+        cmd = [
+            python_exec,
+            "-u",
+            "tools/auto_emotion_sidecar.py",
+            "--list",
+            source_list,
+            "--output",
+            str(output_path),
+            "--model",
+            model_name,
+            "--device",
+            device,
+            "--min-confidence",
+            str(min_confidence),
+        ]
+
+        if wav_root:
+            cmd.extend(
+                [
+                    "--wav-root",
+                    wav_root,
+                ]
+            )
+
+        for status in _stream_emotion_command(
+            cmd,
+            log_lines,
+            "음성 감정 분석 및 pair 생성",
+        ):
+            yield (
+                status,
+                {"__type__": "update"},
+            )
+
+        if not output_path.is_file():
+            raise EmotionPipelineError(
+                f"자동 sidecar 파일이 생성되지 않았습니다: {output_path}"
+            )
+
+        report_path = output_path.with_suffix(
+            output_path.suffix + ".report.json"
+        )
+        summary = None
+
+        if report_path.is_file():
+            report = json.loads(
+                report_path.read_text(encoding="utf-8")
+            )
+            summary = (
+                f"샘플 {report.get('samples', 0)}개, "
+                f"pair group {report.get('pair_groups', 0)}개, "
+                f"pair 샘플 {report.get('paired_samples', 0)}개"
+            )
+
+        yield (
+            _emotion_status(
+                "자동 감정 데이터 생성 완료",
+                log_lines,
+                (
+                    f"**Sidecar:** `{output_path}`"
+                    + (f"\n\n{summary}" if summary else "")
+                ),
+            ),
+            {
+                "__type__": "update",
+                "value": str(output_path),
+            },
+        )
+
+    except (
+        EmotionPipelineError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        p_emotion_training = None
+        log_lines.append(f"[ERROR] {exc}")
+        yield (
+            _emotion_status(
+                "자동 감정 데이터 생성 실패",
+                log_lines,
+                str(exc),
+            ),
+            {"__type__": "update"},
+        )
 
 
 def run_emotion_training_pipeline(
@@ -2236,18 +2377,40 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         gr.Markdown(
                             """
 일반 GPT-SoVITS 학습에는 필요하지 않습니다.
-감정 컨트롤러를 함께 학습할 경우 위의 **텍스트 표기 파일**과
-**학습용 음성 폴더**를 그대로 사용하며, 여기서는 감정 pair 메타데이터만 추가합니다.
 
-현재 감정 pair는 자동 추정하지 않습니다. 같은 화자·같은 문장·다른 감정의
-관계가 확인된 sidecar JSONL을 사용해야 합니다.
+감정 제어를 학습하려면 위의 **텍스트 표기(.list)**와
+**학습용 음성 폴더**를 그대로 사용합니다. 자동 생성은 같은 화자·같은 언어·
+**동일한 전사문**을 가진 음성을 묶고, 음성 감정 분류 결과가 충분히 확실한 경우에만
+서로 다른 감정의 pair를 만듭니다. 자동 결과가 마음에 들지 않으면 sidecar JSONL을
+직접 수정하거나 수동 파일로 바꿔도 됩니다.
 """
                         )
 
                         with gr.Row():
+                            emotion_auto_model = gr.Textbox(
+                                label="자동 감정 분석 모델",
+                                value="iic/emotion2vec_plus_base",
+                                interactive=True,
+                            )
+                            emotion_auto_confidence = gr.Slider(
+                                minimum=0.0,
+                                maximum=1.0,
+                                step=0.05,
+                                label="자동 감정 라벨 최소 신뢰도",
+                                value=0.45,
+                                interactive=True,
+                            )
+                            emotion_auto_device = gr.Dropdown(
+                                label="자동 감정 분석 장치",
+                                choices=["auto", "cuda:0", "cpu"],
+                                value="auto",
+                                interactive=True,
+                            )
+
+                        with gr.Row():
                             emotion_sidecar = gr.Textbox(
-                                label="감정 sidecar JSONL 경로",
-                                placeholder="/content/drive/MyDrive/data/emotion_sidecar.jsonl",
+                                label="감정 sidecar JSONL 경로 (자동 생성/수동 지정)",
+                                value="/content/emotion_sidecar.auto.jsonl",
                                 interactive=True,
                             )
                             emotion_dataset_id = gr.Textbox(
@@ -2255,6 +2418,23 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 value="emotion_dataset_01",
                                 interactive=True,
                             )
+
+                        with gr.Row():
+                            emotion_auto_run = gr.Button(
+                                value="음성에서 감정 pair 자동 생성",
+                                variant="primary",
+                            )
+                            emotion_auto_stop = gr.Button(
+                                value="자동 감정 분석 중지",
+                                variant="stop",
+                            )
+
+                        emotion_auto_status = gr.Markdown(
+                            value=(
+                                "동일 전사문 그룹 탐색 → emotion2vec+ 감정 분석 → "
+                                "신뢰도 필터 → reference 예약 → sidecar 생성"
+                            )
+                        )
 
                         with gr.Row():
                             emotion_dataset_dir = gr.Textbox(
@@ -2267,6 +2447,29 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 value=True,
                                 interactive=True,
                             )
+
+                        emotion_auto_run.click(
+                            run_auto_emotion_sidecar,
+                            [
+                                inp_text,
+                                inp_wav_dir,
+                                emotion_sidecar,
+                                emotion_auto_model,
+                                emotion_auto_confidence,
+                                emotion_auto_device,
+                            ],
+                            [
+                                emotion_auto_status,
+                                emotion_sidecar,
+                            ],
+                        )
+
+                        emotion_auto_stop.click(
+                            stop_emotion_training,
+                            [],
+                            [emotion_auto_status],
+                            queue=False,
+                        )
 
                 pretrained_s2G.change(sync, [pretrained_s2G], [pretrained_s2G_])
                 open_asr_button.click(
