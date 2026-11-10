@@ -243,31 +243,38 @@ def main() -> int:
     manifest_path = output_dir / "build.json"
 
     if output_dir.exists():
-        if not manifest_path.is_file():
-            raise PreprocessError(
-                f"partial/untrusted build directory already exists: {output_dir}. "
-                "Do not reuse it; remove it manually or choose another output root."
+        if manifest_path.is_file():
+            existing = json.loads(
+                manifest_path.read_text(encoding="utf-8")
             )
-        existing = json.loads(
-            manifest_path.read_text(encoding="utf-8")
-        )
-        if existing.get("identity") != identity:
-            raise PreprocessError(
-                f"build identity mismatch in existing directory: {output_dir}"
+            if existing.get("identity") != identity:
+                raise PreprocessError(
+                    f"build identity mismatch in existing directory: {output_dir}"
+                )
+            missing = [
+                str(path)
+                for path in expected_outputs(output_dir)
+                if not path.exists()
+            ]
+            if not missing:
+                print(
+                    f"[OK] exact preprocessing build already exists: "
+                    f"{output_dir}"
+                )
+                print(output_dir)
+                return 0
+            print(
+                "[recover] removing incomplete preprocessing build: "
+                + ", ".join(missing),
+                file=sys.stderr,
             )
-        missing = [
-            str(path)
-            for path in expected_outputs(output_dir)
-            if not path.exists()
-        ]
-        if missing:
-            raise PreprocessError(
-                "existing build is incomplete; refusing partial cache reuse: "
-                + ", ".join(missing)
+        else:
+            print(
+                f"[recover] removing partial preprocessing build: {output_dir}",
+                file=sys.stderr,
             )
-        print(f"[OK] exact preprocessing build already exists: {output_dir}")
-        print(output_dir)
-        return 0
+
+        shutil.rmtree(output_dir)
 
     output_dir.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
@@ -343,8 +350,10 @@ def main() -> int:
             encoding="utf-8",
         )
     except Exception:
-        # Never mark a partial build as reusable. Keep the directory for
-        # inspection, but without build.json it will be rejected next time.
+        # The parent WebUI already retains subprocess logs. Remove partial
+        # artifacts so retrying the same dataset does not require manual
+        # directory cleanup after a failure or interrupted child process.
+        shutil.rmtree(output_dir, ignore_errors=True)
         raise
 
     print(f"[OK] fresh official V5 preprocessing build: {output_dir}")
