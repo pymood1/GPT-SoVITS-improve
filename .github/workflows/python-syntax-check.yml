@@ -108,3 +108,37 @@ jobs:
           print("ja=", ja)
           print("zh_tokens=", len(zh))
           PY
+
+
+  numeric_stack_smoke_314:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Python 3.14 numeric stack
+        run: |
+          python -m pip install -q uv
+          uv pip install --system \
+            "numpy>=2.4,<3" \
+            "numba>=0.68.1" \
+            "librosa>=0.11,<0.12" \
+            "pydantic>=2.12,<3"
+      - name: Import numeric stack
+        run: |
+          python - <<'PY'
+          import importlib
+          import librosa
+          import numba
+          import numpy
+          import pydantic
+
+          importlib.import_module("numpy.strings")
+
+          print("PY314_NUMERIC_STACK_SMOKE_OK")
+          print("numpy=", numpy.__version__)
+          print("numba=", numba.__version__)
+          print("librosa=", librosa.__version__)
+          print("pydantic=", pydantic.__version__)
+          PY
