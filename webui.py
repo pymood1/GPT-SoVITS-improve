@@ -238,6 +238,7 @@ p_uvr5 = None
 p_asr = None
 asr_cancel_requested = False
 p_denoise = None
+denoise_cancel_requested = False
 p_tts_inference = None
 tts_inference_cancel_requested = False
 p_emotion_training = None
@@ -1557,36 +1558,9 @@ process_name_denoise = i18n("语音降噪")
 
 def open_denoise(denoise_inp_dir, denoise_opt_dir):
     global p_denoise
-    if p_denoise == None:
-        denoise_inp_dir = my_utils.clean_path(denoise_inp_dir)
-        denoise_opt_dir = my_utils.clean_path(denoise_opt_dir)
-        check_for_existance([denoise_inp_dir])
-        cmd = '"%s" -s tools/cmd-denoise.py -i "%s" -o "%s" -p %s' % (
-            python_exec,
-            denoise_inp_dir,
-            denoise_opt_dir,
-            "float16" if is_half == True else "float32",
-        )
+    global denoise_cancel_requested
 
-        yield (
-            process_info(process_name_denoise, "opened"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-            {"__type__": "update"},
-            {"__type__": "update"},
-        )
-        print(cmd)
-        p_denoise = Popen(cmd, shell=True)
-        p_denoise.wait()
-        p_denoise = None
-        yield (
-            process_info(process_name_denoise, "finish"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "value": denoise_opt_dir},
-            {"__type__": "update", "value": denoise_opt_dir},
-        )
-    else:
+    if p_denoise is not None:
         yield (
             process_info(process_name_denoise, "occupy"),
             {"__type__": "update", "visible": False},
@@ -1594,13 +1568,131 @@ def open_denoise(denoise_inp_dir, denoise_opt_dir):
             {"__type__": "update"},
             {"__type__": "update"},
         )
+        return
+
+    input_path = _resolve_repo_path(denoise_inp_dir)
+    if input_path is None or not input_path.is_dir():
+        yield (
+            process_info(process_name_denoise, "failed")
+            + f": input directory not found: {input_path or '<empty>'}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    output_text = _clean_user_path(denoise_opt_dir)
+    if not output_text:
+        output_text = "output/denoise_opt"
+    output_path = _resolve_repo_path(output_text)
+    if output_path is None:
+        yield (
+            process_info(process_name_denoise, "failed")
+            + ": invalid output directory",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    cmd = [
+        python_exec,
+        "-s",
+        "tools/cmd-denoise.py",
+        "-i",
+        str(input_path),
+        "-o",
+        str(output_path),
+        "-p",
+        "float16" if is_half else "float32",
+    ]
+
+    print("[Denoise]", " ".join(repr(item) for item in cmd))
+    denoise_cancel_requested = False
+
+    try:
+        process = Popen(
+            cmd,
+            cwd=now_dir,
+        )
+        p_denoise = process
+    except OSError as exc:
+        p_denoise = None
+        yield (
+            process_info(process_name_denoise, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    yield (
+        process_info(process_name_denoise, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        {"__type__": "update"},
+        {"__type__": "update"},
+    )
+
+    return_code = process.wait()
+    if p_denoise is process:
+        p_denoise = None
+
+    if denoise_cancel_requested:
+        denoise_cancel_requested = False
+        return
+
+    if return_code != 0:
+        yield (
+            process_info(process_name_denoise, "failed")
+            + f" (exit code {return_code})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    if (
+        not output_path.is_dir()
+        or not any(path.is_file() for path in output_path.rglob("*"))
+    ):
+        yield (
+            process_info(process_name_denoise, "failed")
+            + ": no denoised files were produced",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    yield (
+        process_info(process_name_denoise, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "value": str(output_path)},
+        {"__type__": "update", "value": str(output_path)},
+    )
 
 
 def close_denoise():
     global p_denoise
-    if p_denoise is not None:
+    global denoise_cancel_requested
+
+    denoise_cancel_requested = True
+
+    if (
+        p_denoise is not None
+        and p_denoise.poll() is None
+    ):
         kill_process(p_denoise.pid, process_name_denoise)
-        p_denoise = None
+
+    p_denoise = None
+
     return (
         process_info(process_name_denoise, "closed"),
         {"__type__": "update", "visible": True},
@@ -2035,15 +2127,42 @@ def close1Bb():
 
 
 ps_slice = []
+slice_cancel_requested = False
 process_name_slice = i18n("语音切分")
 
 
-def open_slice(inp, opt_root, threshold, min_length, min_interval, hop_size, max_sil_kept, _max, alpha, n_parts):
+def open_slice(
+    inp,
+    opt_root,
+    threshold,
+    min_length,
+    min_interval,
+    hop_size,
+    max_sil_kept,
+    _max,
+    alpha,
+    n_parts,
+):
     global ps_slice
-    inp = my_utils.clean_path(inp)
-    opt_root = my_utils.clean_path(opt_root)
-    check_for_existance([inp])
-    if os.path.exists(inp) == False:
+    global slice_cancel_requested
+
+    if ps_slice != []:
+        yield (
+            process_info(process_name_slice, "occupy"),
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            {"__type__": "update"},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    input_path = _resolve_repo_path(inp)
+    if (
+        input_path is None
+        or not input_path.exists()
+        or not (input_path.is_file() or input_path.is_dir())
+    ):
         yield (
             i18n("输入路径不存在"),
             {"__type__": "update", "visible": True},
@@ -2053,13 +2172,15 @@ def open_slice(inp, opt_root, threshold, min_length, min_interval, hop_size, max
             {"__type__": "update"},
         )
         return
-    if os.path.isfile(inp):
-        n_parts = 1
-    elif os.path.isdir(inp):
-        pass
-    else:
+
+    output_text = _clean_user_path(opt_root)
+    if not output_text:
+        output_text = "output/slicer_opt"
+    output_path = _resolve_repo_path(output_text)
+    if output_path is None:
         yield (
-            i18n("输入路径存在但不可用"),
+            process_info(process_name_slice, "failed")
+            + ": invalid output directory",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             {"__type__": "update"},
@@ -2067,64 +2188,133 @@ def open_slice(inp, opt_root, threshold, min_length, min_interval, hop_size, max
             {"__type__": "update"},
         )
         return
-    if ps_slice == []:
-        for i_part in range(n_parts):
-            cmd = '"%s" -s tools/slice_audio.py "%s" "%s" %s %s %s %s %s %s %s %s %s' % (
-                python_exec,
-                inp,
-                opt_root,
-                threshold,
-                min_length,
-                min_interval,
-                hop_size,
-                max_sil_kept,
-                _max,
-                alpha,
-                i_part,
-                n_parts,
-            )
-            print(cmd)
-            p = Popen(cmd, shell=True)
-            ps_slice.append(p)
+
+    try:
+        n_parts = 1 if input_path.is_file() else max(1, int(n_parts))
+    except (TypeError, ValueError) as exc:
         yield (
-            process_info(process_name_slice, "opened"),
-            {"__type__": "update", "visible": False},
+            process_info(process_name_slice, "failed") + f": {exc}",
             {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
             {"__type__": "update"},
             {"__type__": "update"},
             {"__type__": "update"},
         )
-        for p in ps_slice:
-            p.wait()
+        return
+
+    slice_cancel_requested = False
+
+    try:
+        for i_part in range(n_parts):
+            cmd = [
+                python_exec,
+                "-s",
+                "tools/slice_audio.py",
+                str(input_path),
+                str(output_path),
+                str(threshold),
+                str(min_length),
+                str(min_interval),
+                str(hop_size),
+                str(max_sil_kept),
+                str(_max),
+                str(alpha),
+                str(i_part),
+                str(n_parts),
+            ]
+            print("[Slicer]", " ".join(repr(item) for item in cmd))
+            ps_slice.append(
+                Popen(
+                    cmd,
+                    cwd=now_dir,
+                )
+            )
+    except OSError as exc:
+        for process in ps_slice:
+            if process.poll() is None:
+                kill_process(process.pid, process_name_slice)
         ps_slice = []
         yield (
-            process_info(process_name_slice, "finish"),
+            process_info(process_name_slice, "failed") + f": {exc}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
-            {"__type__": "update", "value": opt_root},
-            {"__type__": "update", "value": opt_root},
-            {"__type__": "update", "value": opt_root},
+            {"__type__": "update"},
+            {"__type__": "update"},
+            {"__type__": "update"},
         )
-    else:
+        return
+
+    processes = list(ps_slice)
+
+    yield (
+        process_info(process_name_slice, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        {"__type__": "update"},
+        {"__type__": "update"},
+        {"__type__": "update"},
+    )
+
+    return_codes = [process.wait() for process in processes]
+    ps_slice = []
+
+    if slice_cancel_requested:
+        slice_cancel_requested = False
+        return
+
+    if any(code != 0 for code in return_codes):
         yield (
-            process_info(process_name_slice, "occupy"),
-            {"__type__": "update", "visible": False},
+            process_info(process_name_slice, "failed")
+            + f" (exit codes: {return_codes})",
             {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
             {"__type__": "update"},
             {"__type__": "update"},
             {"__type__": "update"},
         )
+        return
+
+    if (
+        not output_path.is_dir()
+        or not any(path.is_file() for path in output_path.rglob("*"))
+    ):
+        yield (
+            process_info(process_name_slice, "failed")
+            + ": no sliced audio files were produced",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    yield (
+        process_info(process_name_slice, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "value": str(output_path)},
+        {"__type__": "update", "value": str(output_path)},
+        {"__type__": "update", "value": str(output_path)},
+    )
 
 
 def close_slice():
     global ps_slice
+    global slice_cancel_requested
+
+    slice_cancel_requested = True
+
     if ps_slice != []:
-        for p_slice in ps_slice:
+        for process in list(ps_slice):
             try:
-                kill_process(p_slice.pid, process_name_slice)
-            except:
+                if process.poll() is None:
+                    kill_process(process.pid, process_name_slice)
+            except Exception:
                 traceback.print_exc()
-        ps_slice = []
+
+    ps_slice = []
+
     return (
         process_info(process_name_slice, "closed"),
         {"__type__": "update", "visible": True},
