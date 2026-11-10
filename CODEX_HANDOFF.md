@@ -1082,3 +1082,17 @@ emotion control remains a small optional layer
 +
 runtime evidence decides whether architecture becomes more complex
 ~~~
+
+## Path and subprocess reliability
+
+The WebUI path/subprocess flow is intentionally strict:
+
+- user-pasted paths are cleaned before resolution;
+- new subprocess calls use argv lists instead of shell-quoted command strings where practical;
+- a zero exit code is not enough when an output artifact is expected; the expected file/build must exist and belong to the current run;
+- cancellation is distinct from failure so Stop does not later become a false failure/success message;
+- partial canonical/V5 preprocessing outputs are removed or rebuilt instead of becoming permanent retry blockers;
+- emotion preprocessing must use the exact build directory reported by its child process rather than guessing the newest directory under a shared root.
+
+When extending 1A/1B/1C, preserve these rules rather than adding another unchecked `Popen(...).wait()` path.
+
