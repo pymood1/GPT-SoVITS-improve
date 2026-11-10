@@ -1085,7 +1085,7 @@ def _stream_tts_inference_output(process, allow_local_url=False):
         r"https://[A-Za-z0-9-]+\.gradio\.live"
     )
     local_url_pattern = re.compile(
-        r"https?://(?:127\.0\.0\.1|localhost):\d+"
+        r"https?://(?:127\.0\.0\.1|localhost|0\.0\.0\.0):\d+"
     )
 
     for line in process.stdout:
@@ -1098,7 +1098,10 @@ def _stream_tts_inference_output(process, allow_local_url=False):
             match = local_url_pattern.search(clean_line)
 
         if match is not None:
-            tts_inference_url = match.group(0)
+            tts_inference_url = match.group(0).replace(
+                "://0.0.0.0:",
+                "://127.0.0.1:",
+            )
 
 
 def _tts_log_tail(limit=12):
