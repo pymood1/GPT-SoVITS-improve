@@ -538,8 +538,18 @@ def run_emotion_training_pipeline(
     log_lines = deque(maxlen=120)
 
     try:
-        dataset_dir = Path(dataset_dir).expanduser().resolve()
-        feature_root = Path(feature_root).expanduser().resolve()
+        dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
+
+        dataset_dir_text = str(dataset_dir or "").strip()
+        if not dataset_dir_text:
+            dataset_dir_text = f"/content/{dataset_id}_emotion_dataset"
+
+        feature_root_text = str(feature_root or "").strip()
+        if not feature_root_text:
+            feature_root_text = f"/content/{dataset_id}_emotion_features"
+
+        dataset_dir = Path(dataset_dir_text).expanduser().resolve()
+        feature_root = Path(feature_root_text).expanduser().resolve()
         controller_output = Path(
             controller_output
         ).expanduser().resolve()
@@ -660,7 +670,7 @@ def run_emotion_training_pipeline(
                 "--output",
                 str(dataset_dir),
                 "--dataset-id",
-                str(dataset_id).strip() or "emotion_dataset_01",
+                dataset_id,
                 "--sidecar",
                 sidecar_path,
                 "--stage-mode",
@@ -2538,7 +2548,11 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         with gr.Row():
                             emotion_sidecar = gr.Textbox(
                                 label="감정 sidecar JSONL 경로 (자동 생성/수동 지정)",
-                                value="/content/emotion_sidecar.auto.jsonl",
+                                value="",
+                                placeholder=(
+                                    "비워두면 .list 파일 옆에 "
+                                    "*.emotion.auto.jsonl로 자동 생성"
+                                ),
                                 interactive=True,
                             )
                             emotion_dataset_id = gr.Textbox(
@@ -2567,12 +2581,16 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         with gr.Row():
                             emotion_dataset_dir = gr.Textbox(
                                 label="감정 canonical dataset 출력 폴더",
-                                value="/content/emotion_dataset",
+                                value="",
+                                placeholder=(
+                                    "비워두면 /content/"
+                                    "<데이터셋 ID>_emotion_dataset"
+                                ),
                                 interactive=True,
                             )
                             emotion_reuse_dataset = gr.Checkbox(
                                 label="기존 감정 canonical dataset 재사용",
-                                value=True,
+                                value=False,
                                 interactive=True,
                             )
 
@@ -2862,7 +2880,11 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         with gr.Row():
                             emotion_feature_root = gr.Textbox(
                                 label="V5 전처리 feature 폴더",
-                                value="/content/emotion_features",
+                                value="",
+                                placeholder=(
+                                    "비워두면 /content/"
+                                    "<데이터셋 ID>_emotion_features"
+                                ),
                                 interactive=True,
                             )
                             emotion_controller_output = gr.Textbox(
