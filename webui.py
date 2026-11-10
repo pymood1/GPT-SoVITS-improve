@@ -2123,11 +2123,15 @@ def close_slice():
 
 
 ps1a = []
+preprocess_1a_cancel_requested = False
 process_name_1a = i18n("文本分词与特征提取")
 
 
 def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
     global ps1a
+    global preprocess_1a_cancel_requested
+
+    preprocess_1a_cancel_requested = False
 
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
@@ -2208,14 +2212,20 @@ def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
         )
         return
 
+    processes = list(ps1a)
+
     yield (
         process_info(process_name_1a, "running"),
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
     )
 
-    return_codes = [process.wait() for process in ps1a]
+    return_codes = [process.wait() for process in processes]
     ps1a = []
+
+    if preprocess_1a_cancel_requested:
+        preprocess_1a_cancel_requested = False
+        return
 
     if any(code != 0 for code in return_codes):
         yield (
@@ -2268,6 +2278,10 @@ def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
 
 def close1a():
     global ps1a
+    global preprocess_1a_cancel_requested
+
+    preprocess_1a_cancel_requested = True
+
     if ps1a != []:
         for p1a in ps1a:
             try:
@@ -2284,6 +2298,7 @@ def close1a():
 
 sv_path = "GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
 ps1b = []
+preprocess_1b_cancel_requested = False
 process_name_1b = i18n("语音自监督特征提取")
 
 
@@ -2296,6 +2311,9 @@ def open1b(
     ssl_pretrained_dir,
 ):
     global ps1b
+    global preprocess_1b_cancel_requested
+
+    preprocess_1b_cancel_requested = False
 
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
@@ -2378,14 +2396,20 @@ def open1b(
         )
         return
 
+    processes = list(ps1b)
+
     yield (
         process_info(process_name_1b, "running"),
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
     )
 
-    return_codes = [process.wait() for process in ps1b]
+    return_codes = [process.wait() for process in processes]
     ps1b = []
+
+    if preprocess_1b_cancel_requested:
+        preprocess_1b_cancel_requested = False
+        return
 
     if any(code != 0 for code in return_codes):
         yield (
@@ -2435,8 +2459,16 @@ def open1b(
             )
             return
 
-        sv_return_codes = [process.wait() for process in ps1b]
+        sv_processes = list(ps1b)
+        sv_return_codes = [
+            process.wait()
+            for process in sv_processes
+        ]
         ps1b = []
+
+        if preprocess_1b_cancel_requested:
+            preprocess_1b_cancel_requested = False
+            return
 
         if any(code != 0 for code in sv_return_codes):
             yield (
@@ -2472,6 +2504,10 @@ def open1b(
 
 def close1b():
     global ps1b
+    global preprocess_1b_cancel_requested
+
+    preprocess_1b_cancel_requested = True
+
     if ps1b != []:
         for p1b in ps1b:
             try:
@@ -2487,6 +2523,7 @@ def close1b():
 
 
 ps1c = []
+preprocess_1c_cancel_requested = False
 process_name_1c = i18n("语义Token提取")
 
 
@@ -2499,6 +2536,9 @@ def open1c(
     pretrained_s2G_path,
 ):
     global ps1c
+    global preprocess_1c_cancel_requested
+
+    preprocess_1c_cancel_requested = False
 
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
@@ -2605,14 +2645,20 @@ def open1c(
         )
         return
 
+    processes = list(ps1c)
+
     yield (
         process_info(process_name_1c, "running"),
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
     )
 
-    return_codes = [process.wait() for process in ps1c]
+    return_codes = [process.wait() for process in processes]
     ps1c = []
+
+    if preprocess_1c_cancel_requested:
+        preprocess_1c_cancel_requested = False
+        return
 
     if any(code != 0 for code in return_codes):
         yield (
@@ -2670,6 +2716,10 @@ def open1c(
 
 def close1c():
     global ps1c
+    global preprocess_1c_cancel_requested
+
+    preprocess_1c_cancel_requested = True
+
     if ps1c != []:
         for p1c in ps1c:
             try:
