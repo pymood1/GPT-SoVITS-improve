@@ -295,7 +295,7 @@ def load_emotion_controller_webui(controller_path):
         str(i) for i in range(controller.num_emotions)
     ]
     choices = [(f"{i}: {name}", i) for i, name in enumerate(names)]
-    tag_examples = " ".join(f"[{name}]" for name in names)
+    tag_examples = " ".join(["[neutral]"] + [f"[{name}]" for name in names])
     return (
         {
             "__type__": "update",
@@ -355,17 +355,16 @@ def parse_emotion_tagged_text(text):
         return [(text, None, 0.0)]
 
     emotion_names = _emotion_names_from_controller()
-    if not emotion_names:
-        raise gr.Error(
-            i18n("检测到情感标签，但尚未加载情感控制器")
-        )
-
     name_to_id = {
         name.casefold(): index
         for index, name in enumerate(emotion_names)
     }
+    available_names = ["neutral"] + [
+        name for name in emotion_names
+        if name.casefold() != "neutral"
+    ]
     available = ", ".join(
-        f"[{name}]" for name in emotion_names
+        f"[{name}]" for name in available_names
     )
 
     segments = []
@@ -385,14 +384,24 @@ def parse_emotion_tagged_text(text):
             )
 
         name = match.group(1).strip()
-        emotion_id = name_to_id.get(name.casefold())
-        if emotion_id is None:
-            raise gr.Error(
-                i18n("未知情感标签")
-                + f": [{name}]\n"
-                + i18n("可用情感标签")
-                + f": {available}"
-            )
+        normalized_name = name.casefold()
+        is_neutral = normalized_name in {"neutral", "default"}
+
+        if is_neutral:
+            emotion_id = None
+        else:
+            emotion_id = name_to_id.get(normalized_name)
+            if emotion_id is None:
+                if not emotion_names:
+                    raise gr.Error(
+                        i18n("检测到情感标签，但尚未加载情感控制器")
+                    )
+                raise gr.Error(
+                    i18n("未知情感标签")
+                    + f": [{name}]\n"
+                    + i18n("可用情感标签")
+                    + f": {available}"
+                )
 
         strength_text = match.group(2)
         strength = (
@@ -410,7 +419,7 @@ def parse_emotion_tagged_text(text):
             )
 
         current_emotion_id = emotion_id
-        current_strength = strength
+        current_strength = 0.0 if is_neutral else strength
         cursor = match.end()
 
     suffix = text[cursor:]
