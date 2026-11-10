@@ -142,6 +142,73 @@ jobs:
           print("librosa=", librosa.__version__)
           print("pydantic=", pydantic.__version__)
           PY
+      - name: Check repository Gradio constructor keywords
+        run: |
+          python - <<'PY'
+          import ast
+          import inspect
+          from pathlib import Path
+
+          import gradio as gr
+
+          files = [
+              Path("webui.py"),
+              Path("GPT_SoVITS/inference_webui.py"),
+              Path("tools/subfix_webui.py"),
+          ]
+
+          errors = []
+          checked = 0
+
+          for path in files:
+              tree = ast.parse(path.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Call):
+                      continue
+                  func = node.func
+                  if not (
+                      isinstance(func, ast.Attribute)
+                      and isinstance(func.value, ast.Name)
+                      and func.value.id == "gr"
+                  ):
+                      continue
+
+                  name = func.attr
+                  if not name[:1].isupper():
+                      continue
+
+                  target = getattr(gr, name, None)
+                  if target is None or not callable(target):
+                      continue
+
+                  try:
+                      sig = inspect.signature(target)
+                  except (TypeError, ValueError):
+                      continue
+
+                  if any(
+                      p.kind is inspect.Parameter.VAR_KEYWORD
+                      for p in sig.parameters.values()
+                  ):
+                      continue
+
+                  allowed = set(sig.parameters)
+                  for kw in node.keywords:
+                      if kw.arg is None:
+                          continue
+                      checked += 1
+                      if kw.arg not in allowed:
+                          errors.append(
+                              f"{path}:{node.lineno} gr.{name} "
+                              f"does not accept keyword {kw.arg!r}"
+                          )
+
+          if errors:
+              raise SystemExit("\n".join(errors))
+
+          print("PY314_GRADIO_API_SIGNATURE_SMOKE_OK")
+          print("keywords_checked=", checked)
+          PY
 
 
   ui_stack_smoke_314:
