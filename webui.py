@@ -1100,7 +1100,7 @@ from tools.asr.config import asr_dict
 
 ASR_UI_CHOICES = [
     ("Faster Whisper (다국어, 권장)", "Faster Whisper (多语种)"),
-    ("Fun-ASR Nano (31개 언어)", "Fun-ASR-Nano (31语种+方言, 推荐)"),
+    ("Fun-ASR MLT-Nano (다국어)", "Fun-ASR MLT-Nano (多语种)"),
     ("SenseVoice (5개 언어, 빠름)", "SenseVoice (极速, 5语种)"),
     ("Damo ASR (중국어)", "达摩 ASR (中文经典)"),
 ]
@@ -1118,12 +1118,17 @@ def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_
         asr_inp_dir = my_utils.clean_path(asr_inp_dir)
         asr_opt_dir = my_utils.clean_path(asr_opt_dir)
         check_for_existance([asr_inp_dir])
-        cmd = f'"{python_exec}" -s tools/asr/{asr_dict[asr_model]["path"]}'
+        asr_config = asr_dict[asr_model]
+        cmd = f'"{python_exec}" -s tools/asr/{asr_config["path"]}'
         cmd += f' -i "{asr_inp_dir}"'
         cmd += f' -o "{asr_opt_dir}"'
         cmd += f" -s {asr_model_size}"
         cmd += f" -l {asr_lang}"
         cmd += f" -p {asr_precision}"
+
+        backend = asr_config.get("backend")
+        if backend:
+            cmd += f" --backend {backend}"
         output_file_name = os.path.basename(asr_inp_dir)
         output_folder = asr_opt_dir or "output/asr_opt"
         output_file_path = os.path.abspath(f"{output_folder}/{output_file_name}.list")
@@ -2145,7 +2150,10 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     with gr.Column(scale=3):
                         with gr.Row():
                             asr_inp_dir = gr.Textbox(
-                                label=i18n("输入文件夹路径"), value="D:\\GPT-SoVITS\\raw\\xxx", interactive=True
+                                label=i18n("输入文件夹路径"),
+                                value="",
+                                placeholder="/content/drive/MyDrive/data/wav",
+                                interactive=True,
                             )
                             asr_opt_dir = gr.Textbox(
                                 label=i18n("输出文件夹路径"), value="output/asr_opt", interactive=True
