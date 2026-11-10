@@ -58,8 +58,10 @@ def run(cmd, *, cwd=None, env=None, check=True, quiet=False, capture=False):
 # Do NOT import torch/torchaudio here: on a fresh Colab runtime their first import
 # can take ~45-60 seconds and makes the first cell look frozen.
 print("[setup] fast runtime preflight...", flush=True)
-if not ((3, 10) <= sys.version_info[:2] <= (3, 12)):
-    raise RuntimeError("Use Colab Runtime Version 2026.07 (Python 3.12).")
+if not ((3, 10) <= sys.version_info[:2] <= (3, 14)):
+    raise RuntimeError(
+        "Supported Python versions are 3.10 through 3.14."
+    )
 
 try:
     from importlib.metadata import version as pkg_version
@@ -115,14 +117,12 @@ run([UV, "--version"], env=uv_env)
 t = elapsed("uv bootstrap", t)
 
 
-# 3. Keep the COMPLETE upstream requirements.
-#    OpenCC remains installed; only force-source compilation is relaxed.
-#    GPT-SoVITS requires NumPy <2, so use the latest 1.x ABI explicitly.
+# 3. Keep the COMPLETE repository requirements.
+#    Python-version markers in requirements.txt are the single source of truth
+#    for NumPy, G2P backends, Pydantic, and other compatibility-sensitive deps.
 repo_req = REPO_DIR / "requirements.txt"
 repo_extra = REPO_DIR / "extra-req.txt"
 lines = repo_req.read_text(encoding="utf-8").splitlines()
-lines = [line for line in lines if line.strip() != "--no-binary=opencc"]
-lines = ["numpy==1.26.4" if line.strip() == "numpy<2.0" else line for line in lines]
 
 full_req = Path("/content/gpt_sovits_full_requirements.txt")
 full_req.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -132,7 +132,10 @@ print("Full requirements retained:", sum(
     1 for x in lines if x.strip() and not x.lstrip().startswith("#")
 ))
 print("extra-req.txt retained:", repo_extra.read_text(encoding="utf-8").strip())
-print("NumPy ABI target: 1.26.4")
+if sys.version_info >= (3, 13):
+    print("NumPy ABI target: 2.x (modern Python path)")
+else:
+    print("NumPy ABI target: 1.26.x-compatible path")
 print("No GPT-SoVITS dependency is intentionally excluded.")
 
 
@@ -293,7 +296,11 @@ syntax_targets = [
     REPO_DIR / "tools/run_emotion_v5_preprocess.py",
     REPO_DIR / "tools/train_emotion_controller.py",
     REPO_DIR / "GPT_SoVITS/inference_webui.py",
+    REPO_DIR / "GPT_SoVITS/prepare_datasets/1-get-text.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
+    REPO_DIR / "GPT_SoVITS/text/chinese.py",
+    REPO_DIR / "GPT_SoVITS/text/chinese2.py",
+    REPO_DIR / "GPT_SoVITS/text/korean.py",
 ]
 
 run(
@@ -325,6 +332,7 @@ mods = [
     ("gradio", "Gradio"),
     ("transformers", "Transformers"),
     ("pytorch_lightning", "PyTorch Lightning"),
+    ("pyopenjtalk", "OpenJTalk"),
 ]
 failed = []
 for module_name, label in mods:
@@ -347,12 +355,17 @@ if verify.returncode != 0:
     print(verify.stderr)
     if "numpy.dtype size changed" in verify.stderr:
         print("[repair] Reinstalling ABI-sensitive wheels in the fresh environment.")
+        numpy_repair = (
+            "numpy>=2.4,<3"
+            if sys.version_info >= (3, 13)
+            else "numpy==1.26.4"
+        )
         run([
             UV, "pip", "install", "--system", "--reinstall",
-            "numpy==1.26.4",
-            "pandas>=2.2.2,<3",
-            "scipy>=1.12,<2",
-            "scikit-learn>=1.4,<2",
+            numpy_repair,
+            "pandas>=2.2.2,<4",
+            "scipy>=1.13,<2",
+            "scikit-learn>=1.5,<2",
         ], env=uv_env)
         verify = run([sys.executable, "-c", verify_script],
                      cwd=REPO_DIR, check=False, capture=True, quiet=True)
@@ -382,9 +395,21 @@ from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from module.models import Generator
 from module.models_v5 import V5_VERSIONS
 from text.cleaner import clean_text
+if sys.version_info >= (3, 14):
+    from importlib.metadata import version
+    from packaging.version import Version
+    if Version(version("torch").split("+", 1)[0]) < Version("2.10"):
+        raise RuntimeError("Python 3.14 requires PyTorch >=2.10")
+
+phones, _, normalized = clean_text("안녕하세요", "ko", "v2")
+if not phones:
+    raise RuntimeError("Korean G2P smoke test returned no phones")
+
 print("V5_SMOKE_OK")
+print("python=", sys.version.split()[0])
 print("numpy=", numpy.__version__)
 print("torch=", torch.__version__)
+print("korean_g2p=", len(phones), normalized)
 print("versions=", sorted(V5_VERSIONS))
 """
 run([sys.executable, "-c", smoke], cwd=REPO_DIR)
