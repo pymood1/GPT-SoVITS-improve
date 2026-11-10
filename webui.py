@@ -1027,30 +1027,88 @@ process_name_subfix = i18n("音频标注WebUI")
 
 def change_label(path_list):
     global p_label
-    if p_label is None:
-        check_for_existance([path_list])
-        path_list = my_utils.clean_path(path_list)
-        cmd = '"%s" -s tools/subfix_webui.py --load_list "%s" --webui_port %s --is_share %s' % (
-            python_exec,
-            path_list,
-            webui_port_subfix,
-            is_share,
-        )
+
+    if p_label is not None and p_label.poll() is None:
         yield (
-            process_info(process_name_subfix, "opened"),
+            process_info(process_name_subfix, "occupy"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
-        print(cmd)
-        p_label = Popen(cmd, shell=True)
-    else:
-        kill_process(p_label.pid, process_name_subfix)
+        return
+
+    p_label = None
+    list_path = _resolve_repo_path(path_list)
+
+    if list_path is None or not list_path.is_file():
+        yield (
+            process_info(process_name_subfix, "failed")
+            + f": list file not found: {list_path or '<empty>'}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    script_path = _resolve_repo_path("tools/subfix_webui.py")
+    if script_path is None or not script_path.is_file():
+        yield (
+            process_info(process_name_subfix, "failed")
+            + f": script not found: {script_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    cmd = [
+        python_exec,
+        "-s",
+        str(script_path),
+        "--load_list",
+        str(list_path),
+        "--webui_port",
+        str(webui_port_subfix),
+        "--is_share",
+        str(is_share),
+    ]
+    print("[Label WebUI]", " ".join(repr(item) for item in cmd))
+
+    try:
+        process = Popen(
+            cmd,
+            cwd=now_dir,
+        )
+        p_label = process
+    except OSError as exc:
         p_label = None
         yield (
-            process_info(process_name_subfix, "closed"),
+            process_info(process_name_subfix, "failed") + f": {exc}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
         )
+        return
+
+    yield (
+        process_info(process_name_subfix, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
+
+
+def close_label_webui():
+    global p_label
+
+    if p_label is not None and p_label.poll() is None:
+        kill_process(p_label.pid, process_name_subfix)
+
+    p_label = None
+
+    return (
+        process_info(process_name_subfix, "closed"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
+
+
+process_name_uvr5 = i18n("人声分离WebUI")
 
 
 process_name_uvr5 = i18n("人声分离WebUI")
@@ -1058,29 +1116,76 @@ process_name_uvr5 = i18n("人声分离WebUI")
 
 def change_uvr5():
     global p_uvr5
-    if p_uvr5 is None:
-        cmd = '"%s" -s tools/uvr5/webui.py "%s" %s %s %s' % (
-            python_exec,
-            infer_device,
-            is_half,
-            webui_port_uvr5,
-            is_share,
-        )
+
+    if p_uvr5 is not None and p_uvr5.poll() is None:
         yield (
-            process_info(process_name_uvr5, "opened"),
+            process_info(process_name_uvr5, "occupy"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
         )
-        print(cmd)
-        p_uvr5 = Popen(cmd, shell=True)
-    else:
-        kill_process(p_uvr5.pid, process_name_uvr5)
+        return
+
+    p_uvr5 = None
+    script_path = _resolve_repo_path("tools/uvr5/webui.py")
+
+    if script_path is None or not script_path.is_file():
+        yield (
+            process_info(process_name_uvr5, "failed")
+            + f": script not found: {script_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    cmd = [
+        python_exec,
+        "-s",
+        str(script_path),
+        str(infer_device),
+        str(is_half),
+        str(webui_port_uvr5),
+        str(is_share),
+    ]
+    print("[UVR5]", " ".join(repr(item) for item in cmd))
+
+    try:
+        process = Popen(
+            cmd,
+            cwd=now_dir,
+        )
+        p_uvr5 = process
+    except OSError as exc:
         p_uvr5 = None
         yield (
-            process_info(process_name_uvr5, "closed"),
+            process_info(process_name_uvr5, "failed") + f": {exc}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
         )
+        return
+
+    yield (
+        process_info(process_name_uvr5, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
+
+
+def close_uvr5_webui():
+    global p_uvr5
+
+    if p_uvr5 is not None and p_uvr5.poll() is None:
+        kill_process(p_uvr5.pid, process_name_uvr5)
+
+    p_uvr5 = None
+
+    return (
+        process_info(process_name_uvr5, "closed"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
+
+
+process_name_tts = i18n("TTS推理WebUI")
 
 
 process_name_tts = i18n("TTS推理WebUI")
@@ -3306,9 +3411,22 @@ def switch_version(version_):
 if os.path.exists("GPT_SoVITS/text/G2PWModel"):
     ...
 else:
-    cmd = '"%s" -s GPT_SoVITS/download.py' % python_exec
-    p = Popen(cmd, shell=True)
-    p.wait()
+    cmd = [
+        python_exec,
+        "-s",
+        "GPT_SoVITS/download.py",
+    ]
+    print("[G2PW download]", " ".join(repr(item) for item in cmd))
+    result = subprocess.run(
+        cmd,
+        cwd=now_dir,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "G2PW model download failed with exit code "
+            f"{result.returncode}"
+        )
 
 
 def sync(text):
@@ -3496,9 +3614,9 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     )
 
                 open_label.click(change_label, [path_list], [label_info, open_label, close_label])
-                close_label.click(change_label, [path_list], [label_info, open_label, close_label])
+                close_label.click(close_label_webui, [], [label_info, open_label, close_label])
                 open_uvr5.click(change_uvr5, [], [uvr5_info, open_uvr5, close_uvr5])
-                close_uvr5.click(change_uvr5, [], [uvr5_info, open_uvr5, close_uvr5])
+                close_uvr5.click(close_uvr5_webui, [], [uvr5_info, open_uvr5, close_uvr5])
 
         with gr.TabItem(i18n("1-GPT-SoVITS-TTS"), id="tts"):
             with gr.Accordion(i18n("微调模型信息")):
