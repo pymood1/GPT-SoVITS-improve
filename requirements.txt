@@ -42,7 +42,7 @@ opencc; python_version < "3.13"
 python_mecab_ko; sys_platform != "win32" and python_version < "3.13"
 mecab-ko>=1.0.3; python_version >= "3.13"
 fastapi[standard]>=0.115.2,<0.116
-starlette>=0.37.2,<0.39
+starlette>=0.40,<0.47
 x_transformers
 torchmetrics<=1.5; python_version < "3.14"
 torchmetrics>=1.5,<2; python_version >= "3.14"
