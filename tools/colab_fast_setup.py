@@ -155,6 +155,9 @@ run(
     env=uv_env,
 )
 from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub.utils import disable_progress_bars
+
+disable_progress_bars()
 
 t = elapsed("uv + HF Xet bootstrap", t)
 
