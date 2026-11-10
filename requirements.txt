@@ -7,7 +7,8 @@ librosa>=0.11,<0.12; python_version >= "3.13"
 numba; python_version < "3.13"
 numba>=0.68.1; python_version >= "3.13"
 pytorch-lightning>=2.4
-gradio>=4.44.1,<5
+gradio>=4.44.1,<5; python_version < "3.14"
+gradio>=5.50,<6; python_version >= "3.14"
 audioop-lts<=0.2.2; python_version >= "3.13"
 ffmpeg-python
 onnxruntime; platform_machine == "aarch64" or platform_machine == "arm64"
@@ -43,8 +44,9 @@ opencc>=1.4.2; python_version >= "3.13"
 opencc; python_version < "3.13"
 python_mecab_ko; sys_platform != "win32" and python_version < "3.13"
 mecab-ko>=1.0.3; python_version >= "3.13"
-fastapi[standard]>=0.115.2,<0.116
-starlette>=0.40,<0.47
+fastapi[standard]>=0.115.2,<0.116; python_version < "3.14"
+starlette>=0.40,<0.47; python_version < "3.14"
+fastapi[standard]>=0.115.2,<1; python_version >= "3.14"
 x_transformers
 torchmetrics<=1.5; python_version < "3.14"
 torchmetrics>=1.5,<2; python_version >= "3.14"
