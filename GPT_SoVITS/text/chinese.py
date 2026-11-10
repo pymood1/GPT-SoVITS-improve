@@ -16,11 +16,20 @@ pinyin_to_symbol_map = {
     for line in open(os.path.join(current_file_path, "opencpop-strict.txt")).readlines()
 }
 
-import jieba_fast
 import logging
 
-jieba_fast.setLogLevel(logging.CRITICAL)
-import jieba_fast.posseg as psg
+try:
+    import jieba_fast as jieba_backend
+    import jieba_fast.posseg as psg
+except ImportError:
+    try:
+        import jieba_pyfast as jieba_backend
+        import jieba_pyfast.posseg as psg
+    except ImportError:
+        import jieba as jieba_backend
+        import jieba.posseg as psg
+
+jieba_backend.setLogLevel(logging.CRITICAL)
 
 
 rep_map = {
