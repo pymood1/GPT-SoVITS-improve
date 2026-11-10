@@ -43,7 +43,8 @@ language_code_list = [
 def download_model(model_size: str):
     url = "https://huggingface.co/api/models/gpt2"
     try:
-        requests.get(url, timeout=3)
+        response = requests.get(url, timeout=3)
+        response.raise_for_status()
         source = "HF"
     except Exception:
         source = "ModelScope"
@@ -84,22 +85,50 @@ def download_model(model_size: str):
         files = [f"faster-whisper-{model_size}/{file}".replace("whisper-distil", "distil-whisper") for file in files]
 
     if source == "HF":
-        print(f"Downloading model from HuggingFace: {repo_id} to {model_path}")
-        snapshot_download_hf(
-            repo_id,
-            local_dir=model_path,
-            local_dir_use_symlinks=False,
-            allow_patterns=files,
+        print(
+            f"Downloading model from HuggingFace: "
+            f"{repo_id} to {model_path}"
         )
-    else:
-        print(f"Downloading model from ModelScope: {repo_id} to {model_path}")
-        snapshot_download_ms(
-            repo_id,
-            local_dir=model_path,
-            allow_patterns=files,
+        try:
+            snapshot_download_hf(
+                repo_id,
+                local_dir=model_path,
+                local_dir_use_symlinks=False,
+                allow_patterns=files,
+            )
+            return model_path
+        except Exception as exc:
+            print(
+                "[Faster Whisper] HuggingFace download failed; "
+                f"falling back to ModelScope: {exc}",
+                flush=True,
+            )
+
+    repo_id = "XXXXRT/faster-whisper"
+    model_path = "tools/asr/models"
+    ms_files = [
+        (
+            f"faster-whisper-{model_size}/{file}"
+            .replace("whisper-distil", "distil-whisper")
         )
-        return model_path + f"/faster-whisper-{model_size}".replace("whisper-distil", "distil-whisper")
-    return model_path
+        for file in files
+    ]
+    print(
+        f"Downloading model from ModelScope: "
+        f"{repo_id} to {model_path}"
+    )
+    snapshot_download_ms(
+        repo_id,
+        local_dir=model_path,
+        allow_patterns=ms_files,
+    )
+    return (
+        model_path
+        + f"/faster-whisper-{model_size}".replace(
+            "whisper-distil",
+            "distil-whisper",
+        )
+    )
 
 
 def execute_asr(input_folder, output_folder, model_path, language, precision):
