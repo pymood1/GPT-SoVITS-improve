@@ -8,8 +8,42 @@ from g2pk2 import G2p
 import importlib
 import os
 
+try:
+    import mecab_ko as _mecab_ko
+except ImportError:
+    _mecab_ko = None
+
+
+if _mecab_ko is not None:
+
+    class _MecabKoAdapter:
+        """Expose mecab-ko's Tagger through g2pk2's expected .pos() API."""
+
+        def __init__(self):
+            self._tagger = _mecab_ko.Tagger()
+
+        def pos(self, text):
+            parsed = self._tagger.parse(text)
+            tokens = []
+            for line in parsed.splitlines():
+                if not line or line == "EOS" or "\t" not in line:
+                    continue
+                surface, features = line.split("\t", 1)
+                tag = features.split(",", 1)[0]
+                tokens.append((surface, tag))
+            return tokens
+
+    class modern_G2p(G2p):
+        def check_mecab(self):
+            return None
+
+        def get_mecab(self):
+            return _MecabKoAdapter()
+
+    G2p = modern_G2p
+
 # 防止win下无法读取模型
-if os.name == "nt":
+elif os.name == "nt":
 
     class win_G2p(G2p):
         def check_mecab(self):
