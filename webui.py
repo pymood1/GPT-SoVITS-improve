@@ -1221,8 +1221,8 @@ def open_asr(
         )
         return
 
-    asr_inp_dir = str(asr_inp_dir or "").strip(" \'\\n\\\"\\u202a")
-    asr_opt_dir = str(asr_opt_dir or "").strip(" \'\\n\\\"\\u202a")
+    asr_inp_dir = str(asr_inp_dir or "").strip().strip(chr(39) + chr(34)).replace(chr(0x202A), "")
+    asr_opt_dir = str(asr_opt_dir or "").strip().strip(chr(39) + chr(34)).replace(chr(0x202A), "")
 
     if not check_for_existance([asr_inp_dir]):
         yield (
