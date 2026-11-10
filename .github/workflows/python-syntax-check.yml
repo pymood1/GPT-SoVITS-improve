@@ -30,4 +30,5 @@ jobs:
             tools/run_emotion_v5_preprocess.py \
             tools/train_emotion_controller.py \
             GPT_SoVITS/inference_webui.py \
+            GPT_SoVITS/prepare_datasets/1-get-text.py \
             GPT_SoVITS/prepare_datasets/3-get-semantic.py

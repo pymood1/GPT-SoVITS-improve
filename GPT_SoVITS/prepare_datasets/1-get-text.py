@@ -1,6 +1,17 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
+from pathlib import Path
+
+REPO_DIR = Path(__file__).resolve().parents[2]
+BUNDLED_NLTK_DATA = REPO_DIR / "runtime" / "nltk_data"
+if BUNDLED_NLTK_DATA.is_dir():
+    existing_nltk_data = os.environ.get("NLTK_DATA", "").strip()
+    nltk_paths = [str(BUNDLED_NLTK_DATA)]
+    if existing_nltk_data:
+        nltk_paths.append(existing_nltk_data)
+    os.environ["NLTK_DATA"] = os.pathsep.join(nltk_paths)
 
 inp_text = os.environ.get("inp_text")
 inp_wav_dir = os.environ.get("inp_wav_dir")
@@ -44,7 +55,12 @@ def my_save(fea, path):  #####fix issue: torch.save doesn't support chinese path
 
 
 txt_path = "%s/2-name2text-%s.txt" % (opt_dir, i_part)
-if os.path.exists(txt_path) == False:
+tmp_txt_path = txt_path + ".tmp"
+for stale_path in (txt_path, tmp_txt_path):
+    if os.path.exists(stale_path):
+        os.remove(stale_path)
+
+if True:
     bert_dir = "%s/3-bert" % (opt_dir)
     os.makedirs(opt_dir, exist_ok=True)
     os.makedirs(bert_dir, exist_ok=True)
@@ -83,24 +99,30 @@ if os.path.exists(txt_path) == False:
 
         return phone_level_feature.T
 
+    failures = []
+
     def process(data, res):
         for name, text, lan in data:
             try:
                 name = clean_path(name)
                 name = os.path.basename(name)
                 print(name)
-                phones, word2ph, norm_text = clean_text(text.replace("%", "-").replace("￥", ","), lan, version)
+                phones, word2ph, norm_text = clean_text(
+                    text.replace("%", "-").replace("￥", ","),
+                    lan,
+                    version,
+                )
                 path_bert = "%s/%s.pt" % (bert_dir, name)
                 if os.path.exists(path_bert) == False and lan == "zh":
                     bert_feature = get_bert_feature(norm_text, word2ph)
                     assert bert_feature.shape[-1] == len(phones)
-                    # torch.save(bert_feature, path_bert)
                     my_save(bert_feature, path_bert)
                 phones = " ".join(phones)
-                # res.append([name,phones])
                 res.append([name, phones, word2ph, norm_text])
-            except:
-                print(name, text, traceback.format_exc())
+            except Exception:
+                tb = traceback.format_exc()
+                failures.append((name, text, tb))
+                print(name, text, tb, file=sys.stderr)
 
     todo = []
     res = []
@@ -126,18 +148,40 @@ if os.path.exists(txt_path) == False:
     }
     for line in lines[int(i_part) :: int(all_parts)]:
         try:
-            wav_name, spk_name, language, text = line.split("|")
+            wav_name, spk_name, language, text = line.split("|", 3)
             # todo.append([name,text,"zh"])
             if language in language_v1_to_language_v2.keys():
                 todo.append([wav_name, text, language_v1_to_language_v2.get(language, language)])
             else:
-                print(f"\033[33m[Waring] The {language = } of {wav_name} is not supported for training.\033[0m")
-        except:
-            print(line, traceback.format_exc())
+                raise ValueError(
+                    f"The {language = } of {wav_name} is not supported for training."
+                )
+        except Exception:
+            tb = traceback.format_exc()
+            failures.append((line, "", tb))
+            print(line, tb, file=sys.stderr)
 
     process(todo, res)
+
+    if failures:
+        print(
+            f"[FATAL] text preprocessing failed for "
+            f"{len(failures)} item(s) in shard {i_part}/{all_parts}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    if len(res) != len(todo):
+        print(
+            f"[FATAL] text preprocessing count mismatch: "
+            f"expected {len(todo)}, got {len(res)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     opt = []
     for name, phones, word2ph, norm_text in res:
         opt.append("%s\t%s\t%s\t%s" % (name, phones, word2ph, norm_text))
-    with open(txt_path, "w", encoding="utf8") as f:
+    with open(tmp_txt_path, "w", encoding="utf8") as f:
         f.write("\n".join(opt) + "\n")
+    os.replace(tmp_txt_path, txt_path)

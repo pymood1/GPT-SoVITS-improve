@@ -9,6 +9,15 @@ from pathlib import Path
 version = os.environ.get("version", "v2Pro")
 os.environ["version"] = version
 now_dir = os.getcwd()
+
+bundled_nltk_data = Path(now_dir) / "runtime" / "nltk_data"
+if bundled_nltk_data.is_dir():
+    existing_nltk_data = os.environ.get("NLTK_DATA", "").strip()
+    nltk_paths = [str(bundled_nltk_data)]
+    if existing_nltk_data:
+        nltk_paths.append(existing_nltk_data)
+    os.environ["NLTK_DATA"] = os.pathsep.join(nltk_paths)
+
 sys.path.insert(0, now_dir)
 import warnings
 
@@ -336,6 +345,20 @@ def _file_signature(path):
     return stat.st_size, stat.st_mtime_ns
 
 
+def _nonempty_line_count(path):
+    path = Path(path)
+    if not path.is_file():
+        return 0
+    with path.open("r", encoding="utf-8-sig") as handle:
+        return sum(1 for line in handle if line.strip())
+
+
+def _text_preprocess_cache_valid(path_text, inp_text):
+    output_count = _nonempty_line_count(path_text)
+    input_count = _nonempty_line_count(inp_text)
+    return input_count > 0 and output_count == input_count
+
+
 def _resolve_repo_path(value):
     text = _clean_user_path(value)
     if not text:
@@ -518,7 +541,7 @@ def run_auto_emotion_sidecar(
         for status in _stream_emotion_command(
             cmd,
             log_lines,
-            "음성 감정 분석 및 pair 생성",
+            "화자 기준 상대 감정 분석",
         ):
             yield (
                 status,
@@ -547,8 +570,7 @@ def run_auto_emotion_sidecar(
             )
             summary = (
                 f"샘플 {report.get('samples', 0)}개, "
-                f"pair group {report.get('pair_groups', 0)}개, "
-                f"pair 샘플 {report.get('paired_samples', 0)}개"
+                f"상대 라벨 {report.get('accepted_counts', {})}"
             )
 
         yield (
@@ -706,11 +728,25 @@ def run_emotion_training_pipeline(
                     f"{label} path not found: {required_path}"
                 )
 
-        requested_emotions = [
-            item.strip()
+        raw_requested_emotions = [
+            item.strip().lower()
             for item in str(emotion_names).split(",")
             if item.strip()
         ]
+        requested_emotions = [
+            emotion
+            for emotion in raw_requested_emotions
+            if emotion not in {"neutral", "default"}
+        ]
+
+        if any(
+            emotion in {"neutral", "default"}
+            for emotion in raw_requested_emotions
+        ):
+            log_lines.append(
+                "[emotions] neutral/default is the unmodified base "
+                "and is not a controller ID"
+            )
 
         if len(set(requested_emotions)) != len(requested_emotions):
             raise EmotionPipelineError(
@@ -719,7 +755,8 @@ def run_emotion_training_pipeline(
 
         if requested_emotions and len(requested_emotions) < 2:
             raise EmotionPipelineError(
-                "감정을 직접 지정할 경우 최소 2개가 필요합니다."
+                "controller 감정을 직접 지정할 경우 "
+                "비-neutral 감정이 최소 2개 필요합니다."
             )
 
         steps = int(steps)
@@ -757,7 +794,7 @@ def run_emotion_training_pipeline(
 
             if not sidecar_path:
                 raise EmotionPipelineError(
-                    "감정 pair 학습에는 sidecar JSONL이 필요합니다."
+                    "감정 controller 학습에는 sidecar JSONL이 필요합니다."
                 )
 
             if dataset_dir.exists() and any(dataset_dir.iterdir()):
@@ -827,7 +864,7 @@ def run_emotion_training_pipeline(
             ]
             if missing_emotions:
                 raise EmotionPipelineError(
-                    "사용 가능한 pair 데이터가 없는 감정: "
+                    "사용 가능한 학습 라벨이 없는 감정: "
                     + ", ".join(missing_emotions)
                 )
             parsed_emotions = requested_emotions
@@ -849,7 +886,7 @@ def run_emotion_training_pipeline(
         yield _emotion_status(
             "2/5 기준 reference 자동 선택",
             log_lines,
-            "3~10초 train 샘플 중 emotion pair 밖의 reference를 선택했습니다.",
+            "3~10초 train 샘플 중 neutral/default를 우선해 reference를 선택했습니다.",
         )
 
         preprocess_cmd = [
@@ -3099,9 +3136,9 @@ def open1abc(
         try:
             #############################1a
             path_text = "%s/2-name2text.txt" % opt_dir
-            if os.path.exists(path_text) == False or (
-                os.path.exists(path_text) == True
-                and len(open(path_text, "r", encoding="utf8").read().strip("\n").split("\n")) < 2
+            if not _text_preprocess_cache_valid(
+                path_text,
+                inp_text,
             ):
                 config = {
                     "inp_text": inp_text,
@@ -3164,6 +3201,12 @@ def open1abc(
                     with open(txt_path, "r", encoding="utf8") as f:
                         opt += f.read().strip("\n").split("\n")
                     os.remove(txt_path)
+                expected_rows = _nonempty_line_count(inp_text)
+                if len(opt) != expected_rows:
+                    raise RuntimeError(
+                        "1A text output count mismatch: "
+                        f"expected {expected_rows}, got {len(opt)}"
+                    )
                 with open(path_text, "w", encoding="utf8") as f:
                     f.write("\n".join(opt) + "\n")
                 assert len("".join(opt)) > 0, process_info(process_name_1a, "failed")
@@ -3800,7 +3843,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 gpu_numbers1a = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s-%s" % (gpus, gpus),
+                                    value="%s" % (gpus),
                                     interactive=True,
                                 )
                             with gr.Row():
@@ -3825,7 +3868,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 gpu_numbers1Ba = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s-%s" % (gpus, gpus),
+                                    value="%s" % (gpus),
                                     interactive=True,
                                 )
                             with gr.Row():
@@ -3850,7 +3893,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 gpu_numbers1c = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                    value="%s-%s" % (gpus, gpus),
+                                    value="%s" % (gpus),
                                     interactive=True,
                                 )
                             with gr.Row():
@@ -3895,10 +3938,11 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 **학습용 음성 폴더**를 그대로 사용합니다. 위의 Whisper/Fun-ASR은 **전사(ASR)** 용이고,
 여기의 emotion2vec+는 **음성 감정 분류** 용이라 서로 별개의 단계입니다.
 
-자동 생성은 같은 화자·같은 언어·**동일한 전사문**을 가진 음성을 묶고,
-감정 분류 결과가 충분히 확실한 경우에만 서로 다른 감정의 pair를 만듭니다.
-자동 결과가 마음에 들지 않으면 sidecar JSONL을 직접 수정하거나 수동 파일로
-바꿔도 됩니다.
+자동 생성은 emotion2vec+의 절대 top-1을 그대로 쓰지 않고,
+**각 화자의 평소 음성 분포를 기준으로 상대적인 감정 편차**를 계산합니다.
+화자 기준에서 뚜렷한 편차가 없는 샘플은 neutral/default로 처리하고,
+controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 필요하지 않습니다.
+자동 결과가 마음에 들지 않으면 sidecar JSONL을 직접 수정할 수 있습니다.
 """
                         )
 
@@ -3951,7 +3995,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
                         with gr.Row():
                             emotion_auto_run = gr.Button(
-                                value="음성에서 감정 pair 자동 생성",
+                                value="음성에서 상대 감정 라벨 생성",
                                 variant="primary",
                             )
                             emotion_auto_stop = gr.Button(
@@ -3961,8 +4005,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
                         emotion_auto_status = gr.Markdown(
                             value=(
-                                "동일 전사문 그룹 탐색 → emotion2vec+ 감정 분석 → "
-                                "신뢰도 필터 → reference 예약 → sidecar 생성"
+                                "emotion2vec+ 감정 분석 → 화자 기준 보정 → "
+                                "상대 편차 필터 → neutral/default 분리 → sidecar 생성"
                             )
                         )
 
@@ -4300,8 +4344,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 label="감정 목록 (선택)",
                                 value="",
                                 placeholder=(
-                                    "비워두면 실제 pair 데이터에서 자동 감지 "
-                                    "(예: neutral,happy,sad)"
+                                    "비워두면 실제 비-neutral 라벨에서 자동 감지 "
+                                    "(예: happy,sad,angry,surprised)"
                                 ),
                                 interactive=True,
                             )
