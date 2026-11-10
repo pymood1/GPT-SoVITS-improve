@@ -782,6 +782,16 @@ def run_emotion_training_pipeline(
                 raise
 
         report = validate_emotion_dataset(dataset_dir)
+
+        report_dataset_id = str(
+            report.get("dataset_id") or ""
+        ).strip()
+        if report_dataset_id != dataset_id:
+            raise EmotionPipelineError(
+                "canonical dataset ID mismatch: "
+                f"expected {dataset_id!r}, got {report_dataset_id!r}"
+            )
+
         summary = format_dataset_summary(report)
         log_lines.append(f"[dataset] {summary}")
 
@@ -866,7 +876,11 @@ def run_emotion_training_pipeline(
                 break
 
         if feature_dir is None:
-            feature_dir = latest_feature_build(feature_root)
+            raise EmotionPipelineError(
+                "V5 preprocessing succeeded but its exact build directory "
+                "could not be identified from subprocess output. "
+                "Refusing to guess a different build from the output root."
+            )
 
         build_manifest = feature_dir / "build.json"
 
