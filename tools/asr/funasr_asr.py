@@ -40,10 +40,31 @@ FUN_ASR_MLT_NANO_MODEL_SOURCES = (
 )
 
 
+FUN_ASR_LANGUAGE_NAMES = {
+    "zh": "中文",
+    "en": "英文",
+    "yue": "粤语",
+    "ja": "日文",
+    "ko": "韩文",
+}
+
+
 def only_asr(input_file, language, backend="fun-asr-nano"):
     try:
         model = create_model(language, backend=backend)
-        text = model.generate(input=input_file)[0]["text"]
+        generate_kwargs = {"input": input_file}
+
+        if backend in {"fun-asr-nano", "fun-asr-mlt-nano"}:
+            generate_kwargs["language"] = FUN_ASR_LANGUAGE_NAMES.get(
+                language,
+                language,
+            )
+            generate_kwargs["itn"] = True
+        elif backend == "sensevoice":
+            generate_kwargs["language"] = language
+            generate_kwargs["use_itn"] = True
+
+        text = model.generate(**generate_kwargs)[0]["text"]
     except Exception:
         text = ""
         print(traceback.format_exc())
@@ -69,13 +90,18 @@ def create_fun_asr_model(model_sources, device):
                 **model_source,
                 **common_kwargs,
             )
-        except (KeyError, RuntimeError, ValueError) as exc:
-            if not is_unregistered_model_error(exc):
-                raise
+        except Exception as exc:
             last_error = exc
+            print(
+                "[FunASR] model source failed, trying fallback: "
+                f"{model_source.get('hub', 'default')} | {exc}",
+                flush=True,
+            )
 
     if last_error is not None:
-        raise last_error
+        raise RuntimeError(
+            "All configured FunASR model sources failed"
+        ) from last_error
 
     raise RuntimeError("No Fun-ASR model source is configured")
 
@@ -210,9 +236,31 @@ def execute_asr(
     language,
     backend="fun-asr-nano",
 ):
+    input_folder = os.path.abspath(
+        os.path.expanduser(str(input_folder))
+    )
+    if not os.path.isdir(input_folder):
+        raise RuntimeError(
+            f"ASR input directory not found: {input_folder}"
+        )
+
+    output_folder = os.path.abspath(
+        os.path.expanduser(output_folder or "output/asr_opt")
+    )
+    output_file_name = os.path.basename(
+        os.path.normpath(input_folder)
+    )
+    if not output_file_name:
+        raise RuntimeError(
+            f"ASR input directory has no usable name: {input_folder}"
+        )
+    if "|" in input_folder or "|" in output_file_name:
+        raise RuntimeError(
+            "GPT-SoVITS .list paths/speaker names must not contain '|'"
+        )
+
     input_file_names = sorted(os.listdir(input_folder))
     output = []
-    output_file_name = os.path.basename(input_folder)
 
     model = create_model(
         language,
@@ -226,8 +274,26 @@ def execute_asr(
 
             if not os.path.isfile(file_path):
                 continue
+            if "|" in file_path:
+                print(
+                    "Skipping path that cannot be represented in "
+                    f"GPT-SoVITS .list: {file_path}"
+                )
+                continue
 
-            result = model.generate(input=file_path)
+            generate_kwargs = {"input": file_path}
+
+            if backend in {"fun-asr-nano", "fun-asr-mlt-nano"}:
+                generate_kwargs["language"] = FUN_ASR_LANGUAGE_NAMES.get(
+                    language,
+                    language,
+                )
+                generate_kwargs["itn"] = True
+            elif backend == "sensevoice":
+                generate_kwargs["language"] = language
+                generate_kwargs["use_itn"] = True
+
+            result = model.generate(**generate_kwargs)
             text = result[0]["text"]
 
             if backend == "sensevoice":
@@ -237,6 +303,13 @@ def execute_asr(
 
                 text = rich_transcription_postprocess(text)
 
+            text = " ".join(
+                str(text or "").splitlines()
+            ).replace("|", "｜").strip()
+            if not text:
+                print(f"Empty ASR transcript: {file_path}")
+                continue
+
             output.append(
                 f"{file_path}|{output_file_name}|"
                 f"{language.upper()}|{text}"
@@ -244,7 +317,11 @@ def execute_asr(
         except Exception:
             print(traceback.format_exc())
 
-    output_folder = output_folder or "output/asr_opt"
+    if not output:
+        raise RuntimeError(
+            "FunASR produced no usable GPT-SoVITS transcripts"
+        )
+
     os.makedirs(output_folder, exist_ok=True)
     output_file_path = os.path.abspath(
         f"{output_folder}/{output_file_name}.list"

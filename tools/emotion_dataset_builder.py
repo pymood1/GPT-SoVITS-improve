@@ -201,8 +201,18 @@ def build_dataset(args: argparse.Namespace) -> None:
         Path(args.sidecar).expanduser().resolve() if args.sidecar else None
     )
 
-    if not list_path.exists():
+    if not list_path.is_file():
         raise DatasetError(f".list file not found: {list_path}")
+
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise DatasetError(
+                f"output path is not a directory: {output_dir}"
+            )
+        if any(output_dir.iterdir()):
+            raise DatasetError(
+                f"output directory is not empty: {output_dir}"
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     staged_dir = output_dir / "wav"
@@ -458,9 +468,23 @@ def make_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = make_parser().parse_args()
+    output_dir = Path(args.output).expanduser().resolve()
+    output_existed = output_dir.exists()
+    output_was_empty = (
+        output_dir.is_dir()
+        and not any(output_dir.iterdir())
+        if output_existed
+        else False
+    )
+
     try:
         build_dataset(args)
     except (DatasetError, OSError, json.JSONDecodeError) as exc:
+        if (
+            (not output_existed or output_was_empty)
+            and output_dir.is_dir()
+        ):
+            shutil.rmtree(output_dir, ignore_errors=True)
         print(f"[FATAL] {exc}", file=sys.stderr)
         return 2
     return 0

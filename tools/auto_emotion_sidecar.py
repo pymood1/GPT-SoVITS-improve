@@ -20,6 +20,7 @@ from typing import Any
 try:
     from tools.emotion_dataset_builder import (
         canonical_text,
+        normalize_language,
         parse_list_line,
         resolve_audio_path,
         stable_hash,
@@ -27,6 +28,7 @@ try:
 except ModuleNotFoundError:
     from emotion_dataset_builder import (
         canonical_text,
+        normalize_language,
         parse_list_line,
         resolve_audio_path,
         stable_hash,
@@ -193,7 +195,7 @@ def load_dataset_rows(
                 "raw_wav": raw_wav,
                 "resolved_path": resolved,
                 "speaker": speaker,
-                "language": language,
+                "language": normalize_language(language),
                 "text": text,
                 "canonical_text": canonical_text(text),
                 "duration": audio_duration_seconds(resolved),

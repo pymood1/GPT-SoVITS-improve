@@ -315,6 +315,7 @@ def build_groups(
         if meta.get("pair_source") not in {
             "manual",
             "recording_manifest",
+            "auto_exact_text",
         }:
             continue
 
@@ -837,6 +838,22 @@ def main() -> int:
         emotion_to_id,
         reference_map,
     )
+
+    trained_emotions = {
+        emotion
+        for group in groups
+        for emotion in group["takes"]
+    }
+    unused_emotions = [
+        emotion
+        for emotion in emotion_names
+        if emotion not in trained_emotions
+    ]
+    if unused_emotions:
+        raise TrainingDataError(
+            "Configured emotion IDs have no usable pair data: "
+            + ", ".join(unused_emotions)
+        )
 
     args.s1_sha256 = sha256_file(
         str(Path(args.s1_checkpoint).resolve())

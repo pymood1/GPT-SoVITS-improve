@@ -10,10 +10,11 @@ from modelscope import snapshot_download as snapshot_download_ms
 from tqdm import tqdm
 
 from tools.asr.config import get_models
-from tools.asr.funasr_asr import only_asr
 from tools.my_utils import load_cudnn
 
 # fmt: off
+GPT_SOVITS_LANGUAGES = {"zh", "en", "ja", "ko"}
+
 language_code_list = [
     "af", "am", "ar", "as", "az", 
     "ba", "be", "bg", "bn", "bo", 
@@ -34,7 +35,7 @@ language_code_list = [
     "sr", "su", "sv", "sw", "ta", 
     "te", "tg", "th", "tk", "tl", 
     "tr", "tt", "uk", "ur", "uz", 
-    "vi", "yi", "yo", "zh", "yue",
+    "vi", "yi", "yo", "zh",
     "auto"] 
 # fmt: on
 
@@ -42,7 +43,8 @@ language_code_list = [
 def download_model(model_size: str):
     url = "https://huggingface.co/api/models/gpt2"
     try:
-        requests.get(url, timeout=3)
+        response = requests.get(url, timeout=3)
+        response.raise_for_status()
         source = "HF"
     except Exception:
         source = "ModelScope"
@@ -79,29 +81,77 @@ def download_model(model_size: str):
 
         files.remove("vocabulary.txt")
 
-    if source == "ModelScope":
-        files = [f"faster-whisper-{model_size}/{file}".replace("whisper-distil", "distil-whisper") for file in files]
-
     if source == "HF":
-        print(f"Downloading model from HuggingFace: {repo_id} to {model_path}")
-        snapshot_download_hf(
-            repo_id,
-            local_dir=model_path,
-            local_dir_use_symlinks=False,
-            allow_patterns=files,
+        print(
+            f"Downloading model from HuggingFace: "
+            f"{repo_id} to {model_path}"
         )
-    else:
-        print(f"Downloading model from ModelScope: {repo_id} to {model_path}")
-        snapshot_download_ms(
-            repo_id,
-            local_dir=model_path,
-            allow_patterns=files,
+        try:
+            snapshot_download_hf(
+                repo_id,
+                local_dir=model_path,
+                local_dir_use_symlinks=False,
+                allow_patterns=files,
+            )
+            return model_path
+        except Exception as exc:
+            print(
+                "[Faster Whisper] HuggingFace download failed; "
+                f"falling back to ModelScope: {exc}",
+                flush=True,
+            )
+
+    repo_id = "XXXXRT/faster-whisper"
+    model_path = "tools/asr/models"
+    ms_files = [
+        (
+            f"faster-whisper-{model_size}/{file}"
+            .replace("whisper-distil", "distil-whisper")
         )
-        return model_path + f"/faster-whisper-{model_size}".replace("whisper-distil", "distil-whisper")
-    return model_path
+        for file in files
+    ]
+    print(
+        f"Downloading model from ModelScope: "
+        f"{repo_id} to {model_path}"
+    )
+    snapshot_download_ms(
+        repo_id,
+        local_dir=model_path,
+        allow_patterns=ms_files,
+    )
+    return (
+        model_path
+        + f"/faster-whisper-{model_size}".replace(
+            "whisper-distil",
+            "distil-whisper",
+        )
+    )
 
 
 def execute_asr(input_folder, output_folder, model_path, language, precision):
+    input_folder = os.path.abspath(
+        os.path.expanduser(str(input_folder))
+    )
+    if not os.path.isdir(input_folder):
+        raise RuntimeError(
+            f"ASR input directory not found: {input_folder}"
+        )
+
+    output_folder = os.path.abspath(
+        os.path.expanduser(output_folder or "output/asr_opt")
+    )
+    output_file_name = os.path.basename(
+        os.path.normpath(input_folder)
+    )
+    if not output_file_name:
+        raise RuntimeError(
+            f"ASR input directory has no usable name: {input_folder}"
+        )
+    if "|" in input_folder or "|" in output_file_name:
+        raise RuntimeError(
+            "GPT-SoVITS .list paths/speaker names must not contain '|'"
+        )
+
     if language == "auto":
         language = None  # 不设置语种由模型自动输出概率最高的语种
     print("loading faster whisper model:", model_path, model_path)
@@ -112,11 +162,18 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
     input_file_names.sort()
 
     output = []
-    output_file_name = os.path.basename(input_folder)
 
     for file_name in tqdm(input_file_names):
         try:
             file_path = os.path.join(input_folder, file_name)
+
+            if "|" in file_path:
+                print(
+                    "Skipping path that cannot be represented in "
+                    f"GPT-SoVITS .list: {file_path}"
+                )
+                continue
+
             segments, info = model.transcribe(
                 audio=file_path,
                 beam_size=5,
@@ -124,21 +181,42 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 vad_parameters=dict(min_silence_duration_ms=700),
                 language=language,
             )
-            text = ""
+            detected_language = str(
+                info.language or language or ""
+            ).lower()
 
-            if info.language in ["zh", "yue"]:
-                print("检测为中文文本, 转 FunASR 处理")
-                text = only_asr(file_path, language=info.language.lower())
+            if detected_language not in GPT_SOVITS_LANGUAGES:
+                print(
+                    "Unsupported GPT-SoVITS language detected by Whisper: "
+                    f"{detected_language or 'unknown'} ({file_path})"
+                )
+                continue
 
-            if text == "":
-                for segment in segments:
-                    text += segment.text
-            output.append(f"{file_path}|{output_file_name}|{info.language.upper()}|{text}")
+            text = "".join(
+                segment.text for segment in segments
+            )
+            text = " ".join(str(text).splitlines()).replace(
+                "|",
+                "｜",
+            ).strip()
+
+            if not text:
+                print(f"Empty Whisper transcript: {file_path}")
+                continue
+
+            output.append(
+                f"{file_path}|{output_file_name}|"
+                f"{detected_language.upper()}|{text}"
+            )
         except Exception as e:
             print(e)
             traceback.print_exc()
 
-    output_folder = output_folder or "output/asr_opt"
+    if not output:
+        raise RuntimeError(
+            "Faster Whisper produced no usable GPT-SoVITS transcripts"
+        )
+
     os.makedirs(output_folder, exist_ok=True)
     output_file_path = os.path.abspath(f"{output_folder}/{output_file_name}.list")
 
