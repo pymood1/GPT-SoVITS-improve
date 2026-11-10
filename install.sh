@@ -323,25 +323,36 @@ if [ "$USE_ROCM" = true ] && [ "$WORKFLOW" = false ]; then
     fi
 fi
 
+TORCH_SPEC="torch"
+TORCHAUDIO_SPEC="torchaudio"
+ROCM_INDEX="rocm6.2"
+
+if python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 14) else 1)'; then
+    # Python 3.14 support starts with the modern PyTorch line.
+    TORCH_SPEC="torch>=2.10"
+    TORCHAUDIO_SPEC="torchaudio>=2.10"
+    ROCM_INDEX="rocm7.1"
+fi
+
 if [ "$USE_CUDA" = true ] && [ "$WORKFLOW" = false ]; then
     if [ "$CUDA" = 128 ]; then
-        echo -e "${INFO}Installing PyTorch For CUDA 12.8..."
-        run_pip_quiet torch torchcodec --index-url "https://download.pytorch.org/whl/cu128"
+        echo -e "${INFO}Installing PyTorch + Torchaudio For CUDA 12.8..."
+        run_pip_quiet "$TORCH_SPEC" "$TORCHAUDIO_SPEC" torchcodec --index-url "https://download.pytorch.org/whl/cu128"
     elif [ "$CUDA" = 126 ]; then
-        echo -e "${INFO}Installing PyTorch For CUDA 12.6..."
-        run_pip_quiet torch torchcodec --index-url "https://download.pytorch.org/whl/cu126"
+        echo -e "${INFO}Installing PyTorch + Torchaudio For CUDA 12.6..."
+        run_pip_quiet "$TORCH_SPEC" "$TORCHAUDIO_SPEC" torchcodec --index-url "https://download.pytorch.org/whl/cu126"
     fi
 elif [ "$USE_ROCM" = true ] && [ "$WORKFLOW" = false ]; then
-    echo -e "${INFO}Installing PyTorch For ROCm 6.2..."
-    run_pip_quiet torch torchcodec --index-url "https://download.pytorch.org/whl/rocm6.2"
+    echo -e "${INFO}Installing PyTorch + Torchaudio For ROCm ${ROCM_INDEX#rocm}..."
+    run_pip_quiet "$TORCH_SPEC" "$TORCHAUDIO_SPEC" torchcodec --index-url "https://download.pytorch.org/whl/$ROCM_INDEX"
 elif [ "$USE_CPU" = true ] && [ "$WORKFLOW" = false ]; then
-    echo -e "${INFO}Installing PyTorch For CPU..."
-    run_pip_quiet torch torchcodec --index-url "https://download.pytorch.org/whl/cpu"
+    echo -e "${INFO}Installing PyTorch + Torchaudio For CPU..."
+    run_pip_quiet "$TORCH_SPEC" "$TORCHAUDIO_SPEC" torchcodec --index-url "https://download.pytorch.org/whl/cpu"
 elif [ "$WORKFLOW" = false ]; then
     echo -e "${ERROR}Unknown Error"
     exit 1
 fi
-echo -e "${SUCCESS}PyTorch Installed"
+echo -e "${SUCCESS}PyTorch/Torchaudio Installed"
 
 echo -e "${INFO}Installing Python Dependencies From requirements.txt..."
 
