@@ -311,6 +311,11 @@ class EmotionTaskCancelled(EmotionPipelineError):
     pass
 
 
+def _clean_user_path(value):
+    text = str(value or "").strip().replace(chr(0x202A), "")
+    return text.strip(chr(39) + chr(34))
+
+
 def _emotion_status(stage, log_lines, final_message=None):
     tail = list(log_lines)[-28:]
     message = f"### {stage}"
@@ -419,8 +424,9 @@ def run_auto_emotion_sidecar(
     log_lines = deque(maxlen=120)
 
     try:
-        source_list = str(source_list or "").strip()
-        wav_root = str(wav_root or "").strip()
+        source_list = _clean_user_path(source_list)
+        wav_root = _clean_user_path(wav_root)
+        sidecar_output = _clean_user_path(sidecar_output)
         model_name = str(model_name or "").strip()
         device = str(device or "auto").strip() or "auto"
 
@@ -574,23 +580,24 @@ def run_emotion_training_pipeline(
 
     try:
         dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
-        dataset_slug = re.sub(
-            r"[^0-9A-Za-z._-]+",
-            "_",
-            dataset_id,
-        ).strip("._-") or "emotion_dataset_01"
+        dataset_slug = (
+            re.sub(
+                r"[^0-9A-Za-z._-]+",
+                "_",
+                dataset_id,
+            ).strip("._-")
+            or "emotion_dataset_01"
+        )[:80]
 
-        dataset_dir_text = str(dataset_dir or "").strip()
+        dataset_dir_text = _clean_user_path(dataset_dir)
         if not dataset_dir_text:
             dataset_dir_text = f"/content/{dataset_slug}_emotion_dataset"
 
-        feature_root_text = str(feature_root or "").strip()
+        feature_root_text = _clean_user_path(feature_root)
         if not feature_root_text:
             feature_root_text = f"/content/{dataset_slug}_emotion_features"
 
-        controller_output_text = str(
-            controller_output or ""
-        ).strip()
+        controller_output_text = _clean_user_path(controller_output)
         if not controller_output_text:
             controller_output_text = (
                 "/content/drive/MyDrive/GPT-SoVITS/"
@@ -609,9 +616,9 @@ def run_emotion_training_pipeline(
         reference_prompt_path = dataset_dir / "reference_prompts.pt"
         tts_config_path = dataset_dir / "tts_infer_emotion_v5dev.yaml"
 
-        s1_checkpoint_path = str(
-            s1_checkpoint_path or ""
-        ).strip()
+        s1_checkpoint_path = _clean_user_path(
+            s1_checkpoint_path
+        )
 
         if not s1_checkpoint_path:
             s1_checkpoint_path = (
@@ -689,9 +696,9 @@ def run_emotion_training_pipeline(
                 log_lines,
             )
         else:
-            source_list = str(source_list or "").strip()
-            sidecar_path = str(sidecar_path or "").strip()
-            wav_root = str(wav_root or "").strip()
+            source_list = _clean_user_path(source_list)
+            sidecar_path = _clean_user_path(sidecar_path)
+            wav_root = _clean_user_path(wav_root)
 
             if not source_list:
                 raise EmotionPipelineError(
