@@ -103,6 +103,25 @@ def download_model(model_size: str):
 
 
 def execute_asr(input_folder, output_folder, model_path, language, precision):
+    input_folder = os.path.abspath(
+        os.path.expanduser(str(input_folder))
+    )
+    if not os.path.isdir(input_folder):
+        raise RuntimeError(
+            f"ASR input directory not found: {input_folder}"
+        )
+
+    output_folder = os.path.abspath(
+        os.path.expanduser(output_folder or "output/asr_opt")
+    )
+    output_file_name = os.path.basename(
+        os.path.normpath(input_folder)
+    )
+    if not output_file_name:
+        raise RuntimeError(
+            f"ASR input directory has no usable name: {input_folder}"
+        )
+
     if language == "auto":
         language = None  # 不设置语种由模型自动输出概率最高的语种
     print("loading faster whisper model:", model_path, model_path)
@@ -113,7 +132,6 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
     input_file_names.sort()
 
     output = []
-    output_file_name = os.path.basename(input_folder)
 
     for file_name in tqdm(input_file_names):
         try:
@@ -153,7 +171,6 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
             "Faster Whisper produced no usable GPT-SoVITS transcripts"
         )
 
-    output_folder = output_folder or "output/asr_opt"
     os.makedirs(output_folder, exist_ok=True)
     output_file_path = os.path.abspath(f"{output_folder}/{output_file_name}.list")
 
