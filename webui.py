@@ -1315,15 +1315,6 @@ def open_asr(
     output_file_path = (output_root / f"{input_name}.list").resolve()
     output_before = _file_signature(output_file_path)
 
-    yield (
-        process_info(process_name_asr, "opened"),
-        {"__type__": "update", "visible": False},
-        {"__type__": "update", "visible": True},
-        {"__type__": "update"},
-        {"__type__": "update"},
-        {"__type__": "update"},
-    )
-
     print("[ASR]", " ".join(repr(item) for item in cmd), flush=True)
     asr_cancel_requested = False
 
@@ -1332,7 +1323,6 @@ def open_asr(
             cmd,
             cwd=now_dir,
         )
-        return_code = p_asr.wait()
     except OSError as exc:
         p_asr = None
         yield (
@@ -1344,6 +1334,18 @@ def open_asr(
             {"__type__": "update"},
         )
         return
+
+    yield (
+        process_info(process_name_asr, "opened"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        {"__type__": "update"},
+        {"__type__": "update"},
+        {"__type__": "update"},
+    )
+
+    try:
+        return_code = p_asr.wait()
     finally:
         p_asr = None
 
