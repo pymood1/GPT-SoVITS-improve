@@ -13,6 +13,8 @@ from tools.asr.config import get_models
 from tools.my_utils import load_cudnn
 
 # fmt: off
+GPT_SOVITS_LANGUAGES = {"zh", "en", "ja", "ko"}
+
 language_code_list = [
     "af", "am", "ar", "as", "az", 
     "ba", "be", "bg", "bn", "bo", 
@@ -123,6 +125,15 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 vad_parameters=dict(min_silence_duration_ms=700),
                 language=language,
             )
+            detected_language = str(info.language or "").lower()
+
+            if detected_language not in GPT_SOVITS_LANGUAGES:
+                print(
+                    "Unsupported GPT-SoVITS language detected by Whisper: "
+                    f"{detected_language or 'unknown'} ({file_path})"
+                )
+                continue
+
             text = "".join(segment.text for segment in segments).strip()
 
             if not text:
@@ -131,11 +142,16 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
 
             output.append(
                 f"{file_path}|{output_file_name}|"
-                f"{info.language.upper()}|{text}"
+                f"{detected_language.upper()}|{text}"
             )
         except Exception as e:
             print(e)
             traceback.print_exc()
+
+    if not output:
+        raise RuntimeError(
+            "Faster Whisper produced no usable GPT-SoVITS transcripts"
+        )
 
     output_folder = output_folder or "output/asr_opt"
     os.makedirs(output_folder, exist_ok=True)
