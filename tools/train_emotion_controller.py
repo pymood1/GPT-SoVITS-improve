@@ -315,6 +315,7 @@ def build_groups(
         if meta.get("pair_source") not in {
             "manual",
             "recording_manifest",
+            "auto_exact_text",
         }:
             continue
 
