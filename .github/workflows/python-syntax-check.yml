@@ -373,6 +373,32 @@ jobs:
           PY
 
 
+  colab_notebook_smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Compile Colab notebook code cells
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("Colab-Inference-Fast.ipynb")
+          notebook = json.loads(path.read_text(encoding="utf-8"))
+
+          for index, cell in enumerate(notebook.get("cells", [])):
+              if cell.get("cell_type") != "code":
+                  continue
+              source = "".join(cell.get("source", []))
+              compile(source, f"{path}:cell-{index}", "exec")
+
+          print("COLAB_NOTEBOOK_CODE_CELLS_OK")
+          PY
+
+
   shell_syntax:
     runs-on: ubuntu-latest
     steps:
