@@ -27,7 +27,46 @@ For development context and current architectural decisions, read
 The older `emotion-v5` branch checkout flow is historical and should not be
 treated as the current source of truth.
 
-## 2. Canonicalize an existing wav + .list dataset
+## 2. Build emotion metadata from an existing user dataset
+
+The 1A WebUI can generate a first-pass emotion sidecar directly from the same
+GPT-SoVITS .list and audio folder used by ordinary preprocessing.
+
+Equivalent CLI:
+
+```bash
+python tools/auto_emotion_sidecar.py \
+  --list /content/data/train.list \
+  --wav-root /content/data/wav \
+  --output /content/data/emotion_sidecar.auto.jsonl \
+  --model iic/emotion2vec_plus_base \
+  --min-confidence 0.45
+```
+
+Current automatic rule:
+
+```text
+same speaker
++ same language
++ exact normalized transcript
++ different confident predicted emotion
+= automatic pair candidate
+```
+
+The default classifier is emotion2vec+ base through FunASR. Only
+neutral/happy/sad/angry are used for controller training by default. Other
+classes or predictions below the threshold remain unpaired.
+
+The tool also reserves a 3-10 second reference sample per usable speaker outside
+the final pair samples and writes `pair_source=auto_exact_text`. Predictions
+are cached next to the sidecar so reruns do not need to classify every unchanged
+audio file again.
+
+This is intentionally a first implementation. It does not do fuzzy transcript
+matching or pretend uncertain predictions are ground truth. The generated
+sidecar remains editable and can be replaced by a manual sidecar.
+
+## 3. Canonicalize an existing wav + .list dataset
 
 ```bash
 python tools/emotion_dataset_builder.py \
@@ -63,7 +102,7 @@ Rules enforced by the builder:
 - source/text/pair groups may not cross splits;
 - `pair_group_id` must be explicit and must contain one speaker/language/exact text.
 
-## 3. Run the official V5 preprocessing in an isolated build
+## 4. Run the official V5 preprocessing in an isolated build
 
 Use only `/content/data_ready/train.list` for training features.
 
@@ -96,7 +135,7 @@ It creates an isolated directory such as:
 If any fingerprinted input changes, a different build ID is used. A partial
 directory without a valid `build.json` is never reused.
 
-## 4. Choose one fixed train reference per speaker
+## 5. Choose one fixed train reference per speaker
 
 Create `reference_map.json`:
 
@@ -114,7 +153,7 @@ The reference must:
 
 A normal legacy/base-training utterance is a good choice.
 
-## 5. Export inference-exact reference prompts
+## 6. Export inference-exact reference prompts
 
 GPT-SoVITS TTS appends 0.3 seconds of silence when extracting the reference
 semantic prefix and also applies prompt-text punctuation preprocessing.
@@ -131,7 +170,7 @@ python tools/export_emotion_reference_prompts.py \
 The TTS config must point to `v5dev` or `v5turbo` and the intended V5
 pretrained/fine-tuned models.
 
-## 6. Train only the emotion controller
+## 7. Train only the emotion controller
 
 ```bash
 python tools/train_emotion_controller.py \
@@ -179,7 +218,7 @@ The trainer uses the same default inference sampling settings:
 A target token contributes to the preference loss only if it survives the
 original GPT-SoVITS sampler support.
 
-## 7. Load the controller in TTS
+## 8. Load the controller in TTS
 
 Python example:
 
@@ -214,7 +253,7 @@ of assuming IDs for other checkpoints.
 
 `emotion_strength` is an intervention strength, not a perceptual percentage.
 
-## 8. Behavior when emotion control is off
+## 9. Behavior when emotion control is off
 
 If:
 
@@ -229,7 +268,7 @@ Normal requests can still use the existing acceleration backend. Emotion-enabled
 requests currently fall back to the ordinary `infer_panel` path because the
 acceleration backend owns a separate sampler.
 
-## 9. WebUI flow
+## 10. WebUI flow
 
 In the main WebUI:
 
@@ -248,9 +287,9 @@ rather than exposed as a separate top-level tab. The controller path still runs
 the existing scripts in order instead of reimplementing their training logic.
 
 The emotion pipeline reuses the same .list and audio-directory inputs shown in
-1A. A sidecar JSONL is required when building a fresh emotion dataset. Each
-usable pair group must explicitly identify the intended emotion and pair
-provenance, for example:
+1A. The sidecar can be generated automatically with the exact-text rule above
+or supplied manually. Each usable pair group still explicitly records the
+emotion and pair provenance, for example:
 
 ```json
 {"wav":"neutral_001.wav","split":"train","emotion_intended":"neutral","pair_group_id":"prompt_0001","pair_source":"recording_manifest"}
@@ -263,7 +302,7 @@ Keep at least one 3-10 second train sample per paired speaker outside all
 When optional emotion training in 1B finishes, the controller path is passed to
 the 1C inference WebUI and loaded automatically when its S1/S2 provenance matches.
 
-## 10. Not implemented on purpose
+## 11. Not implemented on purpose
 
 The current branch includes a WebUI pipeline for:
 
@@ -283,8 +322,7 @@ inference.
 The current branch still does **not** include:
 
 - emotion steering inside the acceleration backend;
-- automatic emotion relabeling;
-- fuzzy same-text emotion pairing;
+- fuzzy or semantic same-text matching beyond exact normalized transcripts;
 - LLM transcript rewriting;
 - an S2/CFM emotion adapter.
 
