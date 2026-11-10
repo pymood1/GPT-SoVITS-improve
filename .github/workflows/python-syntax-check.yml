@@ -327,22 +327,35 @@ jobs:
           import huggingface_hub
           from huggingface_hub import hf_hub_download
 
-          path = Path(
-              hf_hub_download(
-                  repo_id="emotion2vec/emotion2vec_plus_base",
-                  filename="configuration.json",
-                  local_dir="/tmp/emotion2vec-plus-base",
-                  cache_dir="/tmp/huggingface/hub",
+          paths = []
+          for repo_id, local_dir in (
+              (
+                  "emotion2vec/emotion2vec_plus_large",
+                  "/tmp/emotion2vec-plus-large",
+              ),
+              (
+                  "emotion2vec/emotion2vec_plus_base",
+                  "/tmp/emotion2vec-plus-base",
+              ),
+          ):
+              path = Path(
+                  hf_hub_download(
+                      repo_id=repo_id,
+                      filename="configuration.json",
+                      local_dir=local_dir,
+                      cache_dir="/tmp/huggingface/hub",
+                  )
               )
-          )
-
-          if not path.is_file() or path.stat().st_size == 0:
-              raise SystemExit("HF Xet smoke download produced no file")
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(
+                      f"HF Xet smoke download produced no file: {repo_id}"
+                  )
+              paths.append(path)
 
           print("PY314_HF_XET_DOWNLOAD_OK")
           print("huggingface_hub=", huggingface_hub.__version__)
           print("hf_xet=", getattr(hf_xet, "__version__", "installed"))
-          print("file=", path)
+          print("files=", paths)
           PY
       - name: Verify local emotion model preference
         run: |
@@ -350,26 +363,33 @@ jobs:
           from pathlib import Path
           from tools.auto_emotion_sidecar import (
               DEFAULT_MODEL,
-              LOCAL_EMOTION_MODEL,
+              LOCAL_EMOTION_MODELS,
               resolve_emotion_model,
           )
 
-          LOCAL_EMOTION_MODEL.mkdir(parents=True, exist_ok=True)
-          for name in (
-              "model.pt",
-              "config.yaml",
-              "configuration.json",
-              "tokens.txt",
-          ):
-              (LOCAL_EMOTION_MODEL / name).write_bytes(b"x")
+          for model_name, model_dir in LOCAL_EMOTION_MODELS.items():
+              model_dir.mkdir(parents=True, exist_ok=True)
+              for name in (
+                  "model.pt",
+                  "config.yaml",
+                  "configuration.json",
+                  "tokens.txt",
+              ):
+                  (model_dir / name).write_bytes(b"x")
 
-          resolved = resolve_emotion_model(DEFAULT_MODEL)
-          if Path(resolved) != LOCAL_EMOTION_MODEL:
+              resolved = resolve_emotion_model(model_name)
+              if Path(resolved) != model_dir:
+                  raise SystemExit(
+                      f"local emotion model was not preferred: "
+                      f"{model_name} -> {resolved}"
+                  )
+
+          if DEFAULT_MODEL != "iic/emotion2vec_plus_large":
               raise SystemExit(
-                  f"local emotion model was not preferred: {resolved}"
+                  f"unexpected default emotion model: {DEFAULT_MODEL}"
               )
 
-          print("PY314_LOCAL_EMOTION_MODEL_OK")
+          print("PY314_LOCAL_EMOTION_MODELS_OK")
           PY
 
 
