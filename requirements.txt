@@ -30,7 +30,6 @@ chardet
 PyYAML
 psutil
 jieba_fast; python_version < "3.13"
-jieba_pyfast>=4.0.1; python_version >= "3.13"
 jieba
 split-lang
 fast_langdetect>=1.0.1
