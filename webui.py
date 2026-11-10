@@ -1127,7 +1127,18 @@ def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_
     if p_asr is None:
         asr_inp_dir = my_utils.clean_path(asr_inp_dir)
         asr_opt_dir = my_utils.clean_path(asr_opt_dir)
-        check_for_existance([asr_inp_dir])
+
+        if not check_for_existance([asr_inp_dir]):
+            yield (
+                process_info(process_name_asr, "failed"),
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+
         asr_config = asr_dict[asr_model]
         cmd = f'"{python_exec}" -s tools/asr/{asr_config["path"]}'
         cmd += f' -i "{asr_inp_dir}"'
@@ -1152,8 +1163,23 @@ def open_asr(asr_inp_dir, asr_opt_dir, asr_model, asr_model_size, asr_lang, asr_
         )
         print(cmd)
         p_asr = Popen(cmd, shell=True)
-        p_asr.wait()
+        return_code = p_asr.wait()
         p_asr = None
+
+        if return_code != 0 or not os.path.isfile(output_file_path):
+            yield (
+                (
+                    process_info(process_name_asr, "failed")
+                    + f" (exit code {return_code})"
+                ),
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+
         yield (
             process_info(process_name_asr, "finish"),
             {"__type__": "update", "visible": True},
