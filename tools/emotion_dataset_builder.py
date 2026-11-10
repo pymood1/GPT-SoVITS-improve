@@ -311,6 +311,21 @@ def build_dataset(args: argparse.Namespace) -> None:
             "emotion_predicted_confidence": metadata.get(
                 "emotion_predicted_confidence"
             ),
+            "emotion_relative_scores": metadata.get(
+                "emotion_relative_scores"
+            ),
+            "emotion_relative_score": metadata.get(
+                "emotion_relative_score"
+            ),
+            "emotion_relative_confidence": metadata.get(
+                "emotion_relative_confidence"
+            ),
+            "emotion_is_default": bool(
+                metadata.get("emotion_is_default", False)
+            ),
+            "auto_emotion_calibration": metadata.get(
+                "auto_emotion_calibration"
+            ),
             "transcript_source": metadata.get(
                 "transcript_source", "existing_list"
             ),
@@ -407,8 +422,8 @@ def build_dataset(args: argparse.Namespace) -> None:
         "notes": [
             "Existing .list transcripts are preserved verbatim.",
             "Punctuation is preserved for text_group_id.",
-            "The canonical builder itself does not infer pair groups; "
-            "tools/auto_emotion_sidecar.py can provide auto_exact_text provenance.",
+            "Emotion controller training consumes per-sample emotion labels; "
+            "exact-text pair groups are optional legacy metadata.",
             "Legacy samples without explicit split default to train.",
         ],
     }
