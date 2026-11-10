@@ -73,6 +73,7 @@ jobs:
           uv pip install --system \
             "mecab-ko>=1.0.3" \
             "pyopenjtalk-plus>=0.4.1.post10" \
+            "jieba-py>=0.46.12" \
             g2pk2 ko_pron jamo nltk
       - name: Prepare NLTK cmudict
         run: |
