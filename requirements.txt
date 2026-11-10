@@ -19,7 +19,9 @@ pypinyin
 pyopenjtalk>=0.4.1; python_version < "3.13"
 pyopenjtalk-plus>=0.4.1.post10; python_version >= "3.13"
 g2p_en
-torchaudio
+torch>=2.10; python_version >= "3.14"
+torchaudio; python_version < "3.14"
+torchaudio>=2.10; python_version >= "3.14"
 modelscope
 sentencepiece
 transformers>=4.51,<5
