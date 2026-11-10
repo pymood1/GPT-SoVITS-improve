@@ -61,6 +61,16 @@ def load_dataset_report(dataset_dir: Path) -> dict:
     return report
 
 
+NON_CONTROLLER_EMOTIONS = {
+    "",
+    "neutral",
+    "default",
+    "unlabeled",
+    "unknown",
+    "other",
+}
+
+
 def validate_emotion_dataset(dataset_dir: Path) -> dict:
     metadata_path = dataset_dir / "metadata.jsonl"
     train_list = dataset_dir / "train.list"
@@ -76,60 +86,40 @@ def validate_emotion_dataset(dataset_dir: Path) -> dict:
         )
 
     report = load_dataset_report(dataset_dir)
+    detected = detect_pair_emotions(metadata_path)
 
-    usable_groups = int(
-        report.get("pair_groups_with_multiple_emotions", 0)
-    )
-
-    if usable_groups <= 0:
+    if len(detected) < 2:
         raise EmotionPipelineError(
-            "No emotion pair group contains at least two emotions. "
-            "Add explicit pair_group_id, pair_source, and emotion_intended "
-            "metadata in the sidecar JSONL."
+            "Controller training needs at least two non-neutral emotion "
+            "labels. Neutral/default is the unmodified GPT-SoVITS baseline."
         )
 
     return report
 
 
 def detect_pair_emotions(metadata_path: Path) -> list[str]:
+    """Return trainable per-sample emotions.
+
+    The function name is kept for WebUI compatibility. Exact-text pair groups
+    are no longer required: each labeled utterance is contrasted against the
+    other controller emotions on its own semantic sequence.
+    """
     rows = read_jsonl(metadata_path)
 
-    groups: dict[str, set[str]] = {}
-
-    for row in rows:
-        if row.get("split") != "train":
-            continue
-
-        group_id = str(row.get("pair_group_id") or "").strip()
-        emotion = str(row.get("emotion_intended") or "").strip()
-
-        if not group_id or not emotion:
-            continue
-
-        groups.setdefault(group_id, set()).add(emotion)
-
-    usable_groups = {
-        group_id
-        for group_id, emotions in groups.items()
-        if len(emotions) >= 2
-    }
-
     detected = {
-        str(row.get("emotion_intended") or "").strip()
+        str(row.get("emotion_intended") or "").strip().lower()
         for row in rows
-        if str(row.get("pair_group_id") or "").strip() in usable_groups
-        and str(row.get("emotion_intended") or "").strip()
+        if row.get("split") == "train"
     }
+    detected -= NON_CONTROLLER_EMOTIONS
 
     preferred_order = [
-        "neutral",
         "happy",
         "sad",
         "angry",
         "disgusted",
         "fearful",
         "surprised",
-        "other",
     ]
 
     ordered = [
@@ -142,7 +132,7 @@ def detect_pair_emotions(metadata_path: Path) -> list[str]:
 
     if len(ordered) < 2:
         raise EmotionPipelineError(
-            "Fewer than two emotions are present in usable pair groups"
+            "Fewer than two trainable non-neutral emotions are present"
         )
 
     return ordered
@@ -210,38 +200,14 @@ def create_reference_map(
 
     rows = read_jsonl(metadata_path)
 
-    pair_groups: dict[str, dict[str, object]] = {}
-
-    for row in rows:
-        if row.get("split") != "train":
-            continue
-
-        pair_group_id = str(
-            row.get("pair_group_id") or ""
-        ).strip()
-        emotion = str(
-            row.get("emotion_intended") or ""
-        ).strip()
-        speaker_uid = str(
-            row.get("speaker_uid") or ""
-        ).strip()
-
-        if not pair_group_id or not emotion or not speaker_uid:
-            continue
-
-        group = pair_groups.setdefault(
-            pair_group_id,
-            {
-                "speaker_uid": speaker_uid,
-                "emotions": set(),
-            },
-        )
-        group["emotions"].add(emotion)
-
     speakers = {
-        str(group["speaker_uid"])
-        for group in pair_groups.values()
-        if len(group["emotions"]) >= 2
+        str(row.get("speaker_uid") or "").strip()
+        for row in rows
+        if (
+            row.get("split") == "train"
+            and row.get("tts_usable", True)
+            and str(row.get("speaker_uid") or "").strip()
+        )
     }
 
     candidates = _reference_candidates(rows, dataset_dir)
@@ -261,7 +227,7 @@ def create_reference_map(
 
     if missing:
         raise EmotionPipelineError(
-            "No 3-10 second train reference outside emotion pair groups for: "
+            "No usable 3-10 second train reference for: "
             + ", ".join(missing)
         )
 
@@ -355,13 +321,9 @@ def latest_feature_build(output_root: Path) -> Path:
 
 def format_dataset_summary(report: dict) -> str:
     samples = int(report.get("samples", 0))
-    usable = int(report.get("emotion_pair_usable", 0))
-    groups = int(report.get("pair_groups_with_multiple_emotions", 0))
     emotions = report.get("emotions", {})
 
     return (
         f"samples={samples}, "
-        f"emotion_pair_usable={usable}, "
-        f"pair_groups={groups}, "
         f"emotions={emotions}"
     )
