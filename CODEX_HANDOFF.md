@@ -917,10 +917,11 @@ Priority validation order:
 16. 1C launches inference WebUI;
 17. Gradio public link appears in the parent WebUI;
 18. controller auto-load succeeds;
-19. emotion selector shows checkpoint emotion_names;
-20. strength 0 matches ordinary inference behavior;
-21. nonzero strength changes emotion direction without severe speaker drift;
-22. V5 LoRA + controller provenance path is tested separately.
+19. loaded-controller status shows checkpoint emotion_names as available tags;
+20. text without emotion tags matches ordinary inference behavior;
+21. [emotion] and [emotion:strength] change emotion per segment without severe speaker drift;
+22. mixed-emotion text switches at tag boundaries without leaking tag text into speech;
+23. V5 LoRA + controller provenance path is tested separately.
 
 Do not begin a long 1000-step training run before the tiny smoke run passes.
 
