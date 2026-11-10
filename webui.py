@@ -1876,70 +1876,145 @@ process_name_1a = i18n("文本分词与特征提取")
 
 def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
     global ps1a
+
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
-    if check_for_existance([inp_text, inp_wav_dir], is_dataset_processing=True):
-        check_details([inp_text, inp_wav_dir], is_dataset_processing=True)
-    exp_name = exp_name.rstrip(" ")
-    if ps1a == []:
-        opt_dir = "%s/%s" % (exp_root, exp_name)
-        config = {
-            "inp_text": inp_text,
-            "inp_wav_dir": inp_wav_dir,
-            "exp_name": exp_name,
-            "opt_dir": opt_dir,
-            "bert_pretrained_dir": bert_pretrained_dir,
-        }
-        gpu_names = gpu_numbers.split("-")
-        all_parts = len(gpu_names)
-        for i_part in range(all_parts):
-            config.update(
-                {
-                    "i_part": str(i_part),
-                    "all_parts": str(all_parts),
-                    "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                    "is_half": str(is_half),
-                }
-            )
-            os.environ.update(config)
-            cmd = '"%s" -s GPT_SoVITS/prepare_datasets/1-get-text.py' % python_exec
-            print(cmd)
-            p = Popen(cmd, shell=True)
-            ps1a.append(p)
+
+    if not check_for_existance(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    ):
         yield (
-            process_info(process_name_1a, "running"),
-            {"__type__": "update", "visible": False},
+            process_info(process_name_1a, "failed"),
             {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
         )
-        for p in ps1a:
-            p.wait()
-        opt = []
-        for i_part in range(all_parts):
-            txt_path = "%s/2-name2text-%s.txt" % (opt_dir, i_part)
-            with open(txt_path, "r", encoding="utf8") as f:
-                opt += f.read().strip("\n").split("\n")
-            os.remove(txt_path)
-        path_text = "%s/2-name2text.txt" % opt_dir
-        with open(path_text, "w", encoding="utf8") as f:
-            f.write("\n".join(opt) + "\n")
-        ps1a = []
-        if len("".join(opt)) > 0:
-            yield (
-                process_info(process_name_1a, "finish"),
-                {"__type__": "update", "visible": True},
-                {"__type__": "update", "visible": False},
-            )
-        else:
-            yield (
-                process_info(process_name_1a, "failed"),
-                {"__type__": "update", "visible": True},
-                {"__type__": "update", "visible": False},
-            )
-    else:
+        return
+
+    check_details(
+        [inp_text, inp_wav_dir],
+        is_dataset_processing=True,
+    )
+
+    exp_name = exp_name.rstrip(" ")
+
+    if ps1a != []:
         yield (
             process_info(process_name_1a, "occupy"),
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
+        )
+        return
+
+    opt_dir = "%s/%s" % (exp_root, exp_name)
+    base_config = {
+        "inp_text": inp_text,
+        "inp_wav_dir": inp_wav_dir,
+        "exp_name": exp_name,
+        "opt_dir": opt_dir,
+        "bert_pretrained_dir": bert_pretrained_dir,
+    }
+    gpu_names = gpu_numbers.split("-")
+    all_parts = len(gpu_names)
+
+    try:
+        for i_part in range(all_parts):
+            child_env = os.environ.copy()
+            child_env.update(
+                {
+                    **base_config,
+                    "i_part": str(i_part),
+                    "all_parts": str(all_parts),
+                    "_CUDA_VISIBLE_DEVICES": str(
+                        fix_gpu_number(gpu_names[i_part])
+                    ),
+                    "is_half": str(is_half),
+                }
+            )
+            cmd = [
+                python_exec,
+                "-s",
+                "GPT_SoVITS/prepare_datasets/1-get-text.py",
+            ]
+            print("[1A]", " ".join(repr(item) for item in cmd))
+            ps1a.append(
+                Popen(
+                    cmd,
+                    cwd=now_dir,
+                    env=child_env,
+                )
+            )
+    except OSError as exc:
+        for process in ps1a:
+            if process.poll() is None:
+                kill_process(process.pid, process_name_1a)
+        ps1a = []
+        yield (
+            process_info(process_name_1a, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    yield (
+        process_info(process_name_1a, "running"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+    )
+
+    return_codes = [process.wait() for process in ps1a]
+    ps1a = []
+
+    if any(code != 0 for code in return_codes):
+        yield (
+            process_info(process_name_1a, "failed")
+            + f" (exit codes: {return_codes})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    opt = []
+    try:
+        for i_part in range(all_parts):
+            txt_path = Path(opt_dir) / f"2-name2text-{i_part}.txt"
+            if not txt_path.is_file():
+                raise FileNotFoundError(
+                    f"1A output missing: {txt_path}"
+                )
+            with txt_path.open("r", encoding="utf8") as handle:
+                opt += handle.read().strip("
+").split("
+")
+            txt_path.unlink()
+
+        path_text = Path(opt_dir) / "2-name2text.txt"
+        path_text.parent.mkdir(parents=True, exist_ok=True)
+        path_text.write_text(
+            "
+".join(opt) + "
+",
+            encoding="utf8",
+        )
+    except OSError as exc:
+        yield (
+            process_info(process_name_1a, "failed") + f": {exc}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    if len("".join(opt)) > 0:
+        yield (
+            process_info(process_name_1a, "finish"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+    else:
+        yield (
+            process_info(process_name_1a, "failed"),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
         )
 
 
