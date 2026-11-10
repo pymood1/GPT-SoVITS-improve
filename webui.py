@@ -1154,10 +1154,28 @@ def change_tts_inference(
     bert_path = str(resolved["BERT"][0])
     cnhubert_base_path = str(resolved["CNHuBERT"][0])
 
-    controller_available = bool(
+    controller_text = _clean_user_path(
         latest_emotion_controller_path
-        and os.path.isfile(latest_emotion_controller_path)
     )
+    controller_path = (
+        _resolve_repo_path(controller_text)
+        if controller_text
+        else None
+    )
+
+    if controller_text and (
+        controller_path is None
+        or not controller_path.is_file()
+    ):
+        yield (
+            "### TTS 추론 시작 실패\n\n"
+            f"감정 controller 파일이 없습니다: {controller_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    controller_available = controller_path is not None
 
     script_path = (
         "GPT_SoVITS/inference_webui.py"
@@ -1199,8 +1217,10 @@ def change_tts_inference(
             "is_share": str(is_share),
             "version": str(version),
             "language": str(language),
-            "emotion_controller_path": str(
-                latest_emotion_controller_path or ""
+            "emotion_controller_path": (
+                str(controller_path)
+                if controller_available
+                else ""
             ),
             "PYTHONUNBUFFERED": "1",
         }
