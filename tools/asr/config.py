@@ -32,7 +32,7 @@ asr_dict = {
         "backend": "classic",
     },
     "Faster Whisper (多语种)": {
-        "lang": ["auto", "ko", "en", "ja", "zh", "yue"],
+        "lang": ["auto", "ko", "en", "ja", "zh"],
         "size": get_models(),
         "path": "fasterwhisper_asr.py",
         "precision": ["float32", "float16", "int8"],
