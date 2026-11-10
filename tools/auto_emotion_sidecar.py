@@ -17,12 +17,20 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from tools.emotion_dataset_builder import (
-    canonical_text,
-    parse_list_line,
-    resolve_audio_path,
-    stable_hash,
-)
+try:
+    from tools.emotion_dataset_builder import (
+        canonical_text,
+        parse_list_line,
+        resolve_audio_path,
+        stable_hash,
+    )
+except ModuleNotFoundError:
+    from emotion_dataset_builder import (
+        canonical_text,
+        parse_list_line,
+        resolve_audio_path,
+        stable_hash,
+    )
 
 
 DEFAULT_MODEL = "iic/emotion2vec_plus_base"
