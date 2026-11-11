@@ -1379,6 +1379,12 @@ def main() -> int:
     skipped_no_gradient = 0
     running_loss = 0.0
     running_gap = 0.0
+    best_val_loss = float("inf")
+    best_val_step = 0
+    best_val_metrics: Optional[dict] = None
+    best_controller_state: Optional[dict] = None
+    validations_without_improvement = 0
+    stopped_early = False
 
     while accepted_steps < args.steps and attempts < max_attempts:
         attempts += 1
@@ -1527,6 +1533,78 @@ def main() -> int:
             running_loss = 0.0
             running_gap = 0.0
 
+        if accepted_steps % args.val_interval == 0:
+            val_metrics = evaluate_controller(
+                controller=controller,
+                model=model,
+                store=store,
+                samples=validation_samples,
+                emotion_names=emotion_names,
+                reference_prompt_cache=reference_prompt_cache,
+                frozen_sample_cache=frozen_sample_cache,
+                output_weight=output_weight,
+                device=device,
+                pad_val=int(config["data"]["pad_val"]),
+                preference_beta=args.preference_beta,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                temperature=args.temperature,
+                repetition_penalty=args.repetition_penalty,
+                min_support_coverage=args.min_support_coverage,
+            )
+
+            improved = (
+                val_metrics["loss"]
+                < best_val_loss - args.early_stop_min_delta
+            )
+            if improved:
+                best_val_loss = float(val_metrics["loss"])
+                best_val_step = accepted_steps
+                best_val_metrics = dict(val_metrics)
+                best_controller_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in controller.state_dict().items()
+                }
+                validations_without_improvement = 0
+                save_checkpoint(
+                    controller,
+                    output,
+                    emotion_names,
+                    args,
+                    accepted_steps,
+                    validation={
+                        **val_metrics,
+                        "best": True,
+                        "best_step": best_val_step,
+                    },
+                )
+            else:
+                validations_without_improvement += 1
+
+            print(
+                f"[val] step={accepted_steps}/{args.steps} "
+                f"loss={val_metrics['loss']:.5f} "
+                f"acc={val_metrics['accuracy']:.2%} "
+                f"gap={val_metrics['gap']:.5f} "
+                f"best={best_val_loss:.5f}@{best_val_step} "
+                f"patience={validations_without_improvement}/"
+                f"{args.early_stop_patience} "
+                f"evaluated={val_metrics['evaluated']} "
+                f"skipped={val_metrics['skipped']}"
+            )
+
+            if (
+                not improved
+                and validations_without_improvement
+                >= args.early_stop_patience
+            ):
+                print(
+                    "[early-stop] validation loss stopped improving; "
+                    f"restoring best step {best_val_step}"
+                )
+                stopped_early = True
+                break
+
         if (
             args.save_every > 0
             and accepted_steps % args.save_every == 0
@@ -1543,7 +1621,7 @@ def main() -> int:
                 accepted_steps,
             )
 
-    if accepted_steps < args.steps:
+    if accepted_steps < args.steps and not stopped_early:
         raise TrainingDataError(
             f"Only {accepted_steps}/{args.steps} training steps were "
             f"accepted after {attempts} attempts. "
@@ -1553,17 +1631,41 @@ def main() -> int:
             "support first."
         )
 
+    if best_controller_state is not None:
+        controller.load_state_dict(best_controller_state)
+        final_step = best_val_step
+        final_validation = {
+            **(best_val_metrics or {}),
+            "best": True,
+            "best_step": best_val_step,
+            "stopped_at_step": accepted_steps,
+            "early_stopped": stopped_early,
+        }
+    else:
+        final_step = accepted_steps
+        final_validation = None
+        print(
+            "[WARNING] no validation checkpoint was produced; "
+            "saving current controller state"
+        )
+
     controller.eval()
     save_checkpoint(
         controller,
         output,
         emotion_names,
         args,
-        accepted_steps,
+        final_step,
+        validation=final_validation,
     )
     print(
-        f"[OK] saved {output} | samples={len(training_samples)} "
-        f"| steps={accepted_steps} "
+        f"[OK] saved {output} "
+        f"| train_samples={len(training_samples)} "
+        f"| val_samples={len(validation_samples)} "
+        f"| stopped_at={accepted_steps} "
+        f"| best_step={best_val_step or final_step} "
+        f"| best_val_loss="
+        f"{best_val_loss if best_controller_state is not None else float('nan'):.5f} "
         f"| cache_hits={cache_hits} "
         f"| cache_misses={cache_misses} "
         f"| skipped_coverage={skipped_low_coverage} "
