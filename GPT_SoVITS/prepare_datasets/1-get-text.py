@@ -138,30 +138,34 @@ if True:
                     version,
                 )
                 path_bert = "%s/%s.pt" % (bert_dir, name)
-                if os.path.exists(path_bert) == False:
-                    bert_feature = None
-                    if lan == "zh":
+                if lan == "zh":
+                    if os.path.exists(path_bert) == False:
                         bert_feature = get_bert_feature(
                             norm_text,
                             word2ph,
                         )
-                    elif (
-                        use_multilingual_bert
-                        and lan in MULTILINGUAL_BERT_LANGUAGES
-                    ):
+                        assert bert_feature.shape == (
+                            1024,
+                            len(phones),
+                        )
+                        my_save(bert_feature, path_bert)
+                elif lan in MULTILINGUAL_BERT_LANGUAGES:
+                    if use_multilingual_bert:
                         bert_feature = (
                             get_multilingual_extractor().extract(
                                 norm_text,
                                 phone_count=len(phones),
                             )
                         )
-
-                    if bert_feature is not None:
                         assert bert_feature.shape == (
                             1024,
                             len(phones),
                         )
+                        if os.path.exists(path_bert):
+                            os.remove(path_bert)
                         my_save(bert_feature, path_bert)
+                    elif os.path.exists(path_bert):
+                        os.remove(path_bert)
                 phones = " ".join(phones)
                 res.append([name, phones, word2ph, norm_text])
             except Exception:
