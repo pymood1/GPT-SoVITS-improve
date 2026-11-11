@@ -4866,30 +4866,36 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
     
 
                     with gr.Accordion(
-                        label="1Bseq-GPT → SoVITS 연속 학습",
-                        open=True,
+                        label="1Bc-" + i18n("GPT → SoVITS 연속 학습")
                     ):
-                        gr.Markdown(
-                            "위 GPT/SoVITS 설정을 그대로 사용합니다. "
-                            "**GPT가 정상 완료된 경우에만 SoVITS 학습을 시작합니다.**"
-                        )
                         with gr.Row():
-                            button_train_sequence_open = gr.Button(
-                                value="GPT → SoVITS 순서대로 학습",
-                                variant="primary",
-                                visible=True,
-                            )
-                            button_train_sequence_close = gr.Button(
-                                value="연속 학습 중지",
-                                variant="stop",
-                                visible=False,
-                            )
-                        info_train_sequence = gr.Markdown(
-                            value="설정을 확인한 뒤 실행하세요."
-                        )
+                            with gr.Row():
+                                button_train_sequence_open = gr.Button(
+                                    value=process_info(
+                                        process_name_train_sequence,
+                                        "open",
+                                    ),
+                                    variant="primary",
+                                    visible=True,
+                                )
+                                button_train_sequence_close = gr.Button(
+                                    value=process_info(
+                                        process_name_train_sequence,
+                                        "close",
+                                    ),
+                                    variant="primary",
+                                    visible=False,
+                                )
+                            with gr.Row():
+                                info_train_sequence = gr.Textbox(
+                                    label=process_info(
+                                        process_name_train_sequence,
+                                        "info",
+                                    )
+                                )
 
                     with gr.Accordion(
-                        label="1Bc-감정 제어 학습 (V5dev, 선택)",
+                        label="1Bd-감정 제어 학습 (V5dev, 선택)",
                         open=False,
                     ):
                         gr.Markdown(
