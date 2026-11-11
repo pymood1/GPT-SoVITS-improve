@@ -270,7 +270,9 @@ jobs:
         env:
           PYTHONPATH: GPT_SoVITS
         run: |
-          python -m unittest tests/test_emotion_control_training_vectorization.py
+          python -m unittest \
+            tests/test_emotion_control_training_vectorization.py \
+            tests/test_emotion_representation_probe.py
 
 
   dependency_resolve_314:
