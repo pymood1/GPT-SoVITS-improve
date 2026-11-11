@@ -156,7 +156,27 @@ def _reference_candidates(
     rows: Iterable[dict],
     dataset_dir: Path,
 ) -> dict[str, list[tuple[int, float, str]]]:
+    rows = list(rows)
     candidates: dict[str, list[tuple[int, float, str]]] = {}
+
+    controller_counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        if (
+            row.get("split") != "train"
+            or not row.get("tts_usable", True)
+        ):
+            continue
+        speaker_uid = str(row.get("speaker_uid") or "").strip()
+        emotion = str(
+            row.get("emotion_intended") or ""
+        ).strip().lower()
+        if (
+            not speaker_uid
+            or emotion in NON_CONTROLLER_EMOTIONS
+        ):
+            continue
+        key = (speaker_uid, emotion)
+        controller_counts[key] = controller_counts.get(key, 0) + 1
 
     for row in rows:
         if row.get("split") != "train":
@@ -174,14 +194,29 @@ def _reference_candidates(
         if not speaker_uid or not canonical_wav:
             continue
 
+        emotion = str(
+            row.get("emotion_intended") or ""
+        ).strip().lower()
+
+        # A fixed reference is excluded from controller supervision. Never
+        # consume the only available sample of a trainable emotion.
+        if (
+            emotion not in NON_CONTROLLER_EMOTIONS
+            and controller_counts.get((speaker_uid, emotion), 0) <= 1
+        ):
+            continue
+
         audio_path = dataset_dir / "wav" / canonical_wav
         duration = _reference_duration_seconds(audio_path)
 
         if duration is None or not 3.0 <= duration <= 10.0:
             continue
 
-        emotion = str(row.get("emotion_intended") or "").lower()
-        priority = 0 if emotion in {"", "neutral"} else 1
+        priority = (
+            0
+            if emotion in NON_CONTROLLER_EMOTIONS
+            else 1
+        )
 
         candidates.setdefault(speaker_uid, []).append(
             (priority, abs(duration - 6.0), canonical_wav)
