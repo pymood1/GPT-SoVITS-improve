@@ -918,6 +918,7 @@ def save_checkpoint(
                 "min_samples_per_emotion": args.min_samples_per_emotion,
                 "val_interval": args.val_interval,
                 "val_fraction": args.val_fraction,
+                "max_auto_steps": args.max_auto_steps,
                 "early_stop_patience": args.early_stop_patience,
                 "early_stop_min_delta": args.early_stop_min_delta,
                 "validation": validation,
@@ -1006,6 +1007,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--max-auto-steps",
+        type=int,
+        default=1000,
+        help=(
+            "Safety cap for automatic 100-step extensions while "
+            "validation is still improving."
+        ),
+    )
+    parser.add_argument(
         "--val-interval",
         type=int,
         default=100,
@@ -1052,6 +1062,10 @@ def main() -> int:
     if args.min_samples_per_emotion < 3:
         raise TrainingDataError(
             "--min-samples-per-emotion must be >= 3 when validation is enabled"
+        )
+    if args.max_auto_steps < args.steps:
+        raise TrainingDataError(
+            "--max-auto-steps must be >= --steps"
         )
     if args.val_interval <= 0:
         raise TrainingDataError("--val-interval must be positive")
@@ -1374,7 +1388,8 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     accepted_steps = 0
     attempts = 0
-    max_attempts = max(args.steps * 20, 100)
+    training_limit = args.steps
+    max_attempts = max(args.max_auto_steps * 20, 100)
     skipped_low_coverage = 0
     skipped_no_gradient = 0
     running_loss = 0.0
@@ -1386,7 +1401,7 @@ def main() -> int:
     validations_without_improvement = 0
     stopped_early = False
 
-    while accepted_steps < args.steps and attempts < max_attempts:
+    while accepted_steps < training_limit and attempts < max_attempts:
         attempts += 1
         sampled_emotion = rng.choice(emotion_names)
         sample = rng.choice(samples_by_emotion[sampled_emotion])
@@ -1518,7 +1533,7 @@ def main() -> int:
                 else min(args.log_every, accepted_steps)
             )
             print(
-                f"step={accepted_steps}/{args.steps} "
+                f"step={accepted_steps}/{training_limit} "
                 f"emotion={sample['emotion']} "
                 f"loss={running_loss / divisor:.5f} "
                 f"gap={running_gap / divisor:.5f} "
@@ -1582,7 +1597,7 @@ def main() -> int:
                 validations_without_improvement += 1
 
             print(
-                f"[val] step={accepted_steps}/{args.steps} "
+                f"[val] step={accepted_steps}/{training_limit} "
                 f"loss={val_metrics['loss']:.5f} "
                 f"acc={val_metrics['accuracy']:.2%} "
                 f"gap={val_metrics['gap']:.5f} "
@@ -1605,6 +1620,20 @@ def main() -> int:
                 stopped_early = True
                 break
 
+            if (
+                accepted_steps >= training_limit
+                and training_limit < args.max_auto_steps
+            ):
+                previous_limit = training_limit
+                training_limit = min(
+                    training_limit + args.val_interval,
+                    args.max_auto_steps,
+                )
+                print(
+                    "[auto-extend] validation still warrants more training: "
+                    f"{previous_limit} -> {training_limit} steps"
+                )
+
         if (
             args.save_every > 0
             and accepted_steps % args.save_every == 0
@@ -1621,9 +1650,13 @@ def main() -> int:
                 accepted_steps,
             )
 
-    if accepted_steps < args.steps and not stopped_early:
+    if (
+        attempts >= max_attempts
+        and accepted_steps < training_limit
+        and not stopped_early
+    ):
         raise TrainingDataError(
-            f"Only {accepted_steps}/{args.steps} training steps were "
+            f"Only {accepted_steps}/{training_limit} training steps were "
             f"accepted after {attempts} attempts. "
             f"Low-support skips={skipped_low_coverage}, "
             f"no-gradient skips={skipped_no_gradient}. "
@@ -1663,6 +1696,7 @@ def main() -> int:
         f"| train_samples={len(training_samples)} "
         f"| val_samples={len(validation_samples)} "
         f"| stopped_at={accepted_steps} "
+        f"| final_budget={training_limit} "
         f"| best_step={best_val_step or final_step} "
         f"| best_val_loss="
         f"{best_val_loss if best_controller_state is not None else float('nan'):.5f} "
