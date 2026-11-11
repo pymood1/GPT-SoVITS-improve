@@ -2210,6 +2210,44 @@ def open1Bb(
 
     check_details([str(s1_dir)], is_train=True)
 
+    expected_text_features = _text_feature_config(
+        use_multilingual_bert,
+        multilingual_bert_model,
+    )
+    feature_marker = s1_dir / "text_feature_config.json"
+    if feature_marker.is_file():
+        try:
+            actual_text_features = json.loads(
+                feature_marker.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            yield (
+                process_info(process_name_gpt, "failed")
+                + f": invalid text feature config: {exc}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+    else:
+        actual_text_features = _text_feature_config(
+            False,
+            multilingual_bert_model,
+        )
+
+    if actual_text_features != expected_text_features:
+        yield (
+            process_info(process_name_gpt, "failed")
+            + ": 1A text feature mode and GPT training mode do not match",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+
     config_path = _resolve_repo_path(
         "GPT_SoVITS/configs/s1longer.yaml"
         if version == "v1"
@@ -2259,6 +2297,7 @@ def open1Bb(
     data["train"]["if_dpo"] = if_dpo
     data["train"]["half_weights_save_dir"] = GPT_weight_version2root[version]
     data["train"]["exp_name"] = exp_name
+    data["text_features"] = expected_text_features
     data["train_semantic_path"] = str(
         s1_dir / "6-name2semantic.tsv"
     )
