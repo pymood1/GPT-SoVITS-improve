@@ -24,6 +24,7 @@ import json
 import os
 import random
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -433,105 +434,179 @@ def frozen_teacher_forcing(
     bert: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Return frozen hidden states/logits aligned to next-semantic targets."""
-    with torch.no_grad():
-        xy_pos, xy_attn_mask, _targets = model.make_input_data(
-            x, x_lens, y, y_lens, bert
-        )
-        xy_dec, _ = model.h(
-            (xy_pos, None),
-            mask=xy_attn_mask,
-        )
-        x_len = int(x_lens.max().item())
-        hidden = xy_dec[:, x_len - 1 :]
-        logits = model.ar_predict_layer(hidden)
+    use_cuda_amp = x.device.type == "cuda"
+    with torch.inference_mode():
+        with torch.autocast(
+            device_type=x.device.type,
+            dtype=torch.float16 if use_cuda_amp else torch.float32,
+            enabled=use_cuda_amp,
+        ):
+            xy_pos, xy_attn_mask, _targets = model.make_input_data(
+                x, x_lens, y, y_lens, bert
+            )
+            xy_dec, _ = model.h(
+                (xy_pos, None),
+                mask=xy_attn_mask,
+            )
+            x_len = int(x_lens.max().item())
+            hidden = xy_dec[:, x_len - 1 :]
+            logits = model.ar_predict_layer(hidden)
     return hidden.float(), logits.float()
 
 
-def sequence_relative_score(
-    controller: LowRankEmotionPreference,
+def prepare_controller_sample(
+    *,
     model,
-    hidden: torch.Tensor,
-    logits: torch.Tensor,
-    prompt_semantic: Sequence[int],
-    target_semantic: Sequence[int],
-    emotion_id: int,
+    batch: dict,
     top_k: int,
     top_p: float,
     temperature: float,
     repetition_penalty: float,
-) -> Tuple[Optional[torch.Tensor], float]:
-    ratios: List[torch.Tensor] = []
-    supported = 0
-    total = len(target_semantic)
-    state = EmotionSamplingState()
+) -> dict:
+    """Cache all controller-independent work for one frozen S1 sample."""
+    hidden, logits = frozen_teacher_forcing(
+        model=model,
+        x=batch["x"],
+        x_lens=batch["x_lens"],
+        y=batch["y"],
+        y_lens=batch["y_lens"],
+        bert=batch["bert"],
+    )
 
+    prompt_semantic = list(batch["reference_semantic"])
+    target_semantic = list(batch["target_semantic"])
     prompt_len = len(prompt_semantic)
+    target_count = len(target_semantic)
+    vocab_size = int(model.ar_predict_layer.weight.shape[0])
+
+    target_hidden = hidden[
+        0,
+        prompt_len : prompt_len + target_count,
+    ]
+    if target_hidden.shape[0] != target_count:
+        raise TrainingDataError(
+            "teacher-forcing hidden length does not cover target semantics"
+        )
+
+    base_prob_rows: List[torch.Tensor] = []
+    valid_mask: List[bool] = []
+
     for target_offset, token in enumerate(target_semantic):
         position = prompt_len + target_offset
-        row_hidden = hidden[position : position + 1]
         row_logits = logits[position : position + 1].clone()
 
-        # Match inference: EOS is unavailable for the first 11 generated
-        # target tokens. Prompt length does not count toward this threshold.
         if target_offset < 11:
             row_logits = row_logits[:, :-1]
 
-        prefix = list(prompt_semantic) + list(
-            target_semantic[:target_offset]
-        )
+        prefix = prompt_semantic + target_semantic[:target_offset]
         previous_tokens = torch.tensor(
             [prefix],
             dtype=torch.long,
             device=row_logits.device,
         )
-
         base_probs = logits_to_probs(
-            logits=row_logits.clone(),
+            logits=row_logits,
             previous_tokens=previous_tokens,
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
             repetition_penalty=repetition_penalty,
         )
-        if token >= base_probs.shape[-1]:
-            continue
-        p0 = base_probs[0, token]
-        if not torch.isfinite(p0) or p0 <= 0:
+
+        if base_probs.shape[-1] < vocab_size:
+            padded = torch.zeros(
+                1,
+                vocab_size,
+                dtype=base_probs.dtype,
+                device=base_probs.device,
+            )
+            padded[:, : base_probs.shape[-1]] = base_probs
+            base_probs = padded
+
+        valid = (
+            token < base_probs.shape[-1]
+            and bool(torch.isfinite(base_probs[0, token]).item())
+            and bool((base_probs[0, token] > 0).item())
+        )
+        valid_mask.append(valid)
+        base_prob_rows.append(base_probs[0].float())
+
+    base_probs = torch.stack(base_prob_rows, dim=0)
+    coverage = sum(valid_mask) / max(target_count, 1)
+
+    return {
+        "hidden": target_hidden.detach().to(
+            device="cpu",
+            dtype=torch.float16,
+        ),
+        "base_probs": base_probs.detach().to(
+            device="cpu",
+            dtype=torch.float32,
+        ),
+        "target_semantic": target_semantic,
+        "valid_mask": valid_mask,
+        "coverage": coverage,
+    }
+
+
+def sequence_relative_score_prepared(
+    *,
+    controller: LowRankEmotionPreference,
+    output_weight: torch.Tensor,
+    eos_id: int,
+    prepared: dict,
+    emotion_id: int,
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    hidden = prepared["hidden"].to(
+        device=device,
+        dtype=torch.float32,
+    )
+    base_probs = prepared["base_probs"].to(
+        device=device,
+        dtype=torch.float32,
+    )
+    target_semantic = prepared["target_semantic"]
+    valid_mask = prepared["valid_mask"]
+
+    preference_scores = controller.preference_scores(
+        hidden_state=hidden,
+        output_weight=output_weight,
+        emotion_id=emotion_id,
+        vocab_size=base_probs.shape[-1],
+    )
+
+    state = EmotionSamplingState()
+    ratios: List[torch.Tensor] = []
+
+    for target_offset, token in enumerate(target_semantic):
+        if not valid_mask[target_offset]:
             continue
 
-        scores = controller.preference_scores(
-            hidden_state=row_hidden,
-            output_weight=model.ar_predict_layer.weight.float(),
-            emotion_id=emotion_id,
-            vocab_size=base_probs.shape[-1],
-        )
-        eos_id = (
-            model.EOS
-            if model.EOS < base_probs.shape[-1]
-            else None
-        )
+        p0 = base_probs[target_offset : target_offset + 1]
         steered, state = controller.tilt_probabilities(
-            base_probs=base_probs,
-            preference_scores=scores,
+            base_probs=p0,
+            preference_scores=preference_scores[
+                target_offset : target_offset + 1
+            ],
             strength=1.0,
             eos_id=eos_id,
             state=state,
         )
-        pe = steered[0, token].clamp_min(1e-12)
-        log_ratio = torch.log(pe) - torch.log(
-            p0.clamp_min(1e-12)
+        base_token_prob = p0[0, token].clamp_min(1e-12)
+        steered_token_prob = steered[0, token].clamp_min(1e-12)
+        log_ratio = (
+            torch.log(steered_token_prob)
+            - torch.log(base_token_prob)
         )
         ratios.append(log_ratio)
         state.cumulative_log_ratio = (
             state.cumulative_log_ratio + log_ratio.detach()
         )
-        supported += 1
 
-    coverage = supported / max(total, 1)
     if not ratios:
-        return None, coverage
-    return torch.stack(ratios).mean(), coverage
-
+        return None
+    return torch.stack(ratios).mean()
 
 def build_single_sample_batch(
     store: FeatureStore,
@@ -759,6 +834,23 @@ def main() -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise TrainingDataError("CUDA requested but unavailable")
 
+    print(
+        "[device] "
+        f"requested={args.device} resolved={device} "
+        f"torch_cuda={torch.cuda.is_available()} "
+        f"visible={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+    )
+    if device.type == "cuda":
+        torch.cuda.set_device(0)
+        properties = torch.cuda.get_device_properties(0)
+        print(
+            "[device] "
+            f"gpu={torch.cuda.get_device_name(0)} "
+            f"capability={torch.cuda.get_device_capability(0)} "
+            f"vram={properties.total_memory / (1024 ** 3):.2f}GiB "
+            "backbone_amp=float16 controller=float32"
+        )
+
     s1_path = Path(args.s1_checkpoint).resolve()
     args.s1_sha256 = sha256_file(str(s1_path))
     checkpoint = torch.load(
@@ -963,6 +1055,13 @@ def main() -> int:
         weight_decay=args.weight_decay,
     )
 
+    output_weight = (
+        model.ar_predict_layer.weight.detach().float()
+    )
+    frozen_sample_cache: Dict[Tuple[str, str], dict] = {}
+    cache_hits = 0
+    cache_misses = 0
+
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     accepted_steps = 0
@@ -977,52 +1076,54 @@ def main() -> int:
         attempts += 1
         sampled_emotion = rng.choice(emotion_names)
         sample = rng.choice(samples_by_emotion[sampled_emotion])
-        batch = build_single_sample_batch(
-            store=store,
-            reference_name=sample["reference"],
-            target_name=sample["name"],
-            device=device,
-            pad_val=int(config["data"]["pad_val"]),
-            reference_prompt_cache=reference_prompt_cache,
-        )
+        step_started = time.perf_counter()
+        cache_key = (sample["reference"], sample["name"])
+        prepared = frozen_sample_cache.get(cache_key)
+        cache_hit = prepared is not None
 
-        hidden, logits = frozen_teacher_forcing(
-            model=model,
-            x=batch["x"],
-            x_lens=batch["x_lens"],
-            y=batch["y"],
-            y_lens=batch["y_lens"],
-            bert=batch["bert"],
-        )
-
-        scores: List[torch.Tensor] = []
-        coverages: List[float] = []
-
-        for emotion_id in range(len(emotion_names)):
-            score, coverage = sequence_relative_score(
-                controller=controller,
+        if prepared is None:
+            batch = build_single_sample_batch(
+                store=store,
+                reference_name=sample["reference"],
+                target_name=sample["name"],
+                device=device,
+                pad_val=int(config["data"]["pad_val"]),
+                reference_prompt_cache=reference_prompt_cache,
+            )
+            prepared = prepare_controller_sample(
                 model=model,
-                hidden=hidden[0],
-                logits=logits[0],
-                prompt_semantic=batch["reference_semantic"],
-                target_semantic=batch["target_semantic"],
-                emotion_id=emotion_id,
+                batch=batch,
                 top_k=args.top_k,
                 top_p=args.top_p,
                 temperature=args.temperature,
                 repetition_penalty=args.repetition_penalty,
             )
+            frozen_sample_cache[cache_key] = prepared
+            cache_misses += 1
+        else:
+            cache_hits += 1
+
+        coverage = float(prepared["coverage"])
+        if coverage < args.min_support_coverage:
+            skipped_low_coverage += 1
+            continue
+
+        scores: List[torch.Tensor] = []
+        for emotion_id in range(len(emotion_names)):
+            score = sequence_relative_score_prepared(
+                controller=controller,
+                output_weight=output_weight,
+                eos_id=model.EOS,
+                prepared=prepared,
+                emotion_id=emotion_id,
+                device=device,
+            )
             if score is None:
                 scores = []
                 break
             scores.append(score)
-            coverages.append(coverage)
 
-        if (
-            not scores
-            or min(coverages, default=0.0)
-            < args.min_support_coverage
-        ):
+        if not scores:
             skipped_low_coverage += 1
             continue
 
@@ -1068,6 +1169,17 @@ def main() -> int:
         running_loss += float(loss.detach().cpu())
         running_gap += float(gap.detach().cpu())
 
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+            gpu_mem_gib = (
+                torch.cuda.memory_allocated(0) / (1024 ** 3)
+            )
+        else:
+            gpu_mem_gib = 0.0
+        step_elapsed_ms = (
+            time.perf_counter() - step_started
+        ) * 1000.0
+
         if (
             accepted_steps == 1
             or accepted_steps % args.log_every == 0
@@ -1082,7 +1194,11 @@ def main() -> int:
                 f"emotion={sample['emotion']} "
                 f"loss={running_loss / divisor:.5f} "
                 f"gap={running_gap / divisor:.5f} "
-                f"coverage={min(coverages):.2%} "
+                f"coverage={coverage:.2%} "
+                f"cache={'hit' if cache_hit else 'miss'} "
+                f"cache_size={len(frozen_sample_cache)} "
+                f"step_ms={step_elapsed_ms:.1f} "
+                f"gpu_mem={gpu_mem_gib:.2f}GiB "
                 f"skipped_coverage={skipped_low_coverage} "
                 f"skipped_no_grad={skipped_no_gradient}"
             )
@@ -1126,6 +1242,8 @@ def main() -> int:
     print(
         f"[OK] saved {output} | samples={len(training_samples)} "
         f"| steps={accepted_steps} "
+        f"| cache_hits={cache_hits} "
+        f"| cache_misses={cache_misses} "
         f"| skipped_coverage={skipped_low_coverage} "
         f"| skipped_no_grad={skipped_no_gradient}"
     )
