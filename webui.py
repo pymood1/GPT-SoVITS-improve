@@ -4679,7 +4679,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                 )
                 button1c_close.click(close1c, [], [info1c, button1c_open, button1c_close])
                 button1abc_open.click(
-                    open1abc,
+                    open1abcd,
                     [
                         version_checkbox,
                         inp_text,
@@ -4693,10 +4693,29 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         multilingual_bert_model,
                         cnhubert_base_dir,
                         pretrained_s2G,
+                        emotion_sidecar,
+                        emotion_dataset_id,
+                        emotion_auto_model,
+                        emotion_auto_confidence,
+                        emotion_auto_device,
                     ],
-                    [info1abc, button1abc_open, button1abc_close],
+                    [
+                        info1abc,
+                        button1abc_open,
+                        button1abc_close,
+                        emotion_sidecar,
+                    ],
                 )
-                button1abc_close.click(close1abc, [], [info1abc, button1abc_open, button1abc_close])
+                button1abc_close.click(
+                    close1abcd,
+                    [],
+                    [
+                        info1abc,
+                        button1abc_open,
+                        button1abc_close,
+                    ],
+                    queue=False,
+                )
     
                 with gr.TabItem("1B-" + i18n("微调训练"), id="finetune"):
                     with gr.Accordion(label="1Ba-" + i18n("SoVITS 训练: 模型权重文件在 SoVITS_weights/")):
