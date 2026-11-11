@@ -118,7 +118,30 @@ jobs:
           assert enabled is True
           assert model == "example/model"
 
+          from text.multilingual_bert import (
+              MultilingualBertFeatureExtractor,
+          )
+
+          extractor = MultilingualBertFeatureExtractor(
+              "hf-internal-testing/tiny-random-bert",
+              device="cpu",
+              is_half=False,
+          )
+          english = extractor.extract(
+              "Hello world",
+              phone_count=5,
+          )
+          korean = extractor.extract(
+              "안녕하세요",
+              phone_count=7,
+          )
+          assert english.shape == (1024, 5)
+          assert korean.shape == (1024, 7)
+          assert torch.isfinite(english).all()
+          assert torch.isfinite(korean).all()
+
           print("PY314_MULTILINGUAL_BERT_HELPERS_OK")
+          print("PY314_MULTILINGUAL_BERT_MODEL_SMOKE_OK")
           PY
 
   dependency_resolve_314:
