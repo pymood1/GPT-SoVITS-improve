@@ -1011,6 +1011,7 @@ def run_controller_oof_cv(
     weight_decay: float,
     steps: int,
     seed: int,
+    min_support_coverage: float,
 ) -> dict:
     """Train fresh controllers per fold and aggregate true OOF predictions."""
     eligible_samples = [
@@ -1022,7 +1023,7 @@ def run_controller_oof_cv(
                     (sample["reference"], sample["name"])
                 ]["coverage"]
             )
-            > 0.0
+            >= min_support_coverage
         )
     ]
     labels = [
@@ -1044,6 +1045,7 @@ def run_controller_oof_cv(
             "verdict": "unavailable",
         }
 
+    oof_device_cache: Dict[Tuple[str, str], dict] = {}
     oof_logits = torch.full(
         (len(eligible_samples), class_count),
         float("nan"),
@@ -1091,10 +1093,14 @@ def run_controller_oof_cv(
             if float(prepared["coverage"]) <= 0.0:
                 continue
 
-            prepared_device = controller_sample_to_device(
-                prepared,
-                device,
-            )
+            cache_key = (sample["reference"], sample["name"])
+            prepared_device = oof_device_cache.get(cache_key)
+            if prepared_device is None:
+                prepared_device = controller_sample_to_device(
+                    prepared,
+                    device,
+                )
+                oof_device_cache[cache_key] = prepared_device
             score_tensor = vectorized_sequence_relative_scores(
                 controller=fold_controller,
                 hidden=prepared_device["hidden"],
@@ -1144,10 +1150,14 @@ def run_controller_oof_cv(
                 prepared = frozen_sample_cache[
                     (sample["reference"], sample["name"])
                 ]
-                prepared_device = controller_sample_to_device(
-                    prepared,
-                    device,
-                )
+                cache_key = (sample["reference"], sample["name"])
+                prepared_device = oof_device_cache.get(cache_key)
+                if prepared_device is None:
+                    prepared_device = controller_sample_to_device(
+                        prepared,
+                        device,
+                    )
+                    oof_device_cache[cache_key] = prepared_device
                 score_tensor = vectorized_sequence_relative_scores(
                     controller=fold_controller,
                     hidden=prepared_device["hidden"],
@@ -2321,15 +2331,76 @@ def main() -> int:
             "saving current controller state"
         )
 
+    oof_steps = (
+        best_val_step
+        if best_val_step > 0
+        else min(args.steps, 500)
+    )
+    print(
+        f"[cv] running controller OOF: folds<=5 "
+        f"steps_per_fold={oof_steps}"
+    )
+    controller_oof = run_controller_oof_cv(
+        samples=all_usable_samples,
+        emotion_names=emotion_names,
+        frozen_sample_cache=frozen_sample_cache,
+        output_weight=output_weight,
+        eos_id=model.EOS,
+        device=device,
+        rank=args.rank,
+        max_log_odds_shift=args.max_log_odds_shift,
+        prefix_log_ratio_budget=args.prefix_log_ratio_budget,
+        preference_beta=args.preference_beta,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        steps=oof_steps,
+        seed=args.seed,
+        min_support_coverage=args.min_support_coverage,
+    )
+    diagnostic_probes["controller_oof"] = controller_oof
+    args.diagnostic_probes = diagnostic_probes
+
+    if controller_oof.get("status") == "ok":
+        cv_auc = controller_oof.get("oof_macro_auc")
+        cv_auc_text = (
+            f"{cv_auc:.3f}"
+            if cv_auc is not None
+            else "nan"
+        )
+        print(
+            "[cv] "
+            f"n={controller_oof['samples']} "
+            f"OOF_CE={controller_oof['oof_ce']:.5f} "
+            f"macro_acc={controller_oof['oof_macro_accuracy']:.2%} "
+            f"macro_auc={cv_auc_text} "
+            f"verdict={controller_oof['verdict']}"
+        )
+    else:
+        print(
+            "[cv][WARNING] controller OOF unavailable: "
+            f"status={controller_oof.get('status')}"
+        )
+
     random_ce = math.log(len(emotion_names))
     final_best_loss = (
         best_val_loss
         if best_controller_state is not None
         else float("inf")
     )
+    oof_available = controller_oof.get("status") == "ok"
+    controller_eval_loss = (
+        float(controller_oof["oof_ce"])
+        if oof_available
+        else final_best_loss
+    )
+    controller_eval_source = (
+        "controller_oof"
+        if oof_available
+        else "single_holdout_fallback"
+    )
     controller_signal = (
         "generalization_detected"
-        if final_best_loss < random_ce - 0.03
+        if controller_eval_loss < random_ce - 0.03
         else "near_chance"
     )
     probe_verdict = representation_probe.get(
@@ -2389,11 +2460,12 @@ def main() -> int:
         controller_signal == "generalization_detected"
     )
     result_reason = (
-        "validation CE beat the random ln(K) baseline by at least 0.03"
+        f"{controller_eval_source} CE beat the random ln(K) baseline "
+        "by at least 0.03"
         if training_passed
         else (
-            "validation stayed near the random ln(K) baseline; "
-            f"likely_bottleneck={likely_bottleneck}"
+            f"{controller_eval_source} CE stayed near the random ln(K) "
+            f"baseline; likely_bottleneck={likely_bottleneck}"
         )
     )
 
@@ -2426,6 +2498,13 @@ def main() -> int:
             if math.isfinite(final_best_loss)
             else None
         ),
+        "controller_eval_source": controller_eval_source,
+        "controller_eval_loss": (
+            controller_eval_loss
+            if math.isfinite(controller_eval_loss)
+            else None
+        ),
+        "controller_oof": controller_oof,
         "controller_signal": controller_signal,
         "probe_verdict": probe_verdict,
         "g_full_verdict": g_full_verdict,
@@ -2435,9 +2514,9 @@ def main() -> int:
         "full_beats_topk": full_beats_topk,
         "likely_bottleneck": likely_bottleneck,
         "rule": (
-            "PASS only when best validation CE beats ln(K) by at least "
-            "0.03; otherwise FAIL and use the frozen-S1 probe to identify "
-            "the more likely bottleneck"
+            "PASS when controller OOF CE beats ln(K) by at least 0.03. "
+            "If OOF is unavailable, fall back to best held-out validation "
+            "CE. Diagnostic probes identify the more likely bottleneck."
         ),
     }
     args.training_diagnosis = training_diagnosis
@@ -2459,6 +2538,7 @@ def main() -> int:
         "[diagnosis] "
         f"random_ce={random_ce:.5f} "
         f"best_val={final_best_loss:.5f} "
+        f"eval={controller_eval_source}:{controller_eval_loss:.5f} "
         f"controller={controller_signal} "
         f"probe={probe_verdict} "
         f"Gfull={g_full_verdict} "
