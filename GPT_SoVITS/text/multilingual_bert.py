@@ -13,8 +13,7 @@ change.
 
 from __future__ import annotations
 
-import math
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import torch
 from transformers import AutoModel, AutoTokenizer
@@ -210,7 +209,7 @@ class MultilingualBertFeatureExtractor:
 
 
 def checkpoint_multilingual_bert_config(config: dict) -> tuple[bool, str]:
-    """Read the opt-in feature contract from an S1 checkpoint config."""
+    """Read and validate the opt-in feature contract from an S1 config."""
     text_features = config.get("text_features") or {}
     enabled = bool(text_features.get("multilingual_bert", False))
     model_name = str(
@@ -219,4 +218,15 @@ def checkpoint_multilingual_bert_config(config: dict) -> tuple[bool, str]:
             DEFAULT_MULTILINGUAL_BERT,
         )
     ).strip() or DEFAULT_MULTILINGUAL_BERT
+
+    alignment_version = text_features.get(
+        "multilingual_bert_alignment",
+        ALIGNMENT_VERSION if enabled else None,
+    )
+    if enabled and alignment_version != ALIGNMENT_VERSION:
+        raise ValueError(
+            "Unsupported multilingual BERT alignment contract: "
+            f"{alignment_version!r}; expected {ALIGNMENT_VERSION!r}"
+        )
+
     return enabled, model_name
