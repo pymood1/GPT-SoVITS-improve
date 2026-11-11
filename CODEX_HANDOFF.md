@@ -599,10 +599,21 @@ Important defaults:
 - rank: 8
 - max log-odds shift: 0.35
 - prefix log-ratio budget: 2.0
-- steps: 1000
+- max steps: 500
 - learning rate: 1e-3
 - preference beta: 4.0
 - minimum support coverage: 0.60
+- validation interval: every 100 accepted steps
+- validation split: 20% per emotion, deterministic
+- early-stop patience: 2 validations
+- early-stop minimum delta: 0.001
+- minimum usable samples per emotion: 3
+
+The trainer keeps at least two training samples per retained emotion and holds
+out at least one sample for validation. Validation reports class-balanced
+cross-entropy, accuracy and score gap. The best validation-loss checkpoint is
+restored at the end; training stops early when validation loss fails to improve
+for two consecutive checks.
 
 There is no separate margin hyperparameter. The checkpoint stores ordered
 emotion names plus exact S1 and semantic-S2 provenance hashes. Do not hardcode
