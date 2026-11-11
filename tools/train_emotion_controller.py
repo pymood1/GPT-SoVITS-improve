@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -887,6 +888,11 @@ def save_checkpoint(
                 "representation_probe": getattr(
                     args,
                     "representation_probe",
+                    None,
+                ),
+                "training_diagnosis": getattr(
+                    args,
+                    "training_diagnosis",
                     None,
                 ),
                 "training_mode": "balanced_emotion_multiclass_v3_val",
@@ -1823,6 +1829,57 @@ def main() -> int:
             "saving current controller state"
         )
 
+    random_ce = math.log(len(emotion_names))
+    final_best_loss = (
+        best_val_loss
+        if best_controller_state is not None
+        else float("inf")
+    )
+    controller_signal = (
+        "generalization_detected"
+        if final_best_loss < random_ce - 0.03
+        else "near_chance"
+    )
+    probe_verdict = representation_probe.get(
+        "verdict",
+        "unavailable",
+    )
+
+    if controller_signal == "generalization_detected":
+        likely_bottleneck = "none_obvious"
+    elif probe_verdict == "informative":
+        likely_bottleneck = "controller_objective"
+    elif probe_verdict == "weak":
+        likely_bottleneck = "representation_or_labels"
+    else:
+        likely_bottleneck = "inconclusive"
+
+    training_diagnosis = {
+        "random_ce": random_ce,
+        "best_validation_loss": (
+            final_best_loss
+            if math.isfinite(final_best_loss)
+            else None
+        ),
+        "controller_signal": controller_signal,
+        "probe_verdict": probe_verdict,
+        "likely_bottleneck": likely_bottleneck,
+        "rule": (
+            "best val CE must beat ln(K) by at least 0.03 to count as "
+            "controller generalization; otherwise the frozen-S1 probe "
+            "determines which side is more suspicious"
+        ),
+    }
+    args.training_diagnosis = training_diagnosis
+    print(
+        "[diagnosis] "
+        f"random_ce={random_ce:.5f} "
+        f"best_val={final_best_loss:.5f} "
+        f"controller={controller_signal} "
+        f"probe={probe_verdict} "
+        f"likely_bottleneck={likely_bottleneck}"
+    )
+
     controller.eval()
     save_checkpoint(
         controller,
@@ -1846,6 +1903,7 @@ def main() -> int:
         f"{representation_probe.get('macro_accuracy_mean', float('nan')):.2%} "
         f"| probe_perm="
         f"{representation_probe.get('permutation_macro_accuracy_mean', float('nan')):.2%} "
+        f"| diagnosis={likely_bottleneck} "
         f"| cache_hits={cache_hits} "
         f"| cache_misses={cache_misses} "
         f"| skipped_coverage={skipped_low_coverage} "
