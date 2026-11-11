@@ -508,8 +508,6 @@ def run_auto_emotion_sidecar(
                 "먼저 GPT-SoVITS 텍스트 표기(.list) 파일을 지정하세요."
             )
 
-        source_path = Path(source_list).expanduser()
-
         if not sidecar_output:
             sidecar_output = str(
                 _emotion_output_dir(dataset_id)
@@ -1020,6 +1018,8 @@ def run_emotion_training_pipeline(
             ",".join(parsed_emotions),
             "--steps",
             str(steps),
+            "--version",
+            "v5dev",
             "--device",
             "cuda" if torch.cuda.is_available() else "cpu",
         ]
