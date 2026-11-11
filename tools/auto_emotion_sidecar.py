@@ -606,7 +606,7 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
             "transcript_source": "existing_list",
             "transcript_verified": False,
             "auto_emotion_model": args.model,
-            "auto_emotion_calibration": "speaker_relative_clr_median_v1",
+            "auto_emotion_calibration": "speaker_relative_clr_median_v2",
         }
 
         if row.get("emotion_prediction_error"):
@@ -636,7 +636,7 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
         "device": args.device,
         "min_confidence": args.min_confidence,
         "min_relative_score": args.min_relative_score,
-        "calibration": "speaker_relative_clr_median_v1",
+        "calibration": "speaker_relative_clr_median_v2",
         "allowed_emotions": sorted(allowed_emotions),
         "samples": len(rows),
         "prediction_reused": reused,
