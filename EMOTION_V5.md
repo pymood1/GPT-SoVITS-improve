@@ -199,13 +199,15 @@ on its own semantic sequence. Training chooses an emotion class uniformly and
 then samples an utterance from that class, avoiding majority-class domination.
 The fixed speaker reference is never reused as a training target.
 
-The default controller run uses at most 500 accepted steps. Each retained
+The default controller run starts with a 500-step budget. Each retained
 emotion needs at least three usable samples: a deterministic 20% per-emotion
 hold-out is reserved for validation while at least two samples remain in
 training. Every 100 accepted steps the trainer reports class-balanced
-validation loss, accuracy and gap. The best validation-loss controller is kept,
-and training stops early after two consecutive validations without at least
-0.001 loss improvement.
+validation loss, accuracy and gap. The best validation-loss controller is kept, and training stops early after
+two consecutive validations without at least 0.001 loss improvement. If the
+500-step budget is reached while validation still warrants more training, the
+budget extends automatically in 100-step increments up to a 1000-step safety
+cap.
 
 The checkpoint is bound to the exact S1 SHA-256 and the semantic S2 SHA-256.
 The reference prompt cache must use the same S2 token space as the preprocessing
