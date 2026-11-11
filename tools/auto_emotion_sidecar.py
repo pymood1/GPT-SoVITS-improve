@@ -265,6 +265,7 @@ def load_emotion_model(model_name: str, device: str):
     kwargs: dict[str, Any] = {
         "model": model_source,
         "disable_update": True,
+        "disable_pbar": True,
     }
 
     if device and device != "auto":
