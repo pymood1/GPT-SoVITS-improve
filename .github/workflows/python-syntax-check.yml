@@ -266,6 +266,12 @@ jobs:
 
           print("PY314_EMOTION_VECTOR_SCORE_EQUIVALENCE_OK")
           PY
+      - name: Test emotion controller training vectorization and initialization
+        env:
+          PYTHONPATH: GPT_SoVITS
+        run: |
+          python -m unittest tests/test_emotion_control_training_vectorization.py
+
 
   dependency_resolve_314:
     runs-on: ubuntu-latest
