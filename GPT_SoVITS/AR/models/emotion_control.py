@@ -194,6 +194,190 @@ class LowRankEmotionPreference(nn.Module):
 
 
 
+
+def vectorized_sequence_relative_scores(
+    controller: LowRankEmotionPreference,
+    hidden: torch.Tensor,
+    base_probs: torch.Tensor,
+    target_semantic: Sequence[int] | torch.Tensor,
+    valid_mask: Sequence[bool] | torch.Tensor,
+    output_weight: torch.Tensor,
+    eos_id: int,
+) -> Optional[torch.Tensor]:
+    """Score every emotion in one GPU pass without changing the objective.
+
+    This is algebraically equivalent to evaluating
+    ``vectorized_sequence_relative_score`` once per emotion, but reuses the
+    shared layer-normalization, low-rank projection, support masks, and
+    readout basis. The prefix budget is evaluated on-device to avoid the
+    per-emotion CUDA -> CPU synchronization in the legacy scorer.
+    """
+    if hidden.ndim != 2 or base_probs.ndim != 2:
+        raise ValueError("hidden/base_probs must be rank-2 tensors")
+    if hidden.shape[0] != base_probs.shape[0]:
+        raise ValueError("hidden/base_probs sequence lengths differ")
+    if len(target_semantic) != hidden.shape[0]:
+        raise ValueError("target semantic length does not match hidden")
+    if len(valid_mask) != hidden.shape[0]:
+        raise ValueError("valid mask length does not match hidden")
+
+    vocab_size = base_probs.shape[-1]
+    normalized = F.layer_norm(hidden, (controller.hidden_dim,))
+    low_rank = normalized @ controller.v_proj
+
+    # ((hV) * e) U^T W^T == ((hV) * e) (WU)^T.
+    # WU is shared by every emotion, so compute it only once per sample.
+    readout_basis = (
+        output_weight[:vocab_size] @ controller.u_proj
+    )
+    conditioned = (
+        low_rank.unsqueeze(1)
+        * controller.emotion_coeff.weight.unsqueeze(0)
+    )
+    preference_scores = torch.matmul(
+        conditioned,
+        readout_basis.transpose(0, 1),
+    )
+
+    support = base_probs > 0
+    support_count = support.sum(dim=-1)
+    finite_rows = (
+        torch.isfinite(base_probs).all(dim=-1).unsqueeze(1)
+        & torch.isfinite(preference_scores).all(dim=-1)
+    )
+
+    if 0 <= eos_id < vocab_size:
+        eos_present = support[:, eos_id]
+        eos_mass = base_probs[:, eos_id]
+    else:
+        eos_present = torch.zeros(
+            base_probs.shape[0],
+            dtype=torch.bool,
+            device=base_probs.device,
+        )
+        eos_mass = torch.zeros(
+            base_probs.shape[0],
+            dtype=base_probs.dtype,
+            device=base_probs.device,
+        )
+
+    non_eos_support = support.clone()
+    if 0 <= eos_id < vocab_size:
+        non_eos_support[:, eos_id] = False
+
+    delta = torch.clamp(
+        preference_scores,
+        min=-controller.max_log_odds_shift,
+        max=controller.max_log_odds_shift,
+    )
+    delta = torch.where(
+        support.unsqueeze(1),
+        delta,
+        torch.zeros_like(delta),
+    )
+
+    weighted = torch.where(
+        non_eos_support.unsqueeze(1),
+        base_probs.unsqueeze(1) * torch.exp(delta),
+        torch.zeros_like(delta),
+    )
+    denom = weighted.sum(dim=-1)
+
+    structurally_active = (
+        finite_rows
+        & (support_count > 1).unsqueeze(1)
+        & (non_eos_support.sum(dim=-1) > 0).unsqueeze(1)
+        & torch.isfinite(denom)
+        & (denom > 0)
+    )
+
+    target_ids = torch.as_tensor(
+        target_semantic,
+        dtype=torch.long,
+        device=base_probs.device,
+    ).reshape(-1)
+    valid_tensor = torch.as_tensor(
+        valid_mask,
+        dtype=torch.bool,
+        device=base_probs.device,
+    ).reshape(-1)
+    if target_ids.numel() == 0 or valid_tensor.numel() == 0:
+        return None
+
+    target_base = base_probs.gather(
+        1,
+        target_ids.unsqueeze(1),
+    ).squeeze(1)
+    target_index = target_ids.view(-1, 1, 1).expand(
+        -1,
+        controller.num_emotions,
+        1,
+    )
+    target_delta = delta.gather(
+        2,
+        target_index,
+    ).squeeze(2)
+
+    target_is_eos = (
+        (target_ids == eos_id) & eos_present
+    ).unsqueeze(1)
+    non_eos_target_prob = (
+        (1.0 - eos_mass).unsqueeze(1)
+        * target_base.unsqueeze(1)
+        * torch.exp(target_delta)
+        / denom.clamp_min(1e-30)
+    )
+    steered_target = torch.where(
+        target_is_eos,
+        eos_mass.unsqueeze(1),
+        non_eos_target_prob,
+    )
+    steered_target = torch.where(
+        structurally_active,
+        steered_target,
+        target_base.unsqueeze(1),
+    )
+
+    raw_ratio = (
+        torch.log(steered_target.clamp_min(1e-12))
+        - torch.log(target_base.clamp_min(1e-12)).unsqueeze(1)
+    )
+
+    valid_2d = valid_tensor.unsqueeze(1).expand_as(raw_ratio)
+    if controller.prefix_log_ratio_budget > 0:
+        detached_valid_ratios = torch.where(
+            valid_2d,
+            raw_ratio.detach().to(dtype=torch.float64),
+            torch.zeros_like(raw_ratio, dtype=torch.float64),
+        )
+        prefix_before = (
+            torch.cumsum(detached_valid_ratios, dim=0)
+            - detached_valid_ratios
+        )
+        threshold = (
+            controller.prefix_log_ratio_budget
+            - 2.0 * controller.max_log_odds_shift
+        )
+        can_continue = prefix_before.abs() <= threshold
+        gate = torch.where(
+            valid_2d,
+            can_continue,
+            torch.ones_like(can_continue),
+        )
+        active_prefix = (
+            torch.cumprod(gate.to(dtype=torch.float32), dim=0) > 0.5
+        )
+        budget_mask = (
+            active_prefix & valid_2d
+        ).to(dtype=raw_ratio.dtype)
+    else:
+        budget_mask = valid_2d.to(dtype=raw_ratio.dtype)
+
+    valid_count = valid_tensor.sum().clamp_min(1).to(
+        dtype=raw_ratio.dtype
+    )
+    return (raw_ratio * budget_mask).sum(dim=0) / valid_count
+
 def vectorized_sequence_relative_score(
     controller: LowRankEmotionPreference,
     hidden: torch.Tensor,
