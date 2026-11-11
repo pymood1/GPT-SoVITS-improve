@@ -264,7 +264,11 @@ def load_emotion_controller_webui(controller_path):
         raise gr.Error(i18n("当前 GPT 模型路径不可用"))
     if sha256_file(gpt_path_global) != expected_s1_hash:
         raise gr.Error(i18n("控制器与当前 GPT/S1 权重不匹配，已拒绝加载"))
-    expected_s2_hash = metadata.get("extra", {}).get("s2_sha256")
+    extra = metadata.get("extra", {})
+    expected_s2_hash = (
+        extra.get("semantic_s2_sha256")
+        or extra.get("s2_sha256")
+    )
     if not expected_s2_hash:
         raise gr.Error(i18n("控制器缺少 S2 哈希，请使用当前训练器重新生成"))
     if sovits_path_global in [None, ""]:
