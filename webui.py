@@ -4592,6 +4592,68 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                             queue=False,
                         )
 
+                with gr.Accordion(
+                    label="1Aabcd-전처리 일괄 실행",
+                    open=True,
+                ):
+                    gr.Markdown(
+                        "위 a/b/c/d 설정을 모두 마친 뒤 한 번에 실행합니다. "
+                        "앞 단계가 실패하면 다음 단계는 시작하지 않습니다."
+                    )
+                    with gr.Row():
+                        button1abcd_open = gr.Button(
+                            value="a → b → c → d 순서대로 실행",
+                            variant="primary",
+                            visible=True,
+                        )
+                        button1abcd_close = gr.Button(
+                            value="일괄 전처리 중지",
+                            variant="stop",
+                            visible=False,
+                        )
+                    info1abcd = gr.Markdown(
+                        value="설정을 확인한 뒤 실행하세요."
+                    )
+
+                    button1abcd_open.click(
+                        open1abcd,
+                        [
+                            version_checkbox,
+                            inp_text,
+                            inp_wav_dir,
+                            exp_name,
+                            gpu_numbers1a,
+                            gpu_numbers1Ba,
+                            gpu_numbers1c,
+                            bert_pretrained_dir,
+                            use_multilingual_bert,
+                            multilingual_bert_model,
+                            cnhubert_base_dir,
+                            pretrained_s2G,
+                            emotion_sidecar,
+                            emotion_dataset_id,
+                            emotion_auto_model,
+                            emotion_auto_confidence,
+                            emotion_auto_device,
+                        ],
+                        [
+                            info1abcd,
+                            button1abcd_open,
+                            button1abcd_close,
+                            emotion_sidecar,
+                        ],
+                    )
+                    button1abcd_close.click(
+                        close1abcd,
+                        [],
+                        [
+                            info1abcd,
+                            button1abcd_open,
+                            button1abcd_close,
+                        ],
+                        queue=False,
+                    )
+
                 prep_asr_open.click(
                     open_asr,
                     [
@@ -4845,6 +4907,29 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                             with gr.Row():
                                 info1Bb = gr.Textbox(label=process_info(process_name_gpt, "info"))
     
+
+                    with gr.Accordion(
+                        label="1Bseq-GPT → SoVITS 연속 학습",
+                        open=True,
+                    ):
+                        gr.Markdown(
+                            "위 GPT/SoVITS 설정을 그대로 사용합니다. "
+                            "**GPT가 정상 완료된 경우에만 SoVITS 학습을 시작합니다.**"
+                        )
+                        with gr.Row():
+                            button_train_sequence_open = gr.Button(
+                                value="GPT → SoVITS 순서대로 학습",
+                                variant="primary",
+                                visible=True,
+                            )
+                            button_train_sequence_close = gr.Button(
+                                value="연속 학습 중지",
+                                variant="stop",
+                                visible=False,
+                            )
+                        info_train_sequence = gr.Markdown(
+                            value="설정을 확인한 뒤 실행하세요."
+                        )
 
                     with gr.Accordion(
                         label="1Bc-감정 제어 학습 (V5dev, 선택)",
