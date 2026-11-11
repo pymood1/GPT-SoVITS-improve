@@ -52,6 +52,7 @@ from text.multilingual_bert import (  # noqa: E402
 )
 from tools.emotion_training_pipeline import (  # noqa: E402
     EmotionPipelineError,
+    run_mean_pool_linear_probe,
     split_train_validation_samples,
     update_early_stop_state,
 )
@@ -883,6 +884,11 @@ def save_checkpoint(
                 "early_stop_patience": args.early_stop_patience,
                 "early_stop_min_delta": args.early_stop_min_delta,
                 "validation": validation,
+                "representation_probe": getattr(
+                    args,
+                    "representation_probe",
+                    None,
+                ),
                 "training_mode": "balanced_emotion_multiclass_v3_val",
                 "version": args.version,
                 "text_features": args.text_features,
@@ -1346,6 +1352,150 @@ def main() -> int:
 
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Precompute the same frozen S1 representations that controller training
+    # will reuse, then run an automatic linear probe before optimization.
+    # This separates "S1 representation / label signal is weak" from
+    # "controller objective fails to use an otherwise separable signal"
+    # without adding another user-facing pipeline stage.
+    print(
+        f"[probe] preparing frozen S1 representations: "
+        f"samples={len(all_usable_samples)}"
+    )
+    probe_features: List[torch.Tensor] = []
+    probe_labels: List[int] = []
+    probe_coverage_skipped = 0
+    probe_invalid_hidden = 0
+
+    for probe_index, sample in enumerate(all_usable_samples, 1):
+        cache_key = (sample["reference"], sample["name"])
+        prepared = frozen_sample_cache.get(cache_key)
+        if prepared is None:
+            batch = build_single_sample_batch(
+                store=store,
+                reference_name=sample["reference"],
+                target_name=sample["name"],
+                device=device,
+                pad_val=int(config["data"]["pad_val"]),
+                reference_prompt_cache=reference_prompt_cache,
+            )
+            prepared = prepare_controller_sample(
+                model=model,
+                batch=batch,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                temperature=args.temperature,
+                repetition_penalty=args.repetition_penalty,
+            )
+            frozen_sample_cache[cache_key] = prepared
+            cache_misses += 1
+
+        if float(prepared["coverage"]) < args.min_support_coverage:
+            probe_coverage_skipped += 1
+            continue
+
+        hidden = prepared["hidden"].float()
+        if (
+            hidden.ndim != 2
+            or hidden.shape[0] == 0
+            or not bool(torch.isfinite(hidden).all())
+        ):
+            probe_invalid_hidden += 1
+            continue
+
+        probe_features.append(hidden.mean(dim=0))
+        probe_labels.append(int(sample["emotion_id"]))
+
+        if (
+            probe_index == len(all_usable_samples)
+            or probe_index % 25 == 0
+        ):
+            print(
+                f"[probe] cached={probe_index}/"
+                f"{len(all_usable_samples)} "
+                f"usable={len(probe_features)} "
+                f"coverage_skipped={probe_coverage_skipped}"
+            )
+
+    if probe_features:
+        probe_tensor = torch.stack(probe_features, dim=0)
+        representation_probe = run_mean_pool_linear_probe(
+            probe_tensor,
+            probe_labels,
+            emotion_names,
+            seed=args.seed,
+            max_folds=5,
+            permutations=3,
+            steps=80,
+        )
+    else:
+        representation_probe = {
+            "method": "mean_pool_linear_stratified_cv_v1",
+            "status": "insufficient_data",
+            "verdict": "unavailable",
+            "samples": 0,
+        }
+
+    representation_probe["coverage_skipped"] = probe_coverage_skipped
+    representation_probe["invalid_hidden"] = probe_invalid_hidden
+    args.representation_probe = representation_probe
+
+    if representation_probe.get("status") == "ok":
+        print(
+            "[probe] "
+            f"folds={representation_probe['folds']} "
+            f"samples={representation_probe['samples']} "
+            f"macro_acc="
+            f"{representation_probe['macro_accuracy_mean']:.2%}"
+            f"±{representation_probe['macro_accuracy_std']:.2%} "
+            f"permuted="
+            f"{representation_probe['permutation_macro_accuracy_mean']:.2%}"
+            f"±"
+            f"{representation_probe['permutation_macro_accuracy_std']:.2%} "
+            f"chance={representation_probe['chance_accuracy']:.2%} "
+            f"delta="
+            f"{representation_probe['delta_vs_permutation']:+.2%} "
+            f"verdict={representation_probe['verdict']}"
+        )
+        if representation_probe["verdict"] == "weak":
+            print(
+                "[probe][WARNING] Frozen S1 hidden states do not separate "
+                "the current emotion labels reliably. Controller validation "
+                "may remain near chance even when optimization is healthy."
+            )
+        elif representation_probe["verdict"] == "informative":
+            print(
+                "[probe][OK] Frozen S1 hidden states contain a separable "
+                "signal for the current labels. If controller validation "
+                "stays near chance, inspect the controller objective before "
+                "blaming representation capacity."
+            )
+        else:
+            print(
+                "[probe] Frozen S1 separability is inconclusive on this "
+                "dataset; controller training will continue normally."
+            )
+    else:
+        print(
+            "[probe][WARNING] representation probe unavailable: "
+            f"status={representation_probe.get('status')} "
+            f"samples={representation_probe.get('samples', 0)}"
+        )
+
+    probe_report_path = output.with_name(
+        f"{output.stem}.probe.json"
+    )
+    probe_report_path.write_text(
+        json.dumps(
+            representation_probe,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"[probe] saved {probe_report_path}")
     accepted_steps = 0
     attempts = 0
     training_limit = args.steps
