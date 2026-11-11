@@ -672,6 +672,7 @@ def save_checkpoint(
                 "temperature": args.temperature,
                 "repetition_penalty": args.repetition_penalty,
                 "min_support_coverage": args.min_support_coverage,
+                "min_samples_per_emotion": args.min_samples_per_emotion,
                 "training_mode": "balanced_emotion_multiclass_v2",
                 "version": args.version,
                 "text_features": args.text_features,
@@ -747,6 +748,15 @@ def main() -> int:
     parser.add_argument(
         "--min-support-coverage", type=float, default=0.60
     )
+    parser.add_argument(
+        "--min-samples-per-emotion",
+        type=int,
+        default=2,
+        help=(
+            "Drop controller classes with fewer usable training samples "
+            "after the fixed reference is excluded."
+        ),
+    )
     parser.add_argument("--save-every", type=int, default=250)
     parser.add_argument("--log-every", type=int, default=20)
     parser.add_argument("--seed", type=int, default=233333)
@@ -764,6 +774,10 @@ def main() -> int:
         )
     if args.temperature <= 0:
         raise TrainingDataError("--temperature must be positive")
+    if args.min_samples_per_emotion < 1:
+        raise TrainingDataError(
+            "--min-samples-per-emotion must be >= 1"
+        )
 
     emotion_names = [
         item.strip().lower()
@@ -962,20 +976,57 @@ def main() -> int:
         reference_map,
     )
 
-    trained_emotions = {
-        sample["emotion"]
-        for sample in training_samples
-    }
-    unused_emotions = [
+    usable_counts: Dict[str, int] = defaultdict(int)
+    for sample in training_samples:
+        usable_counts[sample["emotion"]] += 1
+
+    excluded_low_sample = [
         emotion
         for emotion in emotion_names
-        if emotion not in trained_emotions
+        if usable_counts.get(emotion, 0)
+        < args.min_samples_per_emotion
     ]
-    if unused_emotions:
-        raise TrainingDataError(
-            "Configured emotion IDs have no usable samples: "
-            + ", ".join(unused_emotions)
+    if excluded_low_sample:
+        print(
+            "[data] excluded low-sample controller classes: "
+            + ", ".join(
+                f"{emotion}={usable_counts.get(emotion, 0)}"
+                for emotion in excluded_low_sample
+            )
+            + f" (min={args.min_samples_per_emotion})"
         )
+
+    emotion_names = [
+        emotion
+        for emotion in emotion_names
+        if usable_counts.get(emotion, 0)
+        >= args.min_samples_per_emotion
+    ]
+    if len(emotion_names) < 2:
+        raise TrainingDataError(
+            "Need at least two controller emotions after low-sample "
+            f"filtering (min={args.min_samples_per_emotion})"
+        )
+
+    emotion_to_id = {
+        name: index
+        for index, name in enumerate(emotion_names)
+    }
+    training_samples = [
+        sample
+        for sample in training_samples
+        if sample["emotion"] in emotion_to_id
+    ]
+    for sample in training_samples:
+        sample["emotion_id"] = emotion_to_id[sample["emotion"]]
+
+    print(
+        "[data] retained controller labels: "
+        + ", ".join(
+            f"{emotion}={usable_counts[emotion]}"
+            for emotion in emotion_names
+        )
+    )
 
     samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
     for sample in training_samples:
