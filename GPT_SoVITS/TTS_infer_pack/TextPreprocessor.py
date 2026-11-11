@@ -11,6 +11,11 @@ import re
 import torch
 from text.LangSegmenter import LangSegmenter
 from text import chinese
+from text.multilingual_bert import (
+    DEFAULT_MULTILINGUAL_BERT,
+    MULTILINGUAL_BERT_LANGUAGES,
+    MultilingualBertFeatureExtractor,
+)
 from typing import Dict, List, Tuple
 from text.cleaner import clean_text
 from text import cleaned_text_to_sequence
@@ -50,11 +55,46 @@ def merge_short_text_in_array(texts: str, threshold: int) -> list:
 
 
 class TextPreprocessor:
-    def __init__(self, bert_model: AutoModelForMaskedLM, tokenizer: AutoTokenizer, device: torch.device):
+    def __init__(
+        self,
+        bert_model: AutoModelForMaskedLM,
+        tokenizer: AutoTokenizer,
+        device: torch.device,
+        *,
+        use_multilingual_bert: bool = False,
+        multilingual_bert_model: str = DEFAULT_MULTILINGUAL_BERT,
+        is_half: bool = False,
+    ):
         self.bert_model = bert_model
         self.tokenizer = tokenizer
         self.device = device
         self.bert_lock = threading.RLock()
+        self.use_multilingual_bert = bool(use_multilingual_bert)
+        self.multilingual_bert_model = str(
+            multilingual_bert_model or DEFAULT_MULTILINGUAL_BERT
+        )
+        self.multilingual_bert = (
+            MultilingualBertFeatureExtractor(
+                self.multilingual_bert_model,
+                device=device,
+                is_half=is_half,
+            )
+            if self.use_multilingual_bert
+            else None
+        )
+
+    def set_device(
+        self,
+        device: torch.device,
+        *,
+        is_half: bool = False,
+    ) -> None:
+        self.device = device
+        if self.multilingual_bert is not None:
+            self.multilingual_bert.set_device(
+                device,
+                is_half=is_half,
+            )
 
     def preprocess(self, text: str, lang: str, text_split_method: str, version: str = "v2") -> List[Dict]:
         print(f"############ {i18n('切分文本')} ############")
@@ -212,7 +252,18 @@ class TextPreprocessor:
     def get_bert_inf(self, phones: list, word2ph: list, norm_text: str, language: str):
         language = language.replace("all_", "")
         if language == "zh":
-            feature = self.get_bert_feature(norm_text, word2ph).to(self.device)
+            feature = self.get_bert_feature(
+                norm_text,
+                word2ph,
+            ).to(self.device)
+        elif (
+            self.multilingual_bert is not None
+            and language in MULTILINGUAL_BERT_LANGUAGES
+        ):
+            feature = self.multilingual_bert.extract(
+                norm_text,
+                phone_count=len(phones),
+            ).to(self.device)
         else:
             feature = torch.zeros(
                 (1024, len(phones)),
