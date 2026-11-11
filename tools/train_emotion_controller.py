@@ -51,6 +51,7 @@ from text.multilingual_bert import (  # noqa: E402
     checkpoint_multilingual_bert_config,
 )
 from tools.emotion_training_pipeline import (  # noqa: E402
+    EmotionPipelineError,
     split_train_validation_samples,
     update_early_stop_state,
 )
@@ -1007,9 +1008,7 @@ def main() -> int:
             "--min-samples-per-emotion must be >= 3 when validation is enabled"
         )
     if args.max_auto_steps < args.steps:
-        raise TrainingDataError(
-            "--max-auto-steps must be >= --steps"
-        )
+        args.max_auto_steps = args.steps
     if args.val_interval <= 0:
         raise TrainingDataError("--val-interval must be positive")
     if not 0.0 < args.val_fraction < 1.0:
@@ -1663,6 +1662,11 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (TrainingDataError, OSError, ValueError) as exc:
+    except (
+        TrainingDataError,
+        EmotionPipelineError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"[FATAL] {exc}", file=sys.stderr)
         raise SystemExit(2)
