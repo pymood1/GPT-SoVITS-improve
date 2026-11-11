@@ -2331,11 +2331,9 @@ def main() -> int:
             "saving current controller state"
         )
 
-    oof_steps = (
-        best_val_step
-        if best_val_step > 0
-        else min(args.steps, 500)
-    )
+    # Keep OOF training length independent of the single held-out split.
+    # Using best_val_step here would leak information from that split into CV.
+    oof_steps = args.steps
     print(
         f"[cv] running controller OOF: folds<=5 "
         f"steps_per_fold={oof_steps}"
