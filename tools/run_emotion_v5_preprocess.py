@@ -26,6 +26,13 @@ from typing import Dict, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
+
+import torch
+
+from text.multilingual_bert import (
+    checkpoint_multilingual_bert_config,
+)
 
 
 class PreprocessError(RuntimeError):
@@ -289,6 +296,13 @@ def main() -> int:
     parser.add_argument("--cnhubert-dir", required=True)
     parser.add_argument("--pretrained-s2g", required=True)
     parser.add_argument(
+        "--s1-checkpoint",
+        help=(
+            "Exact S1 checkpoint whose text-feature contract should be "
+            "used. Recommended for controller preprocessing."
+        ),
+    )
+    parser.add_argument(
         "--s2-config",
         default="GPT_SoVITS/configs/s2.json",
     )
@@ -310,6 +324,11 @@ def main() -> int:
     bert_dir = Path(args.bert_dir).expanduser().resolve()
     cnhubert_dir = Path(args.cnhubert_dir).expanduser().resolve()
     s2_path = Path(args.pretrained_s2g).expanduser().resolve()
+    s1_path = (
+        Path(args.s1_checkpoint).expanduser().resolve()
+        if args.s1_checkpoint
+        else None
+    )
     s2_config = Path(args.s2_config)
     if not s2_config.is_absolute():
         s2_config = (ROOT / s2_config).resolve()
@@ -320,6 +339,47 @@ def main() -> int:
         raise PreprocessError(f"S2 checkpoint not found: {s2_path}")
     if not s2_config.is_file():
         raise PreprocessError(f"S2 config not found: {s2_config}")
+
+    if s1_path is not None:
+        if not s1_path.is_file():
+            raise PreprocessError(
+                f"S1 checkpoint not found: {s1_path}"
+            )
+        print("[fingerprint] S1 text feature contract")
+        s1_payload = torch.load(
+            s1_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if (
+            not isinstance(s1_payload, dict)
+            or not isinstance(s1_payload.get("config"), dict)
+        ):
+            raise PreprocessError(
+                "S1 checkpoint must contain a config mapping"
+            )
+        use_multilingual_bert, multilingual_bert_model = (
+            checkpoint_multilingual_bert_config(
+                s1_payload["config"]
+            )
+        )
+        s1_hash = sha256_file(s1_path)
+        del s1_payload
+    else:
+        use_multilingual_bert = False
+        multilingual_bert_model = (
+            "google-bert/bert-base-multilingual-cased"
+        )
+        s1_hash = None
+
+    text_features = {
+        "multilingual_bert": use_multilingual_bert,
+        "multilingual_bert_model": (
+            multilingual_bert_model
+            if use_multilingual_bert
+            else None
+        ),
+    }
 
     print("[fingerprint] train.list")
     list_hash = sha256_file(train_list)
@@ -336,6 +396,8 @@ def main() -> int:
         "train_list_sha256": list_hash,
         "audio_manifest_sha256": audio_manifest_hash,
         "s2_sha256": s2_hash,
+        "s1_sha256": s1_hash,
+        "text_features": text_features,
         "bert_sha256": bert_hash,
         "cnhubert_sha256": cnhubert_hash,
         "s2_config_sha256": s2_config_hash,
@@ -434,6 +496,8 @@ def main() -> int:
             "_CUDA_VISIBLE_DEVICES": str(args.gpu),
             "opt_dir": str(output_dir),
             "bert_pretrained_dir": str(bert_dir),
+            "use_multilingual_bert": str(use_multilingual_bert),
+            "multilingual_bert_model": multilingual_bert_model,
             "cnhubert_base_dir": str(cnhubert_dir),
             "pretrained_s2G": str(s2_path),
             "s2config_path": str(s2_config),
