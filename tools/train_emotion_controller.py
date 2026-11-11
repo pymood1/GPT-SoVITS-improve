@@ -621,6 +621,7 @@ def save_checkpoint(
             "repetition_penalty": args.repetition_penalty,
             "min_support_coverage": args.min_support_coverage,
             "training_mode": "balanced_emotion_multiclass_v2",
+            "version": args.version,
             "neutral_is_base": True,
         },
     )
@@ -756,7 +757,14 @@ def main() -> int:
             raise TrainingDataError(
                 "feature build manifest does not belong to --feature-dir"
             )
-        actual_s2_hash = manifest.get("identity", {}).get("s2_sha256")
+        manifest_identity = manifest.get("identity", {})
+        manifest_version = manifest_identity.get("version")
+        if manifest_version != args.version:
+            raise TrainingDataError(
+                "feature build version mismatch: "
+                f"{manifest_version!r} != {args.version!r}"
+            )
+        actual_s2_hash = manifest_identity.get("s2_sha256")
         if not actual_s2_hash:
             raise TrainingDataError(
                 "feature build manifest has no S2 SHA-256"
@@ -798,6 +806,12 @@ def main() -> int:
             raise TrainingDataError(
                 "reference prompt cache is missing fixed references: "
                 + ", ".join(missing_reference_prompts[:20])
+            )
+        cache_version = reference_cache_metadata.get("tts_version")
+        if cache_version != args.version:
+            raise TrainingDataError(
+                "reference prompt cache version mismatch: "
+                f"{cache_version!r} != {args.version!r}"
             )
         expected_s2_hash = reference_cache_metadata.get("s2_sha256")
         if not expected_s2_hash:
