@@ -265,6 +265,11 @@ def load_emotion_controller_webui(controller_path):
     if sha256_file(gpt_path_global) != expected_s1_hash:
         raise gr.Error(i18n("控制器与当前 GPT/S1 权重不匹配，已拒绝加载"))
     extra = metadata.get("extra", {})
+    expected_version = extra.get("version")
+    if expected_version and expected_version != model_version:
+        raise gr.Error(
+            i18n("控制器 V5 版本与当前模型不匹配，已拒绝加载")
+        )
     expected_s2_hash = (
         extra.get("semantic_s2_sha256")
         or extra.get("s2_sha256")
