@@ -1544,8 +1544,6 @@ def main() -> int:
                         "best_step": best_val_step,
                     },
                 )
-            else:
-                validations_without_improvement += 1
 
             print(
                 f"[val] step={accepted_steps}/{training_limit} "
