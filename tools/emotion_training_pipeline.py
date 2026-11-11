@@ -237,6 +237,13 @@ def _reference_candidates(
             row.get("emotion_intended") or ""
         ).strip().lower()
 
+        if (
+            trainable_emotions is not None
+            and emotion not in NON_CONTROLLER_EMOTIONS
+            and emotion not in trainable_emotions
+        ):
+            continue
+
         # A fixed reference is excluded from controller supervision. Never
         # consume the only available sample of a trainable emotion.
         if (
