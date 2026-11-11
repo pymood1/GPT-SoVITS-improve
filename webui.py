@@ -76,6 +76,9 @@ import subprocess
 from subprocess import Popen
 
 from tools.assets import css, js, top_html
+from GPT_SoVITS.text.multilingual_bert import (
+    ALIGNMENT_VERSION as MULTILINGUAL_BERT_ALIGNMENT_VERSION,
+)
 from tools.i18n.i18n import I18nAuto, scan_language_list
 
 language = sys.argv[-1] if sys.argv[-1] in scan_language_list() else "Auto"
@@ -361,6 +364,11 @@ def _text_feature_config(
     return {
         "format_version": 1,
         "multilingual_bert": enabled,
+        "multilingual_bert_alignment": (
+            MULTILINGUAL_BERT_ALIGNMENT_VERSION
+            if enabled
+            else None
+        ),
         "multilingual_bert_model": (
             str(multilingual_bert_model).strip()
             if enabled
