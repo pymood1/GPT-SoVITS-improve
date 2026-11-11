@@ -8,8 +8,10 @@ trainer so the WebUI can run the pipeline without duplicating model logic.
 from __future__ import annotations
 
 import json
+import random
+from collections import defaultdict
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import yaml
 
@@ -72,6 +74,82 @@ NON_CONTROLLER_EMOTIONS = {
 
 DEFAULT_MIN_SAMPLES_PER_EMOTION = 3
 
+
+
+def split_train_validation_samples(
+    samples: Sequence[dict],
+    emotion_names: Sequence[str],
+    *,
+    val_fraction: float,
+    seed: int,
+    min_train_samples: int = 2,
+) -> tuple[list[dict], list[dict]]:
+    """Create a deterministic per-emotion held-out split."""
+    if not 0.0 < val_fraction < 1.0:
+        raise EmotionPipelineError("val_fraction must be in (0,1)")
+    if min_train_samples < 1:
+        raise EmotionPipelineError("min_train_samples must be >= 1")
+
+    by_emotion: dict[str, list[dict]] = defaultdict(list)
+    for sample in samples:
+        emotion = str(sample.get("emotion") or "").strip().lower()
+        if emotion:
+            by_emotion[emotion].append(dict(sample))
+
+    split_rng = random.Random(seed + 104729)
+    train_samples: list[dict] = []
+    val_samples: list[dict] = []
+
+    for emotion in emotion_names:
+        bucket = sorted(
+            by_emotion.get(emotion, []),
+            key=lambda sample: str(sample.get("name") or ""),
+        )
+        if len(bucket) < min_train_samples + 1:
+            raise EmotionPipelineError(
+                f"Emotion {emotion!r} needs at least "
+                f"{min_train_samples + 1} usable samples for validation"
+            )
+
+        split_rng.shuffle(bucket)
+        requested_val = max(
+            1,
+            int(round(len(bucket) * val_fraction)),
+        )
+        val_count = min(
+            requested_val,
+            len(bucket) - min_train_samples,
+        )
+        if val_count < 1:
+            raise EmotionPipelineError(
+                f"Emotion {emotion!r} has no room for held-out validation"
+            )
+
+        val_samples.extend(bucket[:val_count])
+        train_samples.extend(bucket[val_count:])
+
+    if not train_samples or not val_samples:
+        raise EmotionPipelineError("train/validation split is empty")
+
+    return train_samples, val_samples
+
+
+def update_early_stop_state(
+    *,
+    current_loss: float,
+    best_loss: float,
+    validations_without_improvement: int,
+    min_delta: float,
+) -> tuple[float, int, bool]:
+    """Update validation-loss early-stop state deterministically."""
+    improved = current_loss < best_loss - min_delta
+    if improved:
+        return current_loss, 0, True
+    return (
+        best_loss,
+        validations_without_improvement + 1,
+        False,
+    )
 
 def validate_emotion_dataset(dataset_dir: Path) -> dict:
     metadata_path = dataset_dir / "metadata.jsonl"
