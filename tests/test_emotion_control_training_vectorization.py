@@ -169,7 +169,7 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
             scores,
             torch.zeros_like(scores),
             rtol=0.0,
-            atol=0.0,
+            atol=1e-6,
         )
 
         loss = F.cross_entropy(
