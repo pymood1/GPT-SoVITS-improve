@@ -984,6 +984,8 @@ def run_emotion_training_pipeline(
             str(cnhubert_dir),
             "--pretrained-s2g",
             str(s2_checkpoint),
+            "--s1-checkpoint",
+            str(s1_checkpoint),
             "--version",
             "v5dev",
             "--gpu",
