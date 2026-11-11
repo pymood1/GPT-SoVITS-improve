@@ -25,6 +25,7 @@ try:
         normalize_language,
         parse_list_line,
         resolve_audio_path,
+        sha256_file,
         stable_hash,
     )
 except ModuleNotFoundError:
@@ -33,12 +34,13 @@ except ModuleNotFoundError:
         normalize_language,
         parse_list_line,
         resolve_audio_path,
+        sha256_file,
         stable_hash,
     )
 
 
 DEFAULT_MODEL = "iic/emotion2vec_plus_large"
-PREDICTION_CACHE_VERSION = 2
+PREDICTION_CACHE_VERSION = 3
 LOCAL_EMOTION_MODELS = {
     "iic/emotion2vec_plus_large": (
         Path(__file__).resolve().parents[1]
@@ -105,13 +107,10 @@ def audio_duration_seconds(path: Path) -> float | None:
 
 
 def prediction_cache_key(path: Path, model_name: str) -> str:
-    stat = path.stat()
     return stable_hash(
         str(PREDICTION_CACHE_VERSION),
         model_name,
-        str(path),
-        str(stat.st_size),
-        str(stat.st_mtime_ns),
+        sha256_file(path),
     )
 
 
