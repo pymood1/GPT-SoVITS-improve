@@ -72,7 +72,7 @@ def git_head() -> str:
         ) from exc
 
 
-def validate_list(path: Path) -> str:
+def validate_list(path: Path) -> tuple[str, list[str]]:
     if not path.is_file():
         raise PreprocessError(f"train list not found: {path}")
     basenames: Dict[str, str] = {}
@@ -100,6 +100,10 @@ def validate_list(path: Path) -> str:
             raise PreprocessError(
                 f"basename collision before official preprocessing: {basename}"
             )
+        if previous is not None:
+            raise PreprocessError(
+                f"duplicate audio basename in train list: {basename}"
+            )
         basenames[basename] = str(wav_path)
 
     audio_digest = hashlib.sha256()
@@ -109,7 +113,107 @@ def validate_list(path: Path) -> str:
         audio_digest.update(b"\0")
         audio_digest.update(sha256_file(wav_path).encode("ascii"))
         audio_digest.update(b"\n")
-    return audio_digest.hexdigest()
+    return audio_digest.hexdigest(), sorted(basenames)
+
+
+def _read_named_rows(
+    path: Path,
+    *,
+    header_prefix: str | None = None,
+) -> dict[str, str]:
+    if not path.is_file():
+        raise PreprocessError(f"preprocessing output missing: {path}")
+
+    rows: dict[str, str] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, 1):
+            line = raw_line.rstrip("\r\n")
+            if not line:
+                continue
+            if (
+                line_number == 1
+                and header_prefix is not None
+                and line.startswith(header_prefix)
+            ):
+                continue
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                raise PreprocessError(
+                    f"{path}:{line_number}: malformed preprocessing row"
+                )
+            name, payload = parts
+            if not name or not payload.strip():
+                raise PreprocessError(
+                    f"{path}:{line_number}: empty name/payload"
+                )
+            if name in rows:
+                raise PreprocessError(
+                    f"{path}:{line_number}: duplicate item {name!r}"
+                )
+            rows[name] = payload
+    return rows
+
+
+def validate_complete_outputs(
+    output_dir: Path,
+    expected_names: Iterable[str],
+) -> None:
+    expected = set(expected_names)
+    if not expected:
+        raise PreprocessError("no expected preprocessing items")
+
+    text_rows = _read_named_rows(output_dir / "2-name2text.txt")
+    semantic_rows = _read_named_rows(
+        output_dir / "6-name2semantic.tsv",
+        header_prefix="item_name\t",
+    )
+
+    problems: list[str] = []
+
+    for label, actual in (
+        ("text", set(text_rows)),
+        ("semantic", set(semantic_rows)),
+    ):
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        if missing:
+            problems.append(
+                f"{label} missing {len(missing)}: "
+                + ", ".join(missing[:10])
+            )
+        if extra:
+            problems.append(
+                f"{label} has unexpected {len(extra)}: "
+                + ", ".join(extra[:10])
+            )
+
+    missing_hubert = sorted(
+        name
+        for name in expected
+        if not (output_dir / "4-cnhubert" / f"{name}.pt").is_file()
+    )
+    if missing_hubert:
+        problems.append(
+            f"CNHuBERT missing {len(missing_hubert)}: "
+            + ", ".join(missing_hubert[:10])
+        )
+
+    missing_wav32k = sorted(
+        name
+        for name in expected
+        if not (output_dir / "5-wav32k" / name).is_file()
+    )
+    if missing_wav32k:
+        problems.append(
+            f"32k wav missing {len(missing_wav32k)}: "
+            + ", ".join(missing_wav32k[:10])
+        )
+
+    if problems:
+        raise PreprocessError(
+            "official preprocessing produced an incomplete build:\n  - "
+            + "\n  - ".join(problems)
+        )
 
 
 def run_script(script: str, env: Dict[str, str]) -> None:
@@ -205,7 +309,7 @@ def main() -> int:
         s2_config = (ROOT / s2_config).resolve()
 
     print("[fingerprint] referenced audio files")
-    audio_manifest_hash = validate_list(train_list)
+    audio_manifest_hash, expected_names = validate_list(train_list)
     if not s2_path.is_file():
         raise PreprocessError(f"S2 checkpoint not found: {s2_path}")
     if not s2_config.is_file():
@@ -257,12 +361,24 @@ def main() -> int:
                 if not path.exists()
             ]
             if not missing:
-                print(
-                    f"[OK] exact preprocessing build already exists: "
-                    f"{output_dir}"
-                )
-                print(output_dir)
-                return 0
+                try:
+                    validate_complete_outputs(
+                        output_dir,
+                        expected_names,
+                    )
+                except PreprocessError as exc:
+                    print(
+                        f"[recover] cached preprocessing build is incomplete: "
+                        f"{exc}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"[OK] exact preprocessing build already exists: "
+                        f"{output_dir}"
+                    )
+                    print(output_dir)
+                    return 0
             print(
                 "[recover] removing incomplete preprocessing build: "
                 + ", ".join(missing),
@@ -327,6 +443,10 @@ def main() -> int:
             env,
         )
         merge_outputs(output_dir)
+        validate_complete_outputs(
+            output_dir,
+            expected_names,
+        )
 
         manifest = {
             "format_version": 1,
