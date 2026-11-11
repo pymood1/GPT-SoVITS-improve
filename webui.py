@@ -2166,6 +2166,8 @@ def open1Bb(
     save_every_epoch,
     gpu_numbers,
     pretrained_s1,
+    use_multilingual_bert,
+    multilingual_bert_model,
 ):
     global p_train_GPT
     global gpt_train_cancel_requested
