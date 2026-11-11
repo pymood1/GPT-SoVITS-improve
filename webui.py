@@ -783,18 +783,21 @@ def run_emotion_training_pipeline(
                 "학습 step은 1 이상이어야 합니다."
             )
 
-        gpu_number = str(fix_gpu_number(gpu_number)).strip()
-        try:
-            gpu_index = int(gpu_number)
-        except ValueError as exc:
-            raise EmotionPipelineError(
-                "감정 controller 학습은 현재 GPU 번호 하나만 지원합니다."
-            ) from exc
-        if gpu_index not in set_gpu_numbers:
-            raise EmotionPipelineError(
-                f"사용할 수 없는 GPU 번호입니다: {gpu_index}"
-            )
-        gpu_number = str(gpu_index)
+        if torch.cuda.is_available():
+            gpu_number = str(fix_gpu_number(gpu_number)).strip()
+            try:
+                gpu_index = int(gpu_number)
+            except ValueError as exc:
+                raise EmotionPipelineError(
+                    "감정 controller 학습은 현재 GPU 번호 하나만 지원합니다."
+                ) from exc
+            if gpu_index not in set_gpu_numbers:
+                raise EmotionPipelineError(
+                    f"사용할 수 없는 GPU 번호입니다: {gpu_index}"
+                )
+            gpu_number = str(gpu_index)
+        else:
+            gpu_number = "0"
 
         dataset_ready = (
             metadata_path.is_file()
