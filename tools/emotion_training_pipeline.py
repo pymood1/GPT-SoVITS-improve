@@ -207,6 +207,9 @@ def create_reference_map(
             row.get("split") == "train"
             and row.get("tts_usable", True)
             and str(row.get("speaker_uid") or "").strip()
+            and str(
+                row.get("emotion_intended") or ""
+            ).strip().lower() not in NON_CONTROLLER_EMOTIONS
         )
     }
 
