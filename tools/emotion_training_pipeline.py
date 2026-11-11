@@ -189,6 +189,7 @@ def _reference_candidates(
     rows: Iterable[dict],
     dataset_dir: Path,
     trainable_emotions: set[str] | None = None,
+    min_samples_per_emotion: int = DEFAULT_MIN_SAMPLES_PER_EMOTION,
 ) -> dict[str, list[tuple[int, float, str]]]:
     rows = list(rows)
     candidates: dict[str, list[tuple[int, float, str]]] = {}
@@ -244,7 +245,8 @@ def _reference_candidates(
                 trainable_emotions is None
                 or emotion in trainable_emotions
             )
-            and controller_counts.get((speaker_uid, emotion), 0) <= 1
+            and controller_counts.get((speaker_uid, emotion), 0)
+            <= min_samples_per_emotion
         ):
             continue
 
@@ -271,6 +273,7 @@ def create_reference_map(
     metadata_path: Path,
     output_path: Path,
     trainable_emotions: Iterable[str] | None = None,
+    min_samples_per_emotion: int = DEFAULT_MIN_SAMPLES_PER_EMOTION,
 ) -> dict[str, str]:
     metadata_path = metadata_path.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
@@ -310,6 +313,7 @@ def create_reference_map(
         rows,
         dataset_dir,
         trainable_emotions=selected_emotions,
+        min_samples_per_emotion=min_samples_per_emotion,
     )
     reference_map: dict[str, str] = {}
 
