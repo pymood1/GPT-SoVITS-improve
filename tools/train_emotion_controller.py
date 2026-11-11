@@ -50,6 +50,10 @@ from text.multilingual_bert import (  # noqa: E402
     MULTILINGUAL_BERT_LANGUAGES,
     checkpoint_multilingual_bert_config,
 )
+from tools.emotion_training_pipeline import (  # noqa: E402
+    split_train_validation_samples,
+    update_early_stop_state,
+)
 
 
 class TrainingDataError(RuntimeError):
@@ -630,67 +634,6 @@ def build_single_sample_batch(
         "reference_semantic": ref_semantic,
         "target_semantic": target_semantic,
     }
-
-
-def split_train_validation_samples(
-    samples: Sequence[dict],
-    emotion_names: Sequence[str],
-    *,
-    val_fraction: float,
-    seed: int,
-    min_train_samples: int = 2,
-) -> Tuple[List[dict], List[dict]]:
-    """Create a deterministic per-emotion hold-out split."""
-    if not 0.0 < val_fraction < 1.0:
-        raise TrainingDataError("--val-fraction must be in (0,1)")
-    if min_train_samples < 1:
-        raise TrainingDataError("min_train_samples must be >= 1")
-
-    by_emotion: Dict[str, List[dict]] = defaultdict(list)
-    for sample in samples:
-        by_emotion[sample["emotion"]].append(sample)
-
-    split_rng = random.Random(seed + 104729)
-    train_samples: List[dict] = []
-    val_samples: List[dict] = []
-
-    for emotion in emotion_names:
-        bucket = sorted(
-            by_emotion.get(emotion, []),
-            key=lambda sample: sample["name"],
-        )
-        if len(bucket) < min_train_samples + 1:
-            raise TrainingDataError(
-                f"Emotion {emotion!r} needs at least "
-                f"{min_train_samples + 1} usable samples for validation"
-            )
-
-        split_rng.shuffle(bucket)
-        requested_val = max(
-            1,
-            int(round(len(bucket) * val_fraction)),
-        )
-        val_count = min(
-            requested_val,
-            len(bucket) - min_train_samples,
-        )
-        if val_count < 1:
-            raise TrainingDataError(
-                f"Emotion {emotion!r} has no room for held-out validation"
-            )
-
-        val_samples.extend(bucket[:val_count])
-        train_samples.extend(bucket[val_count:])
-
-        print(
-            f"[data] split {emotion}: "
-            f"train={len(bucket) - val_count} val={val_count}"
-        )
-
-    if not train_samples or not val_samples:
-        raise TrainingDataError("train/validation split is empty")
-
-    return train_samples, val_samples
 
 
 def evaluate_controller(
@@ -1568,19 +1511,28 @@ def main() -> int:
                 min_support_coverage=args.min_support_coverage,
             )
 
-            improved = (
-                val_metrics["loss"]
-                < best_val_loss - args.early_stop_min_delta
+            (
+                updated_best_val_loss,
+                updated_patience,
+                improved,
+            ) = update_early_stop_state(
+                current_loss=float(val_metrics["loss"]),
+                best_loss=best_val_loss,
+                validations_without_improvement=(
+                    validations_without_improvement
+                ),
+                min_delta=args.early_stop_min_delta,
             )
+            best_val_loss = updated_best_val_loss
+            validations_without_improvement = updated_patience
+
             if improved:
-                best_val_loss = float(val_metrics["loss"])
                 best_val_step = accepted_steps
                 best_val_metrics = dict(val_metrics)
                 best_controller_state = {
                     key: value.detach().cpu().clone()
                     for key, value in controller.state_dict().items()
                 }
-                validations_without_improvement = 0
                 save_checkpoint(
                     controller,
                     output,
