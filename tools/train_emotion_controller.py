@@ -32,6 +32,7 @@ import torch
 import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
 from AR.models.emotion_control import (  # noqa: E402
