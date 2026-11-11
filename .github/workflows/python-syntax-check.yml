@@ -213,6 +213,42 @@ jobs:
           PY
 
 
+
+  resampy_runtime_smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install resampy runtime stack
+        run: |
+          python -m pip install -q uv
+          uv pip install --system \
+            "numpy>=2.1,<3" \
+            "numba>=0.61" \
+            "resampy>=0.4.3,<0.5"
+      - name: Exercise the exact filter API used by TTS.py
+        run: |
+          python - <<'PY'
+          import resampy
+
+          interp_win, precision, rolloff = (
+              resampy.filters.get_filter("kaiser_best")
+          )
+          assert interp_win.ndim == 1
+          assert interp_win.size > 0
+          assert int(precision) > 0
+          assert 0 < float(rolloff) <= 1
+
+          print("RESAMPY_RUNTIME_SMOKE_OK")
+          print("resampy=", resampy.__version__)
+          PY
+
   numeric_stack_smoke_314:
     runs-on: ubuntu-latest
     steps:
