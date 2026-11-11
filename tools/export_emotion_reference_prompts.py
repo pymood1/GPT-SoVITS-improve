@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -167,7 +168,15 @@ def main() -> int:
     }
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, output)
+    temp_output = output.with_name(
+        f".{output.name}.tmp-{os.getpid()}"
+    )
+    try:
+        torch.save(payload, temp_output)
+        os.replace(temp_output, output)
+    finally:
+        if temp_output.exists():
+            temp_output.unlink()
     print(f"[OK] saved {output}")
     return 0
 
