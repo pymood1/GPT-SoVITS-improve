@@ -1715,6 +1715,18 @@ def main() -> int:
     max_attempts = max(args.max_auto_steps * 20, 100)
     skipped_low_coverage = 0
     skipped_no_gradient = 0
+    attempts_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    accepted_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    coverage_skips_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    no_grad_skips_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
     running_loss = torch.zeros((), device=device)
     running_gap = torch.zeros((), device=device)
     running_count = 0
@@ -1729,6 +1741,7 @@ def main() -> int:
     while accepted_steps < training_limit and attempts < max_attempts:
         attempts += 1
         sampled_emotion = rng.choice(emotion_names)
+        attempts_by_emotion[sampled_emotion] += 1
         sample = rng.choice(samples_by_emotion[sampled_emotion])
         cache_key = (sample["reference"], sample["name"])
         prepared = frozen_sample_cache.get(cache_key)
@@ -1759,6 +1772,7 @@ def main() -> int:
         coverage = float(prepared["coverage"])
         if coverage < args.min_support_coverage:
             skipped_low_coverage += 1
+            coverage_skips_by_emotion[sampled_emotion] += 1
             continue
 
         prepared_device = device_sample_cache.get(cache_key)
@@ -1781,9 +1795,11 @@ def main() -> int:
 
         if score_tensor is None:
             skipped_low_coverage += 1
+            coverage_skips_by_emotion[sampled_emotion] += 1
             continue
         if not score_tensor.requires_grad:
             skipped_no_gradient += 1
+            no_grad_skips_by_emotion[sampled_emotion] += 1
             continue
 
         target_id = int(sample["emotion_id"])
@@ -1839,6 +1855,7 @@ def main() -> int:
         optimizer.step()
 
         accepted_steps = next_step
+        accepted_by_emotion[sampled_emotion] += 1
         running_loss.add_(loss.detach())
         running_gap.add_(gap.detach())
         running_count += 1
@@ -2052,10 +2069,49 @@ def main() -> int:
         "unavailable",
     )
 
+    g_full_verdict = g_full_probe.get("verdict", "unavailable")
+    g_topk_verdict = g_topk_probe.get("verdict", "unavailable")
+    text_verdict = text_probe.get("verdict", "unavailable")
+
+    h_acc = representation_probe.get("oof_macro_accuracy")
+    g_full_acc = g_full_probe.get("oof_macro_accuracy")
+    g_topk_acc = g_topk_probe.get("oof_macro_accuracy")
+    text_acc = text_probe.get("oof_macro_accuracy")
+
+    text_matches_hidden = (
+        text_verdict == "informative"
+        and h_acc is not None
+        and text_acc is not None
+        and text_acc >= h_acc - 0.05
+    )
+    full_beats_topk = (
+        g_full_acc is not None
+        and g_topk_acc is not None
+        and g_full_acc >= g_topk_acc + 0.10
+    )
+
     if controller_signal == "generalization_detected":
         likely_bottleneck = "none_obvious"
-    elif probe_verdict == "informative":
-        likely_bottleneck = "controller_objective_or_score_path"
+    elif text_matches_hidden:
+        likely_bottleneck = "labels_or_text_confound"
+    elif (
+        probe_verdict == "informative"
+        and g_full_verdict == "weak"
+    ):
+        likely_bottleneck = "semantic_likelihood_path"
+    elif (
+        g_full_verdict == "informative"
+        and (
+            g_topk_verdict == "weak"
+            or full_beats_topk
+        )
+    ):
+        likely_bottleneck = "topk_or_coverage_truncation"
+    elif (
+        probe_verdict == "informative"
+        and g_full_verdict == "informative"
+    ):
+        likely_bottleneck = "controller_optimization_or_score_constraints"
     elif probe_verdict == "weak":
         likely_bottleneck = "representation_or_labels"
     else:
@@ -2073,6 +2129,25 @@ def main() -> int:
         )
     )
 
+    training_sampling_by_emotion = {}
+    for emotion in emotion_names:
+        class_attempts = attempts_by_emotion[emotion]
+        training_sampling_by_emotion[emotion] = {
+            "attempts": class_attempts,
+            "accepted": accepted_by_emotion[emotion],
+            "coverage_skips": coverage_skips_by_emotion[emotion],
+            "no_gradient_skips": no_grad_skips_by_emotion[emotion],
+            "coverage_skip_rate": (
+                coverage_skips_by_emotion[emotion] / class_attempts
+                if class_attempts
+                else 0.0
+            ),
+        }
+    diagnostic_probes["training_sampling_by_emotion"] = (
+        training_sampling_by_emotion
+    )
+    args.diagnostic_probes = diagnostic_probes
+
     training_diagnosis = {
         "passed": training_passed,
         "result": "PASS" if training_passed else "FAIL",
@@ -2085,6 +2160,11 @@ def main() -> int:
         ),
         "controller_signal": controller_signal,
         "probe_verdict": probe_verdict,
+        "g_full_verdict": g_full_verdict,
+        "g_topk_verdict": g_topk_verdict,
+        "text_verdict": text_verdict,
+        "text_matches_hidden": text_matches_hidden,
+        "full_beats_topk": full_beats_topk,
         "likely_bottleneck": likely_bottleneck,
         "rule": (
             "PASS only when best validation CE beats ln(K) by at least "
@@ -2097,6 +2177,7 @@ def main() -> int:
         json.dumps(
             {
                 "representation_probe": representation_probe,
+                "diagnostic_probes": diagnostic_probes,
                 "training_diagnosis": training_diagnosis,
             },
             ensure_ascii=False,
@@ -2112,6 +2193,9 @@ def main() -> int:
         f"best_val={final_best_loss:.5f} "
         f"controller={controller_signal} "
         f"probe={probe_verdict} "
+        f"Gfull={g_full_verdict} "
+        f"Gtopk={g_topk_verdict} "
+        f"text={text_verdict} "
         f"likely_bottleneck={likely_bottleneck}"
     )
     print(
@@ -2139,7 +2223,7 @@ def main() -> int:
         f"{best_val_loss if best_controller_state is not None else float('nan'):.5f} "
         f"| probe={representation_probe.get('verdict', 'unavailable')} "
         f"| probe_acc="
-        f"{representation_probe.get('macro_accuracy_mean', float('nan')):.2%} "
+        f"{representation_probe.get('oof_macro_accuracy', float('nan')):.2%} "
         f"| probe_perm="
         f"{representation_probe.get('permutation_macro_accuracy_mean', float('nan')):.2%} "
         f"| result={'PASS' if training_passed else 'FAIL'} "
