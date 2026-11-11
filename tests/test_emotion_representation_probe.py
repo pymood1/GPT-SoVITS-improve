@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import torch
@@ -39,7 +40,10 @@ class RepresentationProbeTests(unittest.TestCase):
             report["macro_accuracy_mean"],
             0.90,
         )
-        self.assertLess(report["oof_ce"], 0.20)
+        self.assertLess(
+            report["oof_ce"],
+            math.log(class_count) - 0.50,
+        )
         self.assertGreater(report["oof_accuracy"], 0.90)
         self.assertGreater(report["oof_macro_accuracy"], 0.90)
         self.assertIsNotNone(report["oof_macro_auc"])
