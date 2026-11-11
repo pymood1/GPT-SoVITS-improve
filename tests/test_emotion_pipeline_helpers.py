@@ -10,6 +10,7 @@ from tools.emotion_training_pipeline import (
     create_reference_map,
     detect_pair_emotions,
     split_train_validation_samples,
+    stratified_kfold_indices,
     update_early_stop_state,
 )
 from tools.run_emotion_v5_preprocess import (
@@ -313,6 +314,40 @@ class ValidationPolicyTests(unittest.TestCase):
         )
         self.assertEqual(train, train2)
         self.assertEqual(val, val2)
+
+    def test_probe_kfold_is_stratified_and_deterministic(self):
+        labels = (
+            [0] * 8
+            + [1] * 5
+            + [2] * 3
+        )
+        folds = stratified_kfold_indices(
+            labels,
+            max_folds=5,
+            seed=233333,
+        )
+        self.assertEqual(len(folds), 3)
+
+        validation_union = []
+        for train_idx, val_idx in folds:
+            self.assertTrue(train_idx)
+            self.assertTrue(val_idx)
+            validation_union.extend(val_idx)
+            val_labels = {labels[index] for index in val_idx}
+            self.assertEqual(val_labels, {0, 1, 2})
+
+        self.assertEqual(
+            sorted(validation_union),
+            list(range(len(labels))),
+        )
+        self.assertEqual(
+            folds,
+            stratified_kfold_indices(
+                labels,
+                max_folds=5,
+                seed=233333,
+            ),
+        )
 
     def test_early_stop_state_uses_min_delta_and_patience_counter(self):
         best, bad, improved = update_early_stop_state(
