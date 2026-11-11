@@ -402,12 +402,19 @@ def _emotion_status(stage, log_lines, final_message=None):
     return message
 
 
-def _stream_emotion_command(cmd, log_lines, stage):
+def _stream_emotion_command(
+    cmd,
+    log_lines,
+    stage,
+    cuda_visible_devices=None,
+):
     global p_emotion_training
     global emotion_task_cancel_requested
 
     child_env = os.environ.copy()
     child_env["PYTHONUNBUFFERED"] = "1"
+    if cuda_visible_devices is not None:
+        child_env["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices)
 
     command_text = " ".join(repr(str(item)) for item in cmd)
     log_lines.append(f"$ {command_text}")
@@ -776,7 +783,18 @@ def run_emotion_training_pipeline(
                 "학습 step은 1 이상이어야 합니다."
             )
 
-        gpu_number = str(fix_gpu_number(gpu_number))
+        gpu_number = str(fix_gpu_number(gpu_number)).strip()
+        try:
+            gpu_index = int(gpu_number)
+        except ValueError as exc:
+            raise EmotionPipelineError(
+                "감정 controller 학습은 현재 GPU 번호 하나만 지원합니다."
+            ) from exc
+        if gpu_index not in set_gpu_numbers:
+            raise EmotionPipelineError(
+                f"사용할 수 없는 GPU 번호입니다: {gpu_index}"
+            )
+        gpu_number = str(gpu_index)
 
         dataset_ready = (
             metadata_path.is_file()
@@ -986,6 +1004,7 @@ def run_emotion_training_pipeline(
             prompt_cmd,
             log_lines,
             "4/5 reference prompt 생성",
+            cuda_visible_devices=gpu_number,
         ):
             yield status
 
@@ -1028,6 +1047,7 @@ def run_emotion_training_pipeline(
             train_cmd,
             log_lines,
             "5/5 emotion controller 학습",
+            cuda_visible_devices=gpu_number,
         ):
             yield status
 
