@@ -659,8 +659,11 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--emotions",
-        default="neutral,happy,sad,angry",
-        help="Comma-separated stable emotion ID order",
+        default="happy,sad,angry",
+        help=(
+            "Comma-separated non-neutral emotion ID order. "
+            "neutral/default always means the unmodified base model."
+        ),
     )
     parser.add_argument(
         "--version",
