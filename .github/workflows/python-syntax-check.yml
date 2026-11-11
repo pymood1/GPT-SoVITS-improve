@@ -143,6 +143,129 @@ jobs:
           print("PY314_MULTILINGUAL_BERT_HELPERS_OK")
           print("PY314_MULTILINGUAL_BERT_MODEL_SMOKE_OK")
           PY
+      - name: Compare vectorized emotion score with sequential reference
+        env:
+          PYTHONPATH: GPT_SoVITS
+        run: |
+          python - <<'PY'
+          import torch
+
+          from AR.models.emotion_control import (
+              EmotionSamplingState,
+              LowRankEmotionPreference,
+              vectorized_sequence_relative_score,
+          )
+
+          torch.manual_seed(20261111)
+          steps = 24
+          hidden_dim = 16
+          vocab = 40
+          eos_id = vocab - 1
+
+          controller = LowRankEmotionPreference(
+              hidden_dim=hidden_dim,
+              num_emotions=3,
+              rank=4,
+              max_log_odds_shift=0.35,
+              prefix_log_ratio_budget=2.0,
+          )
+          with torch.no_grad():
+              controller.u_proj.normal_(mean=0.0, std=0.08)
+
+          hidden = torch.randn(steps, hidden_dim)
+          output_weight = torch.randn(vocab, hidden_dim)
+
+          raw = torch.randn(steps, vocab)
+          values, indices = torch.topk(raw, 8, dim=-1)
+          base_probs = torch.zeros_like(raw)
+          base_probs.scatter_(
+              1,
+              indices,
+              torch.softmax(values, dim=-1),
+          )
+          target_semantic = [
+              int(indices[index, index % 8])
+              for index in range(steps)
+          ]
+          valid_mask = [
+              (index % 7) != 0
+              for index in range(steps)
+          ]
+
+          def sequential_score(emotion_id):
+              ratios = []
+              state = EmotionSamplingState()
+              for index, token in enumerate(target_semantic):
+                  if not valid_mask[index]:
+                      continue
+                  p0 = base_probs[index : index + 1]
+                  preference = controller.preference_scores(
+                      hidden[index : index + 1],
+                      output_weight,
+                      emotion_id,
+                      vocab_size=vocab,
+                  )
+                  steered, state = controller.tilt_probabilities(
+                      base_probs=p0,
+                      preference_scores=preference,
+                      strength=1.0,
+                      eos_id=eos_id,
+                      state=state,
+                  )
+                  ratio = (
+                      torch.log(
+                          steered[0, token].clamp_min(1e-12)
+                      )
+                      - torch.log(
+                          p0[0, token].clamp_min(1e-12)
+                      )
+                  )
+                  ratios.append(ratio)
+                  state.cumulative_log_ratio = (
+                      state.cumulative_log_ratio
+                      + ratio.detach()
+                  )
+              return torch.stack(ratios).mean()
+
+          for emotion_id in range(3):
+              reference = sequential_score(emotion_id)
+              ref_grad = torch.autograd.grad(
+                  reference,
+                  controller.u_proj,
+                  retain_graph=False,
+              )[0]
+
+              vectorized = vectorized_sequence_relative_score(
+                  controller=controller,
+                  hidden=hidden,
+                  base_probs=base_probs,
+                  target_semantic=target_semantic,
+                  valid_mask=valid_mask,
+                  output_weight=output_weight,
+                  emotion_id=emotion_id,
+                  eos_id=eos_id,
+              )
+              vec_grad = torch.autograd.grad(
+                  vectorized,
+                  controller.u_proj,
+                  retain_graph=False,
+              )[0]
+
+              assert torch.allclose(
+                  reference,
+                  vectorized,
+                  atol=1e-6,
+                  rtol=1e-5,
+              ), (emotion_id, reference, vectorized)
+              assert torch.allclose(
+                  ref_grad,
+                  vec_grad,
+                  atol=2e-6,
+                  rtol=2e-5,
+              ), emotion_id
+
+          print("PY314_EMOTION_VECTOR_SCORE_EQUIVALENCE_OK")
+          PY
 
   dependency_resolve_314:
     runs-on: ubuntu-latest
