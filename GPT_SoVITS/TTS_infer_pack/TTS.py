@@ -41,6 +41,10 @@ from tools.audio_sr import AP_BWE
 from tools.i18n.i18n import I18nAuto, scan_language_list
 from TTS_infer_pack.text_segmentation_method import splits
 from TTS_infer_pack.TextPreprocessor import TextPreprocessor
+from text.multilingual_bert import (
+    DEFAULT_MULTILINGUAL_BERT,
+    checkpoint_multilingual_bert_config,
+)
 from sv import SV
 
 resample_transform_dict = {}
@@ -514,6 +518,8 @@ class TTS:
         self.t2s_model: Text2SemanticLightningModule = None
         self.t2s_accel = None
         self.emotion_controller_metadata = None
+        self.use_multilingual_bert = False
+        self.multilingual_bert_model = DEFAULT_MULTILINGUAL_BERT
         self.vits_model: Union[SynthesizerTrn, SynthesizerTrnV3] = None
         self.bert_tokenizer: AutoTokenizer = None
         self.bert_model: AutoModelForMaskedLM = None
@@ -534,7 +540,12 @@ class TTS:
         self._init_models()
 
         self.text_preprocessor: TextPreprocessor = TextPreprocessor(
-            self.bert_model, self.bert_tokenizer, self.configs.device
+            self.bert_model,
+            self.bert_tokenizer,
+            self.configs.device,
+            use_multilingual_bert=self.use_multilingual_bert,
+            multilingual_bert_model=self.multilingual_bert_model,
+            is_half=self.configs.is_half,
         )
 
         self._reset_prompt_cache()
@@ -731,6 +742,10 @@ class TTS:
         self.configs.hz = 50
         dict_s1 = torch.load(weights_path, map_location=self.configs.device, weights_only=False)
         config = dict_s1["config"]
+        (
+            self.use_multilingual_bert,
+            self.multilingual_bert_model,
+        ) = checkpoint_multilingual_bert_config(config)
         self.configs.max_sec = config["data"]["max_sec"]
         t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
         t2s_model.load_state_dict(dict_s1["weight"])
@@ -739,6 +754,23 @@ class TTS:
         self.t2s_model = t2s_model
         if self.configs.is_half and str(self.configs.device) != "cpu":
             self.t2s_model = self.t2s_model.half()
+
+        if (
+            hasattr(self, "text_preprocessor")
+            and self.bert_model is not None
+            and self.bert_tokenizer is not None
+        ):
+            old_preprocessor = self.text_preprocessor
+            self.text_preprocessor = TextPreprocessor(
+                self.bert_model,
+                self.bert_tokenizer,
+                self.configs.device,
+                use_multilingual_bert=self.use_multilingual_bert,
+                multilingual_bert_model=self.multilingual_bert_model,
+                is_half=self.configs.is_half,
+            )
+            del old_preprocessor
+            self.empty_cache()
 
         codebook = t2s_model.model.ar_audio_embedding.weight.clone()
         mute_emb = codebook[self.configs.mute_tokens[self.configs.version]].unsqueeze(0)
