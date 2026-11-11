@@ -347,49 +347,56 @@ def main() -> int:
     manifest_path = output_dir / "build.json"
 
     if output_dir.exists():
+        recover_reason = None
+
         if manifest_path.is_file():
-            existing = json.loads(
-                manifest_path.read_text(encoding="utf-8")
-            )
-            if existing.get("identity") != identity:
-                raise PreprocessError(
-                    f"build identity mismatch in existing directory: {output_dir}"
+            try:
+                existing = json.loads(
+                    manifest_path.read_text(encoding="utf-8")
                 )
-            missing = [
-                str(path)
-                for path in expected_outputs(output_dir)
-                if not path.exists()
-            ]
-            if not missing:
-                try:
-                    validate_complete_outputs(
-                        output_dir,
-                        expected_names,
-                    )
-                except PreprocessError as exc:
-                    print(
-                        f"[recover] cached preprocessing build is incomplete: "
-                        f"{exc}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"[OK] exact preprocessing build already exists: "
+            except (OSError, json.JSONDecodeError) as exc:
+                recover_reason = (
+                    f"invalid build manifest: {type(exc).__name__}: {exc}"
+                )
+            else:
+                if existing.get("identity") != identity:
+                    raise PreprocessError(
+                        "build identity mismatch in existing directory: "
                         f"{output_dir}"
                     )
-                    print(output_dir)
-                    return 0
-            print(
-                "[recover] removing incomplete preprocessing build: "
-                + ", ".join(missing),
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"[recover] removing partial preprocessing build: {output_dir}",
-                file=sys.stderr,
-            )
 
+                missing = [
+                    str(path)
+                    for path in expected_outputs(output_dir)
+                    if not path.exists()
+                ]
+                if missing:
+                    recover_reason = (
+                        "missing outputs: " + ", ".join(missing)
+                    )
+                else:
+                    try:
+                        validate_complete_outputs(
+                            output_dir,
+                            expected_names,
+                        )
+                    except PreprocessError as exc:
+                        recover_reason = str(exc)
+                    else:
+                        print(
+                            f"[OK] exact preprocessing build already exists: "
+                            f"{output_dir}"
+                        )
+                        print(output_dir)
+                        return 0
+        else:
+            recover_reason = "build.json is missing"
+
+        print(
+            f"[recover] removing incomplete preprocessing build: "
+            f"{recover_reason or output_dir}",
+            file=sys.stderr,
+        )
         shutil.rmtree(output_dir)
 
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -459,7 +466,10 @@ def main() -> int:
             "s2_config": str(s2_config),
             "identity": identity,
         }
-        manifest_path.write_text(
+        manifest_temp = manifest_path.with_name(
+            f".{manifest_path.name}.tmp-{os.getpid()}"
+        )
+        manifest_temp.write_text(
             json.dumps(
                 manifest,
                 ensure_ascii=False,
@@ -469,6 +479,7 @@ def main() -> int:
             + "\n",
             encoding="utf-8",
         )
+        os.replace(manifest_temp, manifest_path)
     except Exception:
         # The parent WebUI already retains subprocess logs. Remove partial
         # artifacts so retrying the same dataset does not require manual
