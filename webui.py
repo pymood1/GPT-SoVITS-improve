@@ -2703,6 +2703,11 @@ def open1a(
             "\n".join(opt) + "\n",
             encoding="utf8",
         )
+        _write_text_feature_config(
+            path_text,
+            use_multilingual_bert,
+            multilingual_bert_model,
+        )
     except OSError as exc:
         yield (
             process_info(process_name_1a, "failed") + f": {exc}",
