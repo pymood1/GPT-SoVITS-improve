@@ -44,6 +44,10 @@ from AR.models.emotion_control import (  # noqa: E402
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule  # noqa: E402
 from AR.models.utils import logits_to_probs  # noqa: E402
 from text import cleaned_text_to_sequence  # noqa: E402
+from text.multilingual_bert import (  # noqa: E402
+    MULTILINGUAL_BERT_LANGUAGES,
+    checkpoint_multilingual_bert_config,
+)
 
 
 class TrainingDataError(RuntimeError):
@@ -121,12 +125,15 @@ def load_bert(
     item_name: str,
     phone_len: int,
     language: str,
+    required_bert_languages: set[str],
 ) -> torch.Tensor:
     path = feature_dir / "3-bert" / f"{item_name}.pt"
     if not path.exists():
-        if str(language).strip().lower() == "zh":
+        normalized_language = str(language).strip().lower()
+        if normalized_language in required_bert_languages:
             raise TrainingDataError(
-                f"Chinese BERT feature missing for {item_name}: {path}"
+                f"BERT feature missing for {item_name} "
+                f"(language={normalized_language}): {path}"
             )
         return torch.zeros(1024, phone_len, dtype=torch.float32)
     value = torch.load(path, map_location="cpu")
@@ -148,8 +155,10 @@ class FeatureStore:
         metadata_path: Path,
         feature_dir: Path,
         version: str,
+        required_bert_languages: set[str],
     ) -> None:
         self.feature_dir = feature_dir
+        self.required_bert_languages = set(required_bert_languages)
         self.metadata_rows = read_jsonl(metadata_path)
         self.metadata: Dict[str, dict] = {}
         for row in self.metadata_rows:
@@ -204,6 +213,7 @@ class FeatureStore:
                 name,
                 phone_len,
                 str(self.metadata[name].get("language") or ""),
+                self.required_bert_languages,
             )
         return self._bert_cache[name]
 
@@ -305,6 +315,7 @@ def load_reference_prompt_cache(
         "tts_version": payload.get("tts_version"),
         "s2_sha256": payload.get("s2_sha256"),
         "s2_checkpoint": payload.get("s2_checkpoint"),
+        "text_features": payload.get("text_features"),
     }
     return result, cache_metadata
 
@@ -631,6 +642,7 @@ def save_checkpoint(
                 "min_support_coverage": args.min_support_coverage,
                 "training_mode": "balanced_emotion_multiclass_v2",
                 "version": args.version,
+                "text_features": args.text_features,
                 "neutral_is_base": True,
             },
         )
