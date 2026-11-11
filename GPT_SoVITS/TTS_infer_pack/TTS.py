@@ -897,6 +897,12 @@ class TTS:
             if self.vocoder is not None:
                 self.vocoder = self.vocoder.float()
 
+        if hasattr(self, "text_preprocessor"):
+            self.text_preprocessor.set_device(
+                self.configs.device,
+                is_half=self.configs.is_half,
+            )
+
     def set_device(self, device: torch.device, save: bool = True):
         """
         To set the device for all models.
@@ -921,6 +927,11 @@ class TTS:
             self.vocoder = self.vocoder.to(device)
         if self.sr_model is not None:
             self.sr_model = self.sr_model.to(device)
+        if hasattr(self, "text_preprocessor"):
+            self.text_preprocessor.set_device(
+                device,
+                is_half=self.configs.is_half,
+            )
 
     def set_ref_audio(self, ref_audio_path: str):
         """
