@@ -281,7 +281,12 @@ def load_emotion_model(model_name: str, device: str):
         f"source={source_kind} device={device or 'auto'}",
         flush=True,
     )
-    return AutoModel(**kwargs)
+    try:
+        return AutoModel(**kwargs)
+    except Exception as exc:
+        raise AutoEmotionError(
+            f"failed to initialize emotion model {model_name}: {exc}"
+        ) from exc
 
 
 def predict_emotions(
