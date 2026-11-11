@@ -76,7 +76,7 @@ class Text2SemanticDataset(Dataset):
             lines = f.read().strip("\n").split("\n")
 
         for line in lines:
-            tmp = line.split("\t")
+            tmp = line.split("\t", 3)
             if len(tmp) != 4:
                 continue
             self.phoneme_data[tmp[0]] = [tmp[1], tmp[2], tmp[3]]
