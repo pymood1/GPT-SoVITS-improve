@@ -196,14 +196,13 @@ def run_mean_pool_linear_probe(
     max_folds: int = 5,
     permutations: int = 3,
     steps: int = 120,
+    method: str = "mean_pool_linear_stratified_cv_v2",
 ) -> dict:
-    """Cross-validated frozen-representation probe with permutation baseline.
+    """Cross-validated linear probe with OOF metrics and permutation baseline.
 
-    Torch is imported lazily so the lightweight WebUI orchestration helpers
-    remain importable in environments that do not install the training stack.
-    The probe measures label separability in frozen S1 hidden states. It does
-    not prove that the separable signal is emotion rather than text or another
-    correlated cue.
+    The probe is intentionally lightweight and uses only torch. It reports
+    out-of-fold CE, accuracy, macro accuracy and one-vs-rest macro AUC so tiny
+    validation folds are not reduced to one noisy percentage.
     """
     import torch
     import torch.nn.functional as F
@@ -217,7 +216,7 @@ def run_mean_pool_linear_probe(
         for index in range(class_count)
     }
     report = {
-        "method": "mean_pool_linear_stratified_cv_v1",
+        "method": method,
         "samples": sample_count,
         "class_counts": counts,
         "max_folds": int(max_folds),
@@ -225,6 +224,11 @@ def run_mean_pool_linear_probe(
         "steps": int(steps),
         "chance_accuracy": (
             1.0 / class_count if class_count else 0.0
+        ),
+        "chance_ce": (
+            float(torch.log(torch.tensor(float(class_count))).item())
+            if class_count > 0
+            else None
         ),
     }
 
@@ -269,6 +273,30 @@ def run_mean_pool_linear_probe(
             return 0.0
         return float(torch.stack(per_class).mean().item())
 
+    def _binary_auc(scores, positive_mask) -> float | None:
+        positive = scores[positive_mask]
+        negative = scores[~positive_mask]
+        if positive.numel() == 0 or negative.numel() == 0:
+            return None
+        comparisons = positive[:, None] - negative[None, :]
+        wins = (comparisons > 0).float().mean()
+        ties = (comparisons == 0).float().mean()
+        return float((wins + 0.5 * ties).item())
+
+    def _macro_auc(logits, target) -> float | None:
+        probs = torch.softmax(logits, dim=-1)
+        values = []
+        for class_id in range(class_count):
+            auc = _binary_auc(
+                probs[:, class_id],
+                target == class_id,
+            )
+            if auc is not None:
+                values.append(auc)
+        if not values:
+            return None
+        return sum(values) / len(values)
+
     def _evaluate(label_values: list[int], run_seed: int):
         folds = stratified_kfold_indices(
             label_values,
@@ -276,8 +304,12 @@ def run_mean_pool_linear_probe(
             seed=run_seed,
         )
         fold_scores: list[float] = []
-
         y_all = torch.tensor(label_values, dtype=torch.long)
+        oof_logits = torch.full(
+            (sample_count, class_count),
+            float("nan"),
+            dtype=torch.float32,
+        )
 
         for fold_index, (train_idx, val_idx) in enumerate(folds):
             train_index = torch.tensor(train_idx, dtype=torch.long)
@@ -335,19 +367,48 @@ def run_mean_pool_linear_probe(
 
             classifier.eval()
             with torch.no_grad():
+                val_logits = classifier(x_val)
+                oof_logits.index_copy_(0, val_index, val_logits)
                 fold_scores.append(
                     _macro_accuracy(
-                        classifier(x_val),
+                        val_logits,
                         y_val,
                     )
                 )
 
-        values = torch.tensor(fold_scores, dtype=torch.float32)
-        return (
+        if not bool(torch.isfinite(oof_logits).all()):
+            raise EmotionPipelineError(
+                "linear probe did not produce complete OOF predictions"
+            )
+
+        fold_values = torch.tensor(
             fold_scores,
-            float(values.mean().item()),
-            float(values.std(unbiased=False).item()),
+            dtype=torch.float32,
         )
+        oof_prediction = oof_logits.argmax(dim=-1)
+        return {
+            "fold_scores": fold_scores,
+            "fold_macro_accuracy_mean": float(
+                fold_values.mean().item()
+            ),
+            "fold_macro_accuracy_std": float(
+                fold_values.std(unbiased=False).item()
+            ),
+            "oof_ce": float(
+                F.cross_entropy(oof_logits, y_all).item()
+            ),
+            "oof_accuracy": float(
+                (oof_prediction == y_all).float().mean().item()
+            ),
+            "oof_macro_accuracy": _macro_accuracy(
+                oof_logits,
+                y_all,
+            ),
+            "oof_macro_auc": _macro_auc(
+                oof_logits,
+                y_all,
+            ),
+        }
 
     try:
         folds = stratified_kfold_indices(
@@ -364,20 +425,22 @@ def run_mean_pool_linear_probe(
         )
         return report
 
-    real_scores, real_mean, real_std = _evaluate(labels, seed)
+    real = _evaluate(labels, seed)
 
     permutation_means: list[float] = []
+    permutation_ces: list[float] = []
     for permutation_index in range(max(permutations, 0)):
         permuted = list(labels)
         permutation_rng = random.Random(
             seed + 49979687 + permutation_index
         )
         permutation_rng.shuffle(permuted)
-        _scores, perm_mean, _perm_std = _evaluate(
+        perm = _evaluate(
             permuted,
             seed + 86028121 + permutation_index,
         )
-        permutation_means.append(perm_mean)
+        permutation_means.append(perm["oof_macro_accuracy"])
+        permutation_ces.append(perm["oof_ce"])
 
     if permutation_means:
         perm_tensor = torch.tensor(
@@ -388,16 +451,29 @@ def run_mean_pool_linear_probe(
         permutation_std = float(
             perm_tensor.std(unbiased=False).item()
         )
+        permutation_ce_mean = float(
+            torch.tensor(
+                permutation_ces,
+                dtype=torch.float32,
+            ).mean().item()
+        )
     else:
         permutation_mean = report["chance_accuracy"]
         permutation_std = 0.0
+        permutation_ce_mean = float(report["chance_ce"])
 
     chance = float(report["chance_accuracy"])
-    delta = real_mean - permutation_mean
+    delta = real["oof_macro_accuracy"] - permutation_mean
 
-    if real_mean >= chance + 0.10 and delta >= 0.10:
+    if (
+        real["oof_macro_accuracy"] >= chance + 0.10
+        and delta >= 0.10
+    ):
         verdict = "informative"
-    elif real_mean <= chance + 0.05 or delta <= 0.05:
+    elif (
+        real["oof_macro_accuracy"] <= chance + 0.05
+        or delta <= 0.05
+    ):
         verdict = "weak"
     else:
         verdict = "uncertain"
@@ -406,16 +482,25 @@ def run_mean_pool_linear_probe(
         {
             "status": "ok",
             "folds": len(folds),
-            "fold_macro_accuracy": real_scores,
-            "macro_accuracy_mean": real_mean,
-            "macro_accuracy_std": real_std,
+            "fold_macro_accuracy": real["fold_scores"],
+            "macro_accuracy_mean": real[
+                "fold_macro_accuracy_mean"
+            ],
+            "macro_accuracy_std": real[
+                "fold_macro_accuracy_std"
+            ],
+            "oof_ce": real["oof_ce"],
+            "oof_accuracy": real["oof_accuracy"],
+            "oof_macro_accuracy": real["oof_macro_accuracy"],
+            "oof_macro_auc": real["oof_macro_auc"],
             "permutation_macro_accuracy_mean": permutation_mean,
             "permutation_macro_accuracy_std": permutation_std,
+            "permutation_ce_mean": permutation_ce_mean,
             "delta_vs_permutation": delta,
             "verdict": verdict,
             "note": (
-                "Separability is diagnostic only; text or other correlated "
-                "cues can also make the probe score above chance."
+                "Separability is diagnostic only; text or another "
+                "correlated cue can also score above chance."
             ),
         }
     )
