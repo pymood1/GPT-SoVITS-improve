@@ -5113,6 +5113,52 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             [],
                             [tts_info, open_tts, close_tts],
                         )
+                button_train_sequence_open.click(
+                    run_gpt_then_sovits,
+                    [
+                        batch_size1Bb,
+                        total_epoch1Bb,
+                        exp_name,
+                        if_dpo,
+                        if_save_latest1Bb,
+                        if_save_every_weights1Bb,
+                        save_every_epoch1Bb,
+                        gpu_numbers1Bb,
+                        pretrained_s1,
+                        use_multilingual_bert,
+                        multilingual_bert_model,
+                        version_checkbox,
+                        batch_size,
+                        total_epoch,
+                        text_low_lr_rate,
+                        if_save_latest,
+                        if_save_every_weights,
+                        save_every_epoch,
+                        gpu_numbers1Ba,
+                        pretrained_s2G,
+                        pretrained_s2D,
+                        if_grad_ckpt,
+                        lora_rank,
+                    ],
+                    [
+                        info_train_sequence,
+                        button_train_sequence_open,
+                        button_train_sequence_close,
+                        SoVITS_dropdown,
+                        GPT_dropdown,
+                    ],
+                )
+                button_train_sequence_close.click(
+                    stop_gpt_then_sovits,
+                    [],
+                    [
+                        info_train_sequence,
+                        button_train_sequence_open,
+                        button_train_sequence_close,
+                    ],
+                    queue=False,
+                )
+
                 button1Ba_open.click(
                     open1Ba,
                     [
