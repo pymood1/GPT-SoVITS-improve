@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 from AR.models.emotion_control import (  # noqa: E402
     LowRankEmotionPreference,
     save_emotion_controller_checkpoint,
-    vectorized_sequence_relative_score,
+    vectorized_sequence_relative_scores,
     sha256_file,
 )
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule  # noqa: E402
@@ -637,6 +637,37 @@ def build_single_sample_batch(
     }
 
 
+
+def controller_sample_to_device(
+    prepared: dict,
+    device: torch.device,
+) -> dict:
+    """Materialize reusable controller inputs on the training device once."""
+    return {
+        "hidden": prepared["hidden"].to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=True,
+        ),
+        "base_probs": prepared["base_probs"].to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=True,
+        ),
+        "target_semantic": torch.as_tensor(
+            prepared["target_semantic"],
+            dtype=torch.long,
+            device=device,
+        ),
+        "valid_mask": torch.as_tensor(
+            prepared["valid_mask"],
+            dtype=torch.bool,
+            device=device,
+        ),
+        "coverage": prepared["coverage"],
+    }
+
+
 def evaluate_controller(
     *,
     controller: LowRankEmotionPreference,
@@ -646,6 +677,7 @@ def evaluate_controller(
     emotion_names: Sequence[str],
     reference_prompt_cache: Dict[str, dict],
     frozen_sample_cache: Dict[Tuple[str, str], dict],
+    device_sample_cache: Dict[Tuple[str, str], dict],
     output_weight: torch.Tensor,
     device: torch.device,
     pad_val: int,
@@ -656,11 +688,14 @@ def evaluate_controller(
     repetition_penalty: float,
     min_support_coverage: float,
 ) -> dict:
-    """Evaluate balanced held-out CE/accuracy/gap without updating weights."""
-    losses_by_emotion: Dict[str, List[float]] = defaultdict(list)
-    gaps_by_emotion: Dict[str, List[float]] = defaultdict(list)
-    correct_by_emotion: Dict[str, int] = defaultdict(int)
-    evaluated_by_emotion: Dict[str, int] = defaultdict(int)
+    """Evaluate balanced held-out CE/accuracy/gap with one final CPU sync."""
+    metric_sums = torch.zeros(
+        3,
+        len(emotion_names),
+        dtype=torch.float32,
+        device=device,
+    )
+    evaluated_counts = [0 for _ in emotion_names]
     skipped = 0
 
     controller.eval()
@@ -693,37 +728,27 @@ def evaluate_controller(
                     skipped += 1
                     continue
 
-                hidden = prepared["hidden"].to(
-                    device=device,
-                    dtype=torch.float32,
-                )
-                base_probs = prepared["base_probs"].to(
-                    device=device,
-                    dtype=torch.float32,
-                )
-
-                scores: List[torch.Tensor] = []
-                for emotion_id in range(len(emotion_names)):
-                    score = vectorized_sequence_relative_score(
-                        controller=controller,
-                        hidden=hidden,
-                        base_probs=base_probs,
-                        target_semantic=prepared["target_semantic"],
-                        valid_mask=prepared["valid_mask"],
-                        output_weight=output_weight,
-                        emotion_id=emotion_id,
-                        eos_id=model.EOS,
+                prepared_device = device_sample_cache.get(cache_key)
+                if prepared_device is None:
+                    prepared_device = controller_sample_to_device(
+                        prepared,
+                        device,
                     )
-                    if score is None:
-                        scores = []
-                        break
-                    scores.append(score)
+                    device_sample_cache[cache_key] = prepared_device
 
-                if not scores:
+                score_tensor = vectorized_sequence_relative_scores(
+                    controller=controller,
+                    hidden=prepared_device["hidden"],
+                    base_probs=prepared_device["base_probs"],
+                    target_semantic=prepared_device["target_semantic"],
+                    valid_mask=prepared_device["valid_mask"],
+                    output_weight=output_weight,
+                    eos_id=model.EOS,
+                )
+                if score_tensor is None:
                     skipped += 1
                     continue
 
-                score_tensor = torch.stack(scores)
                 target_id = int(sample["emotion_id"])
                 logits_by_emotion = (
                     preference_beta
@@ -749,28 +774,22 @@ def evaluate_controller(
                     score_tensor[target_id]
                     - score_tensor[other_mask].max()
                 )
-                predicted = int(
-                    torch.argmax(score_tensor).item()
-                )
-                emotion = sample["emotion"]
 
-                losses_by_emotion[emotion].append(
-                    float(loss.cpu())
+                metric_sums[0, target_id].add_(loss)
+                metric_sums[1, target_id].add_(gap)
+                metric_sums[2, target_id].add_(
+                    (score_tensor.argmax() == target_id).to(
+                        dtype=torch.float32
+                    )
                 )
-                gaps_by_emotion[emotion].append(
-                    float(gap.cpu())
-                )
-                evaluated_by_emotion[emotion] += 1
-                correct_by_emotion[emotion] += int(
-                    predicted == target_id
-                )
+                evaluated_counts[target_id] += 1
     finally:
         controller.train()
 
     missing = [
         emotion
-        for emotion in emotion_names
-        if evaluated_by_emotion.get(emotion, 0) == 0
+        for index, emotion in enumerate(emotion_names)
+        if evaluated_counts[index] == 0
     ]
     if missing:
         raise TrainingDataError(
@@ -778,26 +797,24 @@ def evaluate_controller(
             + ", ".join(missing)
         )
 
+    metric_values = metric_sums.detach().cpu()
     per_class_loss = {
-        emotion: (
-            sum(losses_by_emotion[emotion])
-            / len(losses_by_emotion[emotion])
+        emotion: float(
+            metric_values[0, index] / evaluated_counts[index]
         )
-        for emotion in emotion_names
+        for index, emotion in enumerate(emotion_names)
     }
     per_class_gap = {
-        emotion: (
-            sum(gaps_by_emotion[emotion])
-            / len(gaps_by_emotion[emotion])
+        emotion: float(
+            metric_values[1, index] / evaluated_counts[index]
         )
-        for emotion in emotion_names
+        for index, emotion in enumerate(emotion_names)
     }
     per_class_accuracy = {
-        emotion: (
-            correct_by_emotion[emotion]
-            / evaluated_by_emotion[emotion]
+        emotion: float(
+            metric_values[2, index] / evaluated_counts[index]
         )
-        for emotion in emotion_names
+        for index, emotion in enumerate(emotion_names)
     }
 
     balanced_loss = sum(per_class_loss.values()) / len(emotion_names)
@@ -810,7 +827,7 @@ def evaluate_controller(
         "loss": balanced_loss,
         "accuracy": balanced_accuracy,
         "gap": balanced_gap,
-        "evaluated": sum(evaluated_by_emotion.values()),
+        "evaluated": sum(evaluated_counts),
         "skipped": skipped,
         "per_class_loss": per_class_loss,
         "per_class_accuracy": per_class_accuracy,
@@ -1323,6 +1340,7 @@ def main() -> int:
         model.ar_predict_layer.weight.detach().float()
     )
     frozen_sample_cache: Dict[Tuple[str, str], dict] = {}
+    device_sample_cache: Dict[Tuple[str, str], dict] = {}
     cache_hits = 0
     cache_misses = 0
 
@@ -1334,8 +1352,10 @@ def main() -> int:
     max_attempts = max(args.max_auto_steps * 20, 100)
     skipped_low_coverage = 0
     skipped_no_gradient = 0
-    running_loss = 0.0
-    running_gap = 0.0
+    running_loss = torch.zeros((), device=device)
+    running_gap = torch.zeros((), device=device)
+    running_count = 0
+    log_window_started = time.perf_counter()
     best_val_loss = float("inf")
     best_val_step = 0
     best_val_metrics: Optional[dict] = None
@@ -1347,7 +1367,6 @@ def main() -> int:
         attempts += 1
         sampled_emotion = rng.choice(emotion_names)
         sample = rng.choice(samples_by_emotion[sampled_emotion])
-        step_started = time.perf_counter()
         cache_key = (sample["reference"], sample["name"])
         prepared = frozen_sample_cache.get(cache_key)
         cache_hit = prepared is not None
@@ -1379,40 +1398,27 @@ def main() -> int:
             skipped_low_coverage += 1
             continue
 
-        prepared_device = {
-            **prepared,
-            "hidden": prepared["hidden"].to(
-                device=device,
-                dtype=torch.float32,
-            ),
-            "base_probs": prepared["base_probs"].to(
-                device=device,
-                dtype=torch.float32,
-            ),
-        }
-
-        scores: List[torch.Tensor] = []
-        for emotion_id in range(len(emotion_names)):
-            score = vectorized_sequence_relative_score(
-                controller=controller,
-                hidden=prepared_device["hidden"],
-                base_probs=prepared_device["base_probs"],
-                target_semantic=prepared_device["target_semantic"],
-                valid_mask=prepared_device["valid_mask"],
-                output_weight=output_weight,
-                emotion_id=emotion_id,
-                eos_id=model.EOS,
+        prepared_device = device_sample_cache.get(cache_key)
+        if prepared_device is None:
+            prepared_device = controller_sample_to_device(
+                prepared,
+                device,
             )
-            if score is None:
-                scores = []
-                break
-            scores.append(score)
+            device_sample_cache[cache_key] = prepared_device
 
-        if not scores:
+        score_tensor = vectorized_sequence_relative_scores(
+            controller=controller,
+            hidden=prepared_device["hidden"],
+            base_probs=prepared_device["base_probs"],
+            target_semantic=prepared_device["target_semantic"],
+            valid_mask=prepared_device["valid_mask"],
+            output_weight=output_weight,
+            eos_id=model.EOS,
+        )
+
+        if score_tensor is None:
             skipped_low_coverage += 1
             continue
-
-        score_tensor = torch.stack(scores)
         if not score_tensor.requires_grad:
             skipped_no_gradient += 1
             continue
@@ -1451,44 +1457,47 @@ def main() -> int:
         optimizer.step()
 
         accepted_steps += 1
-        running_loss += float(loss.detach().cpu())
-        running_gap += float(gap.detach().cpu())
-
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-            gpu_mem_gib = (
-                torch.cuda.memory_allocated(0) / (1024 ** 3)
-            )
-        else:
-            gpu_mem_gib = 0.0
-        step_elapsed_ms = (
-            time.perf_counter() - step_started
-        ) * 1000.0
+        running_loss.add_(loss.detach())
+        running_gap.add_(gap.detach())
+        running_count += 1
 
         if (
             accepted_steps == 1
             or accepted_steps % args.log_every == 0
         ):
-            divisor = (
-                1
-                if accepted_steps == 1
-                else min(args.log_every, accepted_steps)
-            )
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+                gpu_mem_gib = (
+                    torch.cuda.memory_allocated(0) / (1024 ** 3)
+                )
+            else:
+                gpu_mem_gib = 0.0
+
+            divisor = max(running_count, 1)
+            step_elapsed_ms = (
+                time.perf_counter() - log_window_started
+            ) * 1000.0 / divisor
+            mean_loss = float((running_loss / divisor).item())
+            mean_gap = float((running_gap / divisor).item())
+
             print(
                 f"step={accepted_steps}/{training_limit} "
                 f"emotion={sample['emotion']} "
-                f"loss={running_loss / divisor:.5f} "
-                f"gap={running_gap / divisor:.5f} "
+                f"loss={mean_loss:.5f} "
+                f"gap={mean_gap:.5f} "
                 f"coverage={coverage:.2%} "
                 f"cache={'hit' if cache_hit else 'miss'} "
                 f"cache_size={len(frozen_sample_cache)} "
+                f"device_cache={len(device_sample_cache)} "
                 f"step_ms={step_elapsed_ms:.1f} "
                 f"gpu_mem={gpu_mem_gib:.2f}GiB "
                 f"skipped_coverage={skipped_low_coverage} "
                 f"skipped_no_grad={skipped_no_gradient}"
             )
-            running_loss = 0.0
-            running_gap = 0.0
+            running_loss.zero_()
+            running_gap.zero_()
+            running_count = 0
+            log_window_started = time.perf_counter()
 
         if accepted_steps % args.val_interval == 0:
             val_metrics = evaluate_controller(
@@ -1499,6 +1508,7 @@ def main() -> int:
                 emotion_names=emotion_names,
                 reference_prompt_cache=reference_prompt_cache,
                 frozen_sample_cache=frozen_sample_cache,
+                device_sample_cache=device_sample_cache,
                 output_weight=output_weight,
                 device=device,
                 pad_val=int(config["data"]["pad_val"]),
