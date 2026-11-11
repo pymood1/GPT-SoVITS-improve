@@ -623,7 +623,7 @@ import sys
 from pathlib import Path
 repo = Path("/content/GPT-SoVITS")
 sys.path.insert(0, str(repo / "GPT_SoVITS"))
-import numpy, torch, torchaudio
+import numpy, torch, torchaudio, resampy
 from AR.models.emotion_control import LowRankEmotionPreference
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from module.models import Generator
@@ -658,12 +658,20 @@ controller = LowRankEmotionPreference(
 assert controller.num_emotions == 2
 assert FunASRAutoModel is not None
 assert TTS_Config is not None
+interp_win, precision, rolloff = resampy.filters.get_filter(
+    "kaiser_best"
+)
+assert interp_win.ndim == 1
+assert int(precision) > 0
+assert 0 < float(rolloff) <= 1
 
 print("V5_SMOKE_OK")
+print("RESAMPY_FILTER_SMOKE_OK")
 print("EMOTION_IMPORT_SMOKE_OK")
 print("python=", sys.version.split()[0])
 print("numpy=", numpy.__version__)
 print("torch=", torch.__version__)
+print("resampy=", resampy.__version__)
 print("korean_g2p=", len(phones), normalized)
 print("versions=", sorted(V5_VERSIONS))
 """
