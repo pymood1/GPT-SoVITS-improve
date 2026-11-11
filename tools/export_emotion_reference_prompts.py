@@ -160,8 +160,18 @@ def main() -> int:
             f"V5 S2 checkpoint not found: {s2_checkpoint}"
         )
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "tts_version": config.version,
+        "text_features": {
+            "multilingual_bert": bool(
+                tts.use_multilingual_bert
+            ),
+            "multilingual_bert_model": (
+                tts.multilingual_bert_model
+                if tts.use_multilingual_bert
+                else None
+            ),
+        },
         "s2_checkpoint": s2_checkpoint,
         "s2_sha256": sha256_file(s2_checkpoint),
         "references": references,
