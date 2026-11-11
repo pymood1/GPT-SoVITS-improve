@@ -2419,6 +2419,190 @@ def close1Bb():
     )
 
 
+training_sequence_cancel_requested = False
+process_name_train_sequence = "GPT → SoVITS 연속 학습"
+
+
+def run_gpt_then_sovits(
+    batch_size_gpt,
+    total_epoch_gpt,
+    exp_name,
+    if_dpo,
+    if_save_latest_gpt,
+    if_save_every_weights_gpt,
+    save_every_epoch_gpt,
+    gpu_numbers_gpt,
+    pretrained_s1,
+    use_multilingual_bert,
+    multilingual_bert_model,
+    version,
+    batch_size_sovits,
+    total_epoch_sovits,
+    text_low_lr_rate,
+    if_save_latest_sovits,
+    if_save_every_weights_sovits,
+    save_every_epoch_sovits,
+    gpu_numbers_sovits,
+    pretrained_s2G,
+    pretrained_s2D,
+    if_grad_ckpt,
+    lora_rank,
+):
+    global training_sequence_cancel_requested
+
+    training_sequence_cancel_requested = False
+    sovits_update = {"__type__": "update"}
+    gpt_update = {"__type__": "update"}
+
+    yield (
+        "### GPT → SoVITS 연속 학습\n\n**GPT 학습 시작**",
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        sovits_update,
+        gpt_update,
+    )
+
+    gpt_finished = False
+    for result in open1Bb(
+        batch_size_gpt,
+        total_epoch_gpt,
+        exp_name,
+        if_dpo,
+        if_save_latest_gpt,
+        if_save_every_weights_gpt,
+        save_every_epoch_gpt,
+        gpu_numbers_gpt,
+        pretrained_s1,
+        use_multilingual_bert,
+        multilingual_bert_model,
+    ):
+        if training_sequence_cancel_requested:
+            return
+
+        child_status = result[0] if result else ""
+        if len(result) >= 4:
+            sovits_update = result[2]
+            gpt_update = result[3]
+
+        gpt_finished = (
+            child_status
+            == process_info(process_name_gpt, "finish")
+        )
+        yield (
+            "### GPT → SoVITS 연속 학습\n\n"
+            f"**GPT 단계**\n\n{child_status}",
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            sovits_update,
+            gpt_update,
+        )
+
+    if not gpt_finished:
+        yield (
+            "### GPT → SoVITS 연속 학습 실패\n\n"
+            "GPT 학습이 완료되지 않아 SoVITS는 시작하지 않습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            sovits_update,
+            gpt_update,
+        )
+        return
+
+    if training_sequence_cancel_requested:
+        return
+
+    yield (
+        "### GPT → SoVITS 연속 학습\n\n"
+        "GPT 완료. **SoVITS 학습 시작**",
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        sovits_update,
+        gpt_update,
+    )
+
+    sovits_finished = False
+    for result in open1Ba(
+        version,
+        batch_size_sovits,
+        total_epoch_sovits,
+        exp_name,
+        text_low_lr_rate,
+        if_save_latest_sovits,
+        if_save_every_weights_sovits,
+        save_every_epoch_sovits,
+        gpu_numbers_sovits,
+        pretrained_s2G,
+        pretrained_s2D,
+        if_grad_ckpt,
+        lora_rank,
+    ):
+        if training_sequence_cancel_requested:
+            return
+
+        child_status = result[0] if result else ""
+        if len(result) >= 4:
+            sovits_update = result[2]
+            gpt_update = result[3]
+
+        sovits_finished = (
+            child_status
+            == process_info(process_name_sovits, "finish")
+        )
+        yield (
+            "### GPT → SoVITS 연속 학습\n\n"
+            "GPT 완료\n\n"
+            f"**SoVITS 단계**\n\n{child_status}",
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            sovits_update,
+            gpt_update,
+        )
+
+    if not sovits_finished:
+        yield (
+            "### GPT → SoVITS 연속 학습 실패\n\n"
+            "GPT는 완료됐지만 SoVITS 학습이 완료되지 않았습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            sovits_update,
+            gpt_update,
+        )
+        return
+
+    yield (
+        "### GPT → SoVITS 연속 학습 완료\n\n"
+        "**GPT → SoVITS 순서로 전부 완료했습니다.**",
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+        sovits_update,
+        gpt_update,
+    )
+
+
+def stop_gpt_then_sovits():
+    global training_sequence_cancel_requested
+
+    training_sequence_cancel_requested = True
+
+    if (
+        p_train_GPT is not None
+        and p_train_GPT.poll() is None
+    ):
+        close1Bb()
+
+    if (
+        p_train_SoVITS is not None
+        and p_train_SoVITS.poll() is None
+    ):
+        close1Ba()
+
+    return (
+        "### GPT → SoVITS 연속 학습 중지됨",
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
+
+
 ps_slice = []
 slice_cancel_requested = False
 process_name_slice = i18n("语音切分")
