@@ -33,9 +33,14 @@ jobs:
             tools/emotion_dataset_builder.py \
             tools/emotion_training_pipeline.py \
             tools/run_emotion_v5_preprocess.py \
+            tools/export_emotion_reference_prompts.py \
             tools/train_emotion_controller.py \
+            GPT_SoVITS/AR/models/emotion_control.py \
+            GPT_SoVITS/AR/models/t2s_model.py \
+            GPT_SoVITS/TTS_infer_pack/TTS.py \
             GPT_SoVITS/inference_webui.py \
             GPT_SoVITS/prepare_datasets/1-get-text.py \
+            GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py \
             GPT_SoVITS/prepare_datasets/3-get-semantic.py \
             GPT_SoVITS/text/chinese.py \
             GPT_SoVITS/text/chinese2.py \
