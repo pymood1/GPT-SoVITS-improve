@@ -431,98 +431,52 @@ sampling semantics are implemented and tested.
 
 ## 10. Emotion dataset philosophy
 
-Emotion control is not currently trained as a generic emotion classifier.
-
-The intended high-quality training unit is a controlled emotion pair/group:
-
-~~~text
-same speaker
-same text
-different intended emotion
-~~~
-
-Example:
-
-~~~text
-prompt_0001
-  neutral take
-  happy take
-  sad take
-~~~
-
-The canonical dataset builder still does not invent pair metadata by itself.
-Automatic discovery is implemented as a separate preprocessing helper so the
-canonical ingest remains deterministic.
+Controller supervision is currently per-sample, not pair-only.
 
 Primary files:
 
 tools/auto_emotion_sidecar.py
 tools/emotion_dataset_builder.py
 
-The 1A WebUI can now generate a sidecar JSONL from the user's existing
-GPT-SoVITS .list + audio data. The first implementation is deliberately narrow:
+Automatic metadata generation uses FunASR emotion2vec+ large by default. It
+predicts utterance emotion scores, calibrates them relative to each speaker's
+median CLR profile, and writes conservative `emotion_intended` labels.
+Ambiguous rows become neutral/default. Prediction failures remain unlabeled and
+do not affect the speaker baseline.
 
-- utterance emotion is predicted with FunASR emotion2vec+ base by default;
-- only neutral / happy / sad / angry are accepted for controller training;
-- predictions below the confidence threshold remain unpaired;
-- automatic groups require the same speaker, language, and exact normalized text;
-- pair_source is recorded as auto_exact_text;
-- a 3-10 second reference is reserved outside usable pair samples;
-- prediction results are cached so interrupted or repeated runs can reuse them.
+Exact-text pair groups are not required by controller training. Automatic rows
+use `pair_group_id=null` / `pair_source=none`. Manual or recording-manifest
+pair metadata remains supported as optional provenance and still obeys the
+canonical builder's speaker/language/text/split consistency checks.
 
-Manual sidecars remain supported and can replace or edit automatic output.
-
-Important fields:
-
-~~~text
-wav
-split
-source_id
-session_id
-speaker_uid
-emotion_intended
-pair_group_id
-pair_source
-~~~
-
-pair_group_id must refer to one speaker, one language, and exact canonical text.
-
-pair_source must be explicit when pair_group_id is present.
-
-Supported pair sources include recording_manifest, manual, and
-auto_exact_text. Fuzzy/semantic text matching is still intentionally not
-implemented.
-
-The same audio bytes with conflicting metadata are rejected.
-
-Val/test samples require source_id.
-
-Source, text, and pair groups cannot cross splits.
-
-Canonical file names are content-derived to prevent basename collisions.
+Important fields include `wav`, `split`, `speaker_uid`,
+`emotion_intended`, `pair_group_id` and `pair_source`. The same audio
+bytes with conflicting metadata are rejected, val/test data requires source
+provenance, and canonical filenames are content-derived to prevent basename
+collisions.
 
 ---
 
 ## 11. Reference sample policy
 
-Emotion training uses one fixed reference per paired speaker.
+Emotion training uses one fixed 3-10 second train reference for each speaker
+that actually has non-neutral controller targets.
 
 Primary helper:
 
 tools/emotion_training_pipeline.py
 
-Current WebUI automatic selection policy:
+Selection policy:
 
-- train split only;
-- sample must not be inside an emotion pair_group_id;
-- 3 to 10 seconds long;
-- neutral/unlabeled is preferred;
-- among candidates, duration near 6 seconds is preferred;
-- only speakers that actually participate in a multi-emotion pair group require
-  a reference.
+- train + TTS-usable only;
+- samples in a `pair_group_id` are not references;
+- neutral/unlabeled references are preferred;
+- otherwise an emotional sample may be used only when removing it does not
+  consume the sole sample of that emotion;
+- duration nearest 6 seconds is preferred within the same priority.
 
-This separation is important. The reference should represent speaker identity
-without becoming another member of the emotion pair being optimized.
+The fixed reference is excluded from controller training samples. This keeps
+speaker identity conditioning separate from the preference supervision.
 
 ---
 
@@ -587,45 +541,34 @@ Primary file:
 
 tools/train_emotion_controller.py
 
-Current high-level training sampling:
+The frozen S1 backbone produces teacher-forced hidden states/logits. For each
+training utterance the tiny controller scores every configured non-neutral
+emotion direction using the same top-k/top-p/temperature/repetition-penalty
+support used by ordinary inference. Exact-text positive/negative pairs are not
+required.
 
-~~~text
-pair group
-  -> choose target emotion
-  -> positive take from target emotion
-  -> negative take from a different emotion
-~~~
+Sampling is balanced by emotion class: choose an emotion uniformly, then choose
+one of that emotion's usable utterances. The fixed reference is excluded from
+supervision. Missing Chinese BERT features are fatal; non-Chinese rows use the
+expected zero BERT feature.
 
-No Cartesian-product explosion is used.
-
-No external SER reward is currently used.
-
-Controller training uses the ordinary GPT sampler support. A target token only
-contributes to the preference objective when it survives the original sampler
-support.
-
-Important default sampling-related values:
+Important defaults:
 
 - top-k: 15
 - top-p: 1.0
 - temperature: 1.0
 - repetition penalty: 1.35
-
-Important controller defaults:
-
 - rank: 8
 - max log-odds shift: 0.35
 - prefix log-ratio budget: 2.0
 - steps: 1000
 - learning rate: 1e-3
 - preference beta: 4.0
-- margin: 0.02
 - minimum support coverage: 0.60
 
-The checkpoint stores the ordered emotion names. Do not hardcode emotion IDs in
-new code.
-
-The checkpoint also stores S1/S2 provenance hashes.
+There is no separate margin hyperparameter. The checkpoint stores ordered
+emotion names plus exact S1 and semantic-S2 provenance hashes. Do not hardcode
+emotion IDs.
 
 ---
 
@@ -642,25 +585,26 @@ The button runs:
 1/5 canonical emotion dataset
 2/5 fixed reference selection
 3/5 V5dev preprocessing
-4/5 reference prompt export
-5/5 emotion controller training
+4/5 inference-exact reference prompt export
+5/5 balanced emotion controller training
 ~~~
 
-Default controller output:
+Default blank paths resolve under:
 
 ~~~text
-/content/drive/MyDrive/GPT-SoVITS/emotion_controller.pt
+output/emotion_opt/<dataset-id>/
+  emotion_sidecar.jsonl
+  dataset/
+  features/
+  <dataset-id>_emotion_controller.pt
 ~~~
 
-The UI has an exact GPT/S1 checkpoint field.
+The selected single GPU is honored by preprocessing, reference-prompt export and
+controller training. CPU fallback remains supported when CUDA is unavailable.
 
-This is required because S1 provenance must match the model used during
-inference.
-
-If the user fine-tunes GPT in 1B, the final GPT checkpoint must be selected in
-the optional emotion-training section of 1B when training the controller.
-
-Current controller training uses V5dev base S2 for semantic preprocessing.
+The UI has an exact GPT/S1 checkpoint field. If S1 was fine-tuned, the
+controller must be trained against that exact checkpoint. Semantic preprocessing
+uses the V5dev base S2 token space.
 
 ---
 
@@ -893,102 +837,59 @@ Add any of these only when a specific measured limitation justifies them.
 
 ## 21. Known area needing real runtime validation
 
-The latest WebUI emotion integration has been statically inspected and syntax
-checking was added to the Colab setup, but the full post-integration pipeline
-still needs a clean end-to-end Colab run.
+Static review and lightweight CI now cover output completeness, reference
+selection safeguards, Python syntax/import-facing compatibility and several
+frontend/dependency paths. The remaining high-value validation is a clean GPU
+end-to-end run.
 
-Priority validation order:
+Priority order:
 
-1. fresh Colab notebook opens;
-2. Google Drive mounts;
-3. fast setup succeeds;
-4. webui.py launches in Korean;
-5. V5dev is selected;
-6. 1B is initially visible;
-7. 1A preprocessing and the optional 1B emotion-training section render without Gradio component errors;
-8. automatic emotion sidecar generation runs on a small user dataset;
-9. exact-text pair groups and the reserved reference make sense in the generated report;
-10. canonical emotion dataset creation accepts auto_exact_text provenance;
-11. reference auto-selection succeeds;
-12. V5 preprocessing produces a valid build directory;
-13. reference prompt cache is generated;
-14. tiny controller run, for example 3-20 accepted steps;
-15. controller checkpoint is written;
-16. 1C launches inference WebUI;
-17. Gradio public link appears in the parent WebUI;
-18. controller auto-load succeeds;
-19. loaded-controller status shows checkpoint emotion_names as available tags;
-20. text without emotion tags matches ordinary inference behavior;
-21. [emotion] and [emotion:strength] change emotion per segment without severe speaker drift;
-22. mixed-emotion text switches at tag boundaries without leaking tag text into speech;
-23. V5 LoRA + controller provenance path is tested separately.
+1. fresh Colab or Kaggle GPU environment;
+2. setup/dependencies complete;
+3. emotion2vec+ large actually loads and classifies real audio;
+4. automatic sidecar produces at least two usable non-neutral labels;
+5. canonical dataset/reference selection succeeds;
+6. V5dev preprocessing produces a complete per-item build;
+7. reference prompt cache is generated;
+8. run a tiny 3-20 accepted-step controller training;
+9. verify checkpoint S1/S2 hashes;
+10. load it in 1C and compare no-controller / strength 0 / active controller;
+11. test inline emotion tags and speaker similarity;
+12. separately test V5 LoRA + controller provenance.
 
-Do not begin a long 1000-step training run before the tiny smoke run passes.
+One additional numerical check is still desirable: compare teacher-forcing
+hidden/logit values from `model.h` against the cached
+`t2s_transformer` inference path on the same synthetic prefix. Do not start a
+long 1000-step run before the tiny smoke passes.
 
 ---
 
 ## 22. Recommended next development tasks
 
-Priority A: runtime correctness
+Priority A: GPU runtime correctness
 
-- run the clean Colab validation checklist above;
-- fix the first real traceback rather than adding speculative abstractions;
-- add a tiny smoke-test mode to the WebUI if repeated manual setup becomes slow;
-- verify stopping the emotion pipeline terminates all child processes cleanly;
-- verify rerunning the same feature build safely reuses the correct fingerprinted
-  build rather than a stale unrelated build.
+- run the tiny end-to-end controller smoke above;
+- verify emotion2vec+ large model initialization on the actual Python/runtime;
+- compare `model.h` and cached `t2s_transformer` numerically;
+- fix the first observed runtime mismatch rather than adding new abstraction.
 
-Priority B: dataset usability
+Priority B: data quality
 
-The first automatic sidecar builder is now implemented in 1A. It creates
-conservative exact-text pairs from user data and keeps explicit provenance.
+- preview predicted emotion, confidence and speaker-relative score;
+- allow questionable auto labels to be excluded/edited before training;
+- measure class counts and accepted-step rate;
+- tune confidence thresholds only from actual validation results.
 
-Next improvements should be driven by real runs:
+Priority C: training evaluation
 
-- show a compact preview of predicted emotion / confidence / pair group;
-- allow users to exclude or edit questionable rows before training;
-- measure whether the default confidence threshold is appropriate;
-- add better handling for datasets with no repeated exact transcript;
-- only then consider fuzzy or semantic text matching.
+- compare strength 0 with no-controller output;
+- evaluate speaker similarity, emotion movement, F0 expressiveness and CER;
+- check minority emotions separately even though sampling is class-balanced.
 
-Do not hide automatic provenance. Auto-generated pairs must remain visibly
-distinguishable from manual or recording-manifest pairs.
+Priority D: performance
 
-Priority C: training results
-
-After the pipeline is stable:
-
-- train on a small neutral/happy/sad controlled dataset;
-- inspect accepted-step rate and low-support skips;
-- compare strength 0 versus no-controller output;
-- evaluate speaker similarity, emotion movement, pitch expressiveness, and CER;
-- verify emotion ordering from checkpoint metadata.
-
-Priority D: emotion tags
-
-The first tag-based inference path is implemented:
-
-- parser is active;
-- names map through checkpoint metadata;
-- tag boundaries become synthesis segments;
-- tag strings do not enter text preprocessing;
-- per-tag strength is supported.
-
-Next work here should be driven by listening tests:
-
-- decide whether the ordinary pause between tag segments is sufficient;
-- only add a small crossfade/boundary smoother if audible joins are a real
-  problem;
-- avoid token-level switching until segment-level behavior is validated.
-
-Priority E: performance
-
-Only after correctness:
-
-- overlap archive extraction with dependency installation;
-- consider caching emotion preprocessing builds on Drive;
-- optimize repeated reference prompt generation;
-- only then consider accelerated emotion sampling.
+Only after correctness: optimize repeated reference prompt generation, consider
+persistent preprocessing cache, and investigate accelerated emotion sampling.
 
 ---
 
