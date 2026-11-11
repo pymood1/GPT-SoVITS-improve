@@ -124,6 +124,12 @@ from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from peft import LoraConfig, get_peft_model
 from text import cleaned_text_to_sequence
 from text.cleaner import clean_text
+from text.multilingual_bert import (
+    DEFAULT_MULTILINGUAL_BERT,
+    MULTILINGUAL_BERT_LANGUAGES,
+    MultilingualBertFeatureExtractor,
+    checkpoint_multilingual_bert_config,
+)
 
 from tools.assets import css, js, top_html
 from tools.i18n.i18n import I18nAuto, scan_language_list
@@ -235,6 +241,44 @@ t2s_model_cudagraph = None
 gpt_path_global = None
 sovits_path_global = None
 emotion_controller_metadata = None
+use_multilingual_bert = False
+multilingual_bert_model = DEFAULT_MULTILINGUAL_BERT
+multilingual_bert_extractor = None
+
+
+def configure_multilingual_bert_from_s1(config):
+    global use_multilingual_bert
+    global multilingual_bert_model
+    global multilingual_bert_extractor
+
+    enabled, model_name = checkpoint_multilingual_bert_config(config)
+    if (
+        multilingual_bert_extractor is not None
+        and (
+            not enabled
+            or model_name != multilingual_bert_model
+        )
+    ):
+        old_extractor = multilingual_bert_extractor
+        multilingual_bert_extractor = None
+        del old_extractor
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    use_multilingual_bert = enabled
+    multilingual_bert_model = model_name
+
+    if enabled and multilingual_bert_extractor is None:
+        print(
+            "[Text] loading multilingual BERT for English/Korean: "
+            f"{model_name}"
+        )
+        multilingual_bert_extractor = MultilingualBertFeatureExtractor(
+            model_name,
+            device=device,
+            is_half=is_half,
+        )
+
 default_emotion_controller_path = os.environ.get(
     "emotion_controller_path",
     "",
@@ -628,6 +672,7 @@ def change_gpt_weights(gpt_path):
     hz = 50
     dict_s1 = torch.load(gpt_path, map_location="cpu", weights_only=False)
     config = dict_s1["config"]
+    configure_multilingual_bert_from_s1(config)
     max_sec = config["data"]["max_sec"]
     t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
     t2s_model.load_state_dict(dict_s1["weight"])
@@ -931,15 +976,26 @@ dtype = torch.float16 if is_half == True else torch.float32
 def get_bert_inf(phones, word2ph, norm_text, language):
     language = language.replace("all_", "")
     if language == "zh":
-        bert = get_bert_feature(norm_text, word2ph).to(device)  # .to(dtype)
+        bert = get_bert_feature(
+            norm_text,
+            word2ph,
+        ).to(device)
+    elif (
+        use_multilingual_bert
+        and multilingual_bert_extractor is not None
+        and language in MULTILINGUAL_BERT_LANGUAGES
+    ):
+        bert = multilingual_bert_extractor.extract(
+            norm_text,
+            phone_count=len(phones),
+        ).to(device)
     else:
         bert = torch.zeros(
             (1024, len(phones)),
-            dtype=torch.float16 if is_half == True else torch.float32,
+            dtype=torch.float16 if is_half else torch.float32,
         ).to(device)
 
     return bert
-
 
 splits = {
     "，",
