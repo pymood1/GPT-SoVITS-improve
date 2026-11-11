@@ -37,14 +37,89 @@ jobs:
             tools/train_emotion_controller.py \
             GPT_SoVITS/AR/models/emotion_control.py \
             GPT_SoVITS/AR/models/t2s_model.py \
+            GPT_SoVITS/AR/data/dataset.py \
             GPT_SoVITS/TTS_infer_pack/TTS.py \
+            GPT_SoVITS/TTS_infer_pack/TextPreprocessor.py \
             GPT_SoVITS/inference_webui.py \
             GPT_SoVITS/prepare_datasets/1-get-text.py \
             GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py \
             GPT_SoVITS/prepare_datasets/3-get-semantic.py \
             GPT_SoVITS/text/chinese.py \
             GPT_SoVITS/text/chinese2.py \
-            GPT_SoVITS/text/korean.py
+            GPT_SoVITS/text/korean.py \
+            GPT_SoVITS/text/multilingual_bert.py
+
+
+  multilingual_bert_helpers_314:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install text feature smoke dependencies
+        run: |
+          python -m pip install -q uv
+          uv pip install --system \
+            "torch>=2.10" \
+            "transformers>=4.51,<5"
+      - name: Check multilingual BERT feature helpers
+        env:
+          PYTHONPATH: GPT_SoVITS
+        run: |
+          python - <<'PY'
+          import torch
+
+          from text.multilingual_bert import (
+              DEFAULT_MULTILINGUAL_BERT,
+              align_token_features_to_phones,
+              checkpoint_multilingual_bert_config,
+              pad_hidden_to_gpt_dimension,
+          )
+
+          source = torch.arange(
+              3 * 768,
+              dtype=torch.float32,
+          ).reshape(3, 768)
+          padded = pad_hidden_to_gpt_dimension(source)
+          assert padded.shape == (3, 1024)
+          assert torch.equal(padded[:, :768], source)
+          assert torch.count_nonzero(padded[:, 768:]) == 0
+
+          token_features = torch.tensor(
+              [
+                  [0.0, 0.0],
+                  [1.0, 1.0],
+                  [2.0, 2.0],
+                  [9.0, 9.0],
+              ]
+          )
+          aligned = align_token_features_to_phones(
+              token_features,
+              [(0, 0), (0, 2), (3, 5), (0, 0)],
+              text_length=5,
+              phone_count=4,
+          )
+          assert aligned.shape == (4, 2)
+          assert aligned[:, 0].tolist() == [1.0, 1.0, 2.0, 2.0]
+
+          enabled, model = checkpoint_multilingual_bert_config({})
+          assert enabled is False
+          assert model == DEFAULT_MULTILINGUAL_BERT
+
+          enabled, model = checkpoint_multilingual_bert_config(
+              {
+                  "text_features": {
+                      "multilingual_bert": True,
+                      "multilingual_bert_model": "example/model",
+                  }
+              }
+          )
+          assert enabled is True
+          assert model == "example/model"
+
+          print("PY314_MULTILINGUAL_BERT_HELPERS_OK")
+          PY
 
   dependency_resolve_314:
     runs-on: ubuntu-latest
