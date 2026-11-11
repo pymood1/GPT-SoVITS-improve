@@ -4290,6 +4290,8 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         gpu_numbers1Ba,
                         gpu_numbers1c,
                         bert_pretrained_dir,
+                        use_multilingual_bert,
+                        multilingual_bert_model,
                         cnhubert_base_dir,
                         pretrained_s2G,
                     ],
