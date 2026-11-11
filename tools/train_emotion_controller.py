@@ -1108,13 +1108,25 @@ def main() -> int:
             skipped_low_coverage += 1
             continue
 
+        prepared_device = {
+            **prepared,
+            "hidden": prepared["hidden"].to(
+                device=device,
+                dtype=torch.float32,
+            ),
+            "base_probs": prepared["base_probs"].to(
+                device=device,
+                dtype=torch.float32,
+            ),
+        }
+
         scores: List[torch.Tensor] = []
         for emotion_id in range(len(emotion_names)):
             score = sequence_relative_score_prepared(
                 controller=controller,
                 output_weight=output_weight,
                 eos_id=model.EOS,
-                prepared=prepared,
+                prepared=prepared_device,
                 emotion_id=emotion_id,
                 device=device,
             )
