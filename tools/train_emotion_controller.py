@@ -472,6 +472,17 @@ def prepare_controller_sample(
         y_lens=batch["y_lens"],
         bert=batch["bert"],
     )
+    if (
+        hidden.ndim != 3
+        or logits.ndim != 3
+        or hidden.shape[0] != 1
+        or logits.shape[0] != 1
+        or hidden.shape[1] != logits.shape[1]
+    ):
+        raise TrainingDataError(
+            "unexpected teacher-forcing cache shapes: "
+            f"hidden={tuple(hidden.shape)} logits={tuple(logits.shape)}"
+        )
 
     prompt_semantic = list(batch["reference_semantic"])
     target_semantic = list(batch["target_semantic"])
