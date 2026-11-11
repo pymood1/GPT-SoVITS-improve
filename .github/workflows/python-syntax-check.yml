@@ -159,7 +159,7 @@ jobs:
             --python-version 3.14 \
             requirements.txt \
             --output-file /tmp/requirements-314.txt
-          grep -E '^(numpy|numba|librosa|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics|ctranslate2|av|huggingface-hub|hf-xet)==' \
+          grep -E '^(numpy|numba|librosa|resampy|pyopenjtalk-plus|mecab-ko|pydantic|torchmetrics|ctranslate2|av|huggingface-hub|hf-xet)==' \
             /tmp/requirements-314.txt || true
 
 
@@ -227,6 +227,7 @@ jobs:
             "numpy>=2.4,<3" \
             "numba>=0.68.1" \
             "librosa>=0.11,<0.12" \
+            "resampy>=0.4.3,<0.5" \
             "pydantic>=2.12,<3"
       - name: Import numeric stack
         run: |
@@ -236,13 +237,21 @@ jobs:
           import numba
           import numpy
           import pydantic
+          import resampy
 
           importlib.import_module("numpy.strings")
+          interp_win, precision, rolloff = (
+              resampy.filters.get_filter("kaiser_best")
+          )
+          assert interp_win.ndim == 1
+          assert int(precision) > 0
+          assert 0 < float(rolloff) <= 1
 
           print("PY314_NUMERIC_STACK_SMOKE_OK")
           print("numpy=", numpy.__version__)
           print("numba=", numba.__version__)
           print("librosa=", librosa.__version__)
+          print("resampy=", resampy.__version__)
           print("pydantic=", pydantic.__version__)
           PY
 
