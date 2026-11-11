@@ -4452,19 +4452,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 info1c = gr.Textbox(label=process_info(process_name_1c, "info"))
     
-                    with gr.Accordion(label="1Aabc-" + process_name_1abc):
-                        with gr.Row():
-                            with gr.Row():
-                                button1abc_open = gr.Button(
-                                    value=process_info(process_name_1abc, "open"), variant="primary", visible=True
-                                )
-                                button1abc_close = gr.Button(
-                                    value=process_info(process_name_1abc, "close"), variant="primary", visible=False
-                                )
-                            with gr.Row():
-                                info1abc = gr.Textbox(label=process_info(process_name_1abc, "info"))
-    
-
                     with gr.Accordion(
                         label="1Ad-감정 학습 데이터 준비 (선택)",
                         open=False,
@@ -4592,67 +4579,18 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                             queue=False,
                         )
 
-                with gr.Accordion(
-                    label="1Aabcd-전처리 일괄 실행",
-                    open=True,
-                ):
-                    gr.Markdown(
-                        "위 a/b/c/d 설정을 모두 마친 뒤 한 번에 실행합니다. "
-                        "앞 단계가 실패하면 다음 단계는 시작하지 않습니다."
-                    )
-                    with gr.Row():
-                        button1abcd_open = gr.Button(
-                            value="a → b → c → d 순서대로 실행",
-                            variant="primary",
-                            visible=True,
-                        )
-                        button1abcd_close = gr.Button(
-                            value="일괄 전처리 중지",
-                            variant="stop",
-                            visible=False,
-                        )
-                    info1abcd = gr.Markdown(
-                        value="설정을 확인한 뒤 실행하세요."
-                    )
-
-                    button1abcd_open.click(
-                        open1abcd,
-                        [
-                            version_checkbox,
-                            inp_text,
-                            inp_wav_dir,
-                            exp_name,
-                            gpu_numbers1a,
-                            gpu_numbers1Ba,
-                            gpu_numbers1c,
-                            bert_pretrained_dir,
-                            use_multilingual_bert,
-                            multilingual_bert_model,
-                            cnhubert_base_dir,
-                            pretrained_s2G,
-                            emotion_sidecar,
-                            emotion_dataset_id,
-                            emotion_auto_model,
-                            emotion_auto_confidence,
-                            emotion_auto_device,
-                        ],
-                        [
-                            info1abcd,
-                            button1abcd_open,
-                            button1abcd_close,
-                            emotion_sidecar,
-                        ],
-                    )
-                    button1abcd_close.click(
-                        close1abcd,
-                        [],
-                        [
-                            info1abcd,
-                            button1abcd_open,
-                            button1abcd_close,
-                        ],
-                        queue=False,
-                    )
+                    with gr.Accordion(label="1Aabcd-" + process_name_1abcd):
+                        with gr.Row():
+                            with gr.Row():
+                                button1abc_open = gr.Button(
+                                    value="a → b → c → d 순서대로 실행", variant="primary", visible=True
+                                )
+                                button1abc_close = gr.Button(
+                                    value="일괄 전처리 중지", variant="stop", visible=False
+                                )
+                            with gr.Row():
+                                info1abc = gr.Markdown(value="위 a/b/c/d 설정을 확인한 뒤 실행하세요.")
+    
 
                 prep_asr_open.click(
                     open_asr,
