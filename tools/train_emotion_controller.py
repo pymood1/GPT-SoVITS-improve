@@ -56,6 +56,7 @@ from tools.emotion_training_pipeline import (  # noqa: E402
     EmotionPipelineError,
     run_mean_pool_linear_probe,
     split_train_validation_samples,
+    stratified_kfold_indices,
     update_early_stop_state,
 )
 
@@ -946,6 +947,273 @@ def evaluate_controller(
         "per_class_accuracy": per_class_accuracy,
         "per_class_gap": per_class_gap,
     }
+
+def _classification_metrics(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    class_count: int,
+) -> dict:
+    """Return CE, accuracy, macro accuracy and one-vs-rest macro AUC."""
+    logits = logits.detach().float().cpu()
+    labels = labels.detach().long().cpu()
+    prediction = logits.argmax(dim=-1)
+
+    per_class_accuracy = []
+    auc_values = []
+    probs = torch.softmax(logits, dim=-1)
+
+    for class_id in range(class_count):
+        positive_mask = labels == class_id
+        if bool(positive_mask.any()):
+            per_class_accuracy.append(
+                (prediction[positive_mask] == labels[positive_mask])
+                .float()
+                .mean()
+            )
+
+        positive = probs[positive_mask, class_id]
+        negative = probs[~positive_mask, class_id]
+        if positive.numel() and negative.numel():
+            comparisons = positive[:, None] - negative[None, :]
+            auc = (
+                (comparisons > 0).float().mean()
+                + 0.5 * (comparisons == 0).float().mean()
+            )
+            auc_values.append(auc)
+
+    return {
+        "ce": float(F.cross_entropy(logits, labels).item()),
+        "accuracy": float(
+            (prediction == labels).float().mean().item()
+        ),
+        "macro_accuracy": float(
+            torch.stack(per_class_accuracy).mean().item()
+        ) if per_class_accuracy else 0.0,
+        "macro_auc": float(
+            torch.stack(auc_values).mean().item()
+        ) if auc_values else None,
+    }
+
+
+def run_controller_oof_cv(
+    *,
+    samples: Sequence[dict],
+    emotion_names: Sequence[str],
+    frozen_sample_cache: Dict[Tuple[str, str], dict],
+    output_weight: torch.Tensor,
+    eos_id: int,
+    device: torch.device,
+    rank: int,
+    max_log_odds_shift: float,
+    prefix_log_ratio_budget: float,
+    preference_beta: float,
+    lr: float,
+    weight_decay: float,
+    steps: int,
+    seed: int,
+) -> dict:
+    """Train fresh controllers per fold and aggregate true OOF predictions."""
+    eligible_samples = [
+        sample
+        for sample in samples
+        if (
+            float(
+                frozen_sample_cache[
+                    (sample["reference"], sample["name"])
+                ]["coverage"]
+            )
+            > 0.0
+        )
+    ]
+    labels = [
+        int(sample["emotion_id"])
+        for sample in eligible_samples
+    ]
+    class_count = len(emotion_names)
+
+    try:
+        folds = stratified_kfold_indices(
+            labels,
+            max_folds=5,
+            seed=seed,
+        )
+    except EmotionPipelineError:
+        return {
+            "status": "insufficient_data",
+            "samples": len(eligible_samples),
+            "verdict": "unavailable",
+        }
+
+    oof_logits = torch.full(
+        (len(eligible_samples), class_count),
+        float("nan"),
+        dtype=torch.float32,
+    )
+    fold_metrics = []
+
+    for fold_index, (train_idx, val_idx) in enumerate(folds):
+        fold_seed = seed + 15485863 * (fold_index + 1)
+        torch.manual_seed(fold_seed)
+        fold_rng = random.Random(fold_seed)
+
+        fold_controller = LowRankEmotionPreference(
+            hidden_dim=output_weight.shape[1],
+            num_emotions=class_count,
+            rank=rank,
+            max_log_odds_shift=max_log_odds_shift,
+            prefix_log_ratio_budget=prefix_log_ratio_budget,
+        ).to(device=device, dtype=torch.float32)
+        fold_controller.train()
+        fold_optimizer = torch.optim.AdamW(
+            fold_controller.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+
+        train_by_emotion: Dict[int, List[int]] = defaultdict(list)
+        for index in train_idx:
+            train_by_emotion[labels[index]].append(index)
+
+        accepted = 0
+        attempts = 0
+        max_attempts = max(steps * 10, 100)
+        while accepted < steps and attempts < max_attempts:
+            attempts += 1
+            class_id = fold_rng.randrange(class_count)
+            candidates = train_by_emotion.get(class_id) or []
+            if not candidates:
+                continue
+            sample_index = fold_rng.choice(candidates)
+            sample = eligible_samples[sample_index]
+            prepared = frozen_sample_cache[
+                (sample["reference"], sample["name"])
+            ]
+            if float(prepared["coverage"]) <= 0.0:
+                continue
+
+            prepared_device = controller_sample_to_device(
+                prepared,
+                device,
+            )
+            score_tensor = vectorized_sequence_relative_scores(
+                controller=fold_controller,
+                hidden=prepared_device["hidden"],
+                base_probs=prepared_device["base_probs"],
+                target_semantic=prepared_device["target_semantic"],
+                valid_mask=prepared_device["valid_mask"],
+                output_weight=output_weight,
+                eos_id=eos_id,
+            )
+            if score_tensor is None or not score_tensor.requires_grad:
+                continue
+
+            target = torch.tensor(
+                [labels[sample_index]],
+                dtype=torch.long,
+                device=device,
+            )
+            loss = F.cross_entropy(
+                preference_beta * score_tensor.unsqueeze(0),
+                target,
+            )
+            fold_optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                fold_controller.parameters(),
+                max_norm=1.0,
+            )
+            fold_optimizer.step()
+            accepted += 1
+
+        if accepted < steps:
+            return {
+                "status": "training_failed",
+                "fold": fold_index,
+                "accepted_steps": accepted,
+                "requested_steps": steps,
+                "samples": len(eligible_samples),
+                "verdict": "unavailable",
+            }
+
+        fold_logits = []
+        fold_targets = []
+        fold_controller.eval()
+        with torch.no_grad():
+            for sample_index in val_idx:
+                sample = eligible_samples[sample_index]
+                prepared = frozen_sample_cache[
+                    (sample["reference"], sample["name"])
+                ]
+                prepared_device = controller_sample_to_device(
+                    prepared,
+                    device,
+                )
+                score_tensor = vectorized_sequence_relative_scores(
+                    controller=fold_controller,
+                    hidden=prepared_device["hidden"],
+                    base_probs=prepared_device["base_probs"],
+                    target_semantic=prepared_device["target_semantic"],
+                    valid_mask=prepared_device["valid_mask"],
+                    output_weight=output_weight,
+                    eos_id=eos_id,
+                )
+                if score_tensor is None:
+                    continue
+                logits = (
+                    preference_beta * score_tensor.detach().cpu()
+                )
+                oof_logits[sample_index] = logits
+                fold_logits.append(logits)
+                fold_targets.append(labels[sample_index])
+
+        if fold_logits:
+            fold_metrics.append(
+                _classification_metrics(
+                    torch.stack(fold_logits),
+                    torch.tensor(fold_targets),
+                    class_count,
+                )
+            )
+
+        del fold_controller, fold_optimizer
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    complete = torch.isfinite(oof_logits).all(dim=1)
+    if not bool(complete.any()):
+        return {
+            "status": "no_oof_predictions",
+            "samples": len(eligible_samples),
+            "verdict": "unavailable",
+        }
+
+    final_logits = oof_logits[complete]
+    final_labels = torch.tensor(labels, dtype=torch.long)[complete]
+    metrics = _classification_metrics(
+        final_logits,
+        final_labels,
+        class_count,
+    )
+    random_ce = math.log(class_count)
+    verdict = (
+        "generalization_detected"
+        if metrics["ce"] < random_ce - 0.03
+        else "near_chance"
+    )
+    return {
+        "status": "ok",
+        "samples": int(complete.sum().item()),
+        "folds": len(folds),
+        "training_steps_per_fold": steps,
+        "random_ce": random_ce,
+        "oof_ce": metrics["ce"],
+        "oof_accuracy": metrics["accuracy"],
+        "oof_macro_accuracy": metrics["macro_accuracy"],
+        "oof_macro_auc": metrics["macro_auc"],
+        "fold_metrics": fold_metrics,
+        "verdict": verdict,
+    }
+
 
 def save_checkpoint(
     controller: LowRankEmotionPreference,
