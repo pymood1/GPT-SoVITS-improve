@@ -190,7 +190,10 @@ def validate_complete_outputs(
     missing_hubert = sorted(
         name
         for name in expected
-        if not (output_dir / "4-cnhubert" / f"{name}.pt").is_file()
+        if (
+            not (output_dir / "4-cnhubert" / f"{name}.pt").is_file()
+            or (output_dir / "4-cnhubert" / f"{name}.pt").stat().st_size == 0
+        )
     )
     if missing_hubert:
         problems.append(
@@ -201,7 +204,10 @@ def validate_complete_outputs(
     missing_wav32k = sorted(
         name
         for name in expected
-        if not (output_dir / "5-wav32k" / name).is_file()
+        if (
+            not (output_dir / "5-wav32k" / name).is_file()
+            or (output_dir / "5-wav32k" / name).stat().st_size == 0
+        )
     )
     if missing_wav32k:
         problems.append(
