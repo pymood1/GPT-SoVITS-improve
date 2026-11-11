@@ -1857,7 +1857,22 @@ def main() -> int:
     else:
         likely_bottleneck = "inconclusive"
 
+    training_passed = (
+        controller_signal == "generalization_detected"
+    )
+    result_reason = (
+        "validation CE beat the random ln(K) baseline by at least 0.03"
+        if training_passed
+        else (
+            "validation stayed near the random ln(K) baseline; "
+            f"likely_bottleneck={likely_bottleneck}"
+        )
+    )
+
     training_diagnosis = {
+        "passed": training_passed,
+        "result": "PASS" if training_passed else "FAIL",
+        "result_reason": result_reason,
         "random_ce": random_ce,
         "best_validation_loss": (
             final_best_loss
@@ -1868,9 +1883,9 @@ def main() -> int:
         "probe_verdict": probe_verdict,
         "likely_bottleneck": likely_bottleneck,
         "rule": (
-            "best val CE must beat ln(K) by at least 0.03 to count as "
-            "controller generalization; otherwise the frozen-S1 probe "
-            "determines which side is more suspicious"
+            "PASS only when best validation CE beats ln(K) by at least "
+            "0.03; otherwise FAIL and use the frozen-S1 probe to identify "
+            "the more likely bottleneck"
         ),
     }
     args.training_diagnosis = training_diagnosis
@@ -1894,6 +1909,10 @@ def main() -> int:
         f"controller={controller_signal} "
         f"probe={probe_verdict} "
         f"likely_bottleneck={likely_bottleneck}"
+    )
+    print(
+        f"[RESULT] {'PASS' if training_passed else 'FAIL'} "
+        f"| {result_reason}"
     )
 
     controller.eval()
@@ -1919,6 +1938,7 @@ def main() -> int:
         f"{representation_probe.get('macro_accuracy_mean', float('nan')):.2%} "
         f"| probe_perm="
         f"{representation_probe.get('permutation_macro_accuracy_mean', float('nan')):.2%} "
+        f"| result={'PASS' if training_passed else 'FAIL'} "
         f"| diagnosis={likely_bottleneck} "
         f"| cache_hits={cache_hits} "
         f"| cache_misses={cache_misses} "
