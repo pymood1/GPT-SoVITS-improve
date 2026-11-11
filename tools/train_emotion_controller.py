@@ -591,40 +591,48 @@ def save_checkpoint(
     step: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    save_emotion_controller_checkpoint(
-        controller,
-        str(path),
-        emotion_names=emotion_names,
-        extra={
-            "step": step,
-            "s1_checkpoint": str(
-                Path(args.s1_checkpoint).resolve()
-            ),
-            "s1_sha256": args.s1_sha256,
-            "semantic_s2_sha256": args.s2_sha256,
-            "s2_sha256": args.s2_sha256,  # legacy reader compatibility
-            "feature_dir": str(Path(args.feature_dir).resolve()),
-            "feature_build_manifest": (
-                str(Path(args.feature_build_manifest).resolve())
-                if args.feature_build_manifest
-                else None
-            ),
-            "metadata": str(Path(args.metadata).resolve()),
-            "reference_prompt_cache": (
-                str(Path(args.reference_prompt_cache).resolve())
-                if args.reference_prompt_cache
-                else None
-            ),
-            "top_k": args.top_k,
-            "top_p": args.top_p,
-            "temperature": args.temperature,
-            "repetition_penalty": args.repetition_penalty,
-            "min_support_coverage": args.min_support_coverage,
-            "training_mode": "balanced_emotion_multiclass_v2",
-            "version": args.version,
-            "neutral_is_base": True,
-        },
+    temp_path = path.with_name(
+        f".{path.name}.tmp-{os.getpid()}"
     )
+    try:
+        save_emotion_controller_checkpoint(
+            controller,
+            str(temp_path),
+            emotion_names=emotion_names,
+            extra={
+                "step": step,
+                "s1_checkpoint": str(
+                    Path(args.s1_checkpoint).resolve()
+                ),
+                "s1_sha256": args.s1_sha256,
+                "semantic_s2_sha256": args.s2_sha256,
+                "s2_sha256": args.s2_sha256,
+                "feature_dir": str(Path(args.feature_dir).resolve()),
+                "feature_build_manifest": (
+                    str(Path(args.feature_build_manifest).resolve())
+                    if args.feature_build_manifest
+                    else None
+                ),
+                "metadata": str(Path(args.metadata).resolve()),
+                "reference_prompt_cache": (
+                    str(Path(args.reference_prompt_cache).resolve())
+                    if args.reference_prompt_cache
+                    else None
+                ),
+                "top_k": args.top_k,
+                "top_p": args.top_p,
+                "temperature": args.temperature,
+                "repetition_penalty": args.repetition_penalty,
+                "min_support_coverage": args.min_support_coverage,
+                "training_mode": "balanced_emotion_multiclass_v2",
+                "version": args.version,
+                "neutral_is_base": True,
+            },
+        )
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def main() -> int:
