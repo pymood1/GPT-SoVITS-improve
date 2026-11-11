@@ -566,6 +566,16 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
         args.refresh,
     )
 
+    usable_predictions = sum(
+        bool(row.get("emotion_scores"))
+        and not row.get("emotion_prediction_error")
+        for row in rows
+    )
+    if usable_predictions == 0:
+        raise AutoEmotionError(
+            "emotion classification failed for every audio sample"
+        )
+
     speaker_baselines = assign_speaker_relative_labels(
         rows,
         allowed_emotions,
@@ -640,6 +650,7 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
         "calibration": "speaker_relative_clr_median_v2",
         "allowed_emotions": sorted(allowed_emotions),
         "samples": len(rows),
+        "usable_predictions": usable_predictions,
         "prediction_reused": reused,
         "prediction_new": predicted,
         "prediction_counts": dict(prediction_counts),
