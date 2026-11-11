@@ -37,7 +37,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
 from AR.models.emotion_control import (  # noqa: E402
-    EmotionSamplingState,
     LowRankEmotionPreference,
     save_emotion_controller_checkpoint,
     sha256_file,
@@ -572,6 +571,7 @@ def sequence_relative_score_prepared(
     emotion_id: int,
     device: torch.device,
 ) -> Optional[torch.Tensor]:
+    """Vectorized equivalent of sequential controller probability scoring."""
     hidden = prepared["hidden"].to(
         device=device,
         dtype=torch.float32,
@@ -581,7 +581,10 @@ def sequence_relative_score_prepared(
         dtype=torch.float32,
     )
     target_semantic = prepared["target_semantic"]
-    valid_mask = prepared["valid_mask"]
+    valid_mask_list = prepared["valid_mask"]
+
+    if not target_semantic:
+        return None
 
     preference_scores = controller.preference_scores(
         hidden_state=hidden,
@@ -590,37 +593,145 @@ def sequence_relative_score_prepared(
         vocab_size=base_probs.shape[-1],
     )
 
-    state = EmotionSamplingState()
-    ratios: List[torch.Tensor] = []
+    support = base_probs > 0
+    support_count = support.sum(dim=-1)
+    finite_rows = (
+        torch.isfinite(base_probs).all(dim=-1)
+        & torch.isfinite(preference_scores).all(dim=-1)
+    )
 
-    for target_offset, token in enumerate(target_semantic):
-        if not valid_mask[target_offset]:
+    eos_present = (
+        support[:, eos_id]
+        if 0 <= eos_id < base_probs.shape[-1]
+        else torch.zeros(
+            base_probs.shape[0],
+            dtype=torch.bool,
+            device=device,
+        )
+    )
+    eos_mass = (
+        base_probs[:, eos_id]
+        if 0 <= eos_id < base_probs.shape[-1]
+        else torch.zeros(
+            base_probs.shape[0],
+            dtype=base_probs.dtype,
+            device=device,
+        )
+    )
+
+    non_eos_support = support.clone()
+    if 0 <= eos_id < base_probs.shape[-1]:
+        non_eos_support[:, eos_id] = False
+
+    delta = torch.clamp(
+        preference_scores,
+        min=-controller.max_log_odds_shift,
+        max=controller.max_log_odds_shift,
+    )
+    delta = torch.where(
+        support,
+        delta,
+        torch.zeros_like(delta),
+    )
+
+    weighted = torch.where(
+        non_eos_support,
+        base_probs * torch.exp(delta),
+        torch.zeros_like(base_probs),
+    )
+    denom = weighted.sum(dim=-1)
+
+    structurally_active = (
+        finite_rows
+        & (support_count > 1)
+        & (non_eos_support.sum(dim=-1) > 0)
+        & torch.isfinite(denom)
+        & (denom > 0)
+    )
+
+    target_ids = torch.tensor(
+        target_semantic,
+        dtype=torch.long,
+        device=device,
+    )
+    target_base = base_probs.gather(
+        1,
+        target_ids.unsqueeze(1),
+    ).squeeze(1)
+    target_delta = delta.gather(
+        1,
+        target_ids.unsqueeze(1),
+    ).squeeze(1)
+
+    target_is_eos = (
+        (target_ids == eos_id)
+        & eos_present
+    )
+    non_eos_target_prob = (
+        (1.0 - eos_mass)
+        * target_base
+        * torch.exp(target_delta)
+        / denom.clamp_min(1e-30)
+    )
+    steered_target = torch.where(
+        target_is_eos,
+        eos_mass,
+        non_eos_target_prob,
+    )
+    steered_target = torch.where(
+        structurally_active,
+        steered_target,
+        target_base,
+    )
+
+    raw_ratio = (
+        torch.log(steered_target.clamp_min(1e-12))
+        - torch.log(target_base.clamp_min(1e-12))
+    )
+
+    valid_mask = torch.tensor(
+        valid_mask_list,
+        dtype=torch.bool,
+        device=device,
+    )
+    if not torch.any(valid_mask):
+        return None
+
+    # The prefix budget is sequential, but deciding whether a row remains
+    # active does not need GPU kernels. Compute that tiny control flow from
+    # detached ratios and keep gradients on the selected raw_ratio values.
+    budget_mask = torch.zeros(
+        len(target_semantic),
+        dtype=raw_ratio.dtype,
+        device=device,
+    )
+    cumulative = 0.0
+    detached_ratios = raw_ratio.detach().cpu().tolist()
+
+    for index, is_valid in enumerate(valid_mask_list):
+        if not is_valid:
             continue
 
-        p0 = base_probs[target_offset : target_offset + 1]
-        steered, state = controller.tilt_probabilities(
-            base_probs=p0,
-            preference_scores=preference_scores[
-                target_offset : target_offset + 1
-            ],
-            strength=1.0,
-            eos_id=eos_id,
-            state=state,
-        )
-        base_token_prob = p0[0, token].clamp_min(1e-12)
-        steered_token_prob = steered[0, token].clamp_min(1e-12)
-        log_ratio = (
-            torch.log(steered_token_prob)
-            - torch.log(base_token_prob)
-        )
-        ratios.append(log_ratio)
-        state.cumulative_log_ratio = (
-            state.cumulative_log_ratio + log_ratio.detach()
-        )
+        if controller.prefix_log_ratio_budget > 0:
+            remaining = (
+                controller.prefix_log_ratio_budget
+                - abs(cumulative)
+            )
+            is_active = (
+                remaining
+                >= 2.0 * controller.max_log_odds_shift
+            )
+        else:
+            is_active = True
 
-    if not ratios:
+        if is_active:
+            budget_mask[index] = 1.0
+            cumulative += float(detached_ratios[index])
+
+    ratios = (raw_ratio * budget_mask)[valid_mask]
+    if ratios.numel() == 0:
         return None
-    return torch.stack(ratios).mean()
+    return ratios.mean()
 
 def build_single_sample_batch(
     store: FeatureStore,
