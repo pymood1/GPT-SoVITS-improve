@@ -338,6 +338,7 @@ def main() -> int:
         import torch
 
         from text.multilingual_bert import (
+            ALIGNMENT_VERSION,
             checkpoint_multilingual_bert_config,
         )
 
@@ -374,6 +375,11 @@ def main() -> int:
 
     text_features = {
         "multilingual_bert": use_multilingual_bert,
+        "multilingual_bert_alignment": (
+            ALIGNMENT_VERSION
+            if use_multilingual_bert
+            else None
+        ),
         "multilingual_bert_model": (
             multilingual_bert_model
             if use_multilingual_bert
