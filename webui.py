@@ -4944,7 +4944,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 interactive=True,
                             )
                             emotion_steps = gr.Number(
-                                label="최대 학습 steps",
+                                label="기본 학습 steps (val 기반 자동 연장)",
                                 value=500,
                                 minimum=100,
                                 precision=0,
