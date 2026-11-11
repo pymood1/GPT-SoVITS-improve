@@ -353,10 +353,60 @@ def _nonempty_line_count(path):
         return sum(1 for line in handle if line.strip())
 
 
-def _text_preprocess_cache_valid(path_text, inp_text):
+def _text_feature_config(
+    use_multilingual_bert,
+    multilingual_bert_model,
+):
+    enabled = bool(use_multilingual_bert)
+    return {
+        "format_version": 1,
+        "multilingual_bert": enabled,
+        "multilingual_bert_model": (
+            str(multilingual_bert_model).strip()
+            if enabled
+            else None
+        ),
+    }
+
+
+def _write_text_feature_config(
+    path_text,
+    use_multilingual_bert,
+    multilingual_bert_model,
+):
+    marker = Path(path_text).parent / "text_feature_config.json"
+    payload = _text_feature_config(
+        use_multilingual_bert,
+        multilingual_bert_model,
+    )
+    temp = marker.with_name(f".{marker.name}.tmp-{os.getpid()}")
+    temp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temp, marker)
+
+
+def _text_preprocess_cache_valid(
+    path_text,
+    inp_text,
+    feature_config=None,
+):
     output_count = _nonempty_line_count(path_text)
     input_count = _nonempty_line_count(inp_text)
-    return input_count > 0 and output_count == input_count
+    if not (input_count > 0 and output_count == input_count):
+        return False
+    if feature_config is None:
+        return True
+
+    marker = Path(path_text).parent / "text_feature_config.json"
+    if not marker.is_file():
+        return False
+    try:
+        current = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return current == feature_config
 
 
 def _resolve_repo_path(value):
