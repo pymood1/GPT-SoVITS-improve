@@ -2589,7 +2589,7 @@ def stop_gpt_then_sovits():
         close1Ba()
 
     return (
-        "### GPT → SoVITS 연속 학습 중지됨",
+        process_info(process_name_train_sequence, "closed"),
         {"__type__": "update", "visible": True},
         {"__type__": "update", "visible": False},
     )
