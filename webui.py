@@ -2516,7 +2516,15 @@ preprocess_1a_cancel_requested = False
 process_name_1a = i18n("文本分词与特征提取")
 
 
-def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
+def open1a(
+    inp_text,
+    inp_wav_dir,
+    exp_name,
+    gpu_numbers,
+    bert_pretrained_dir,
+    use_multilingual_bert,
+    multilingual_bert_model,
+):
     global ps1a
     global preprocess_1a_cancel_requested
 
@@ -2558,6 +2566,8 @@ def open1a(inp_text, inp_wav_dir, exp_name, gpu_numbers, bert_pretrained_dir):
         "exp_name": exp_name,
         "opt_dir": opt_dir,
         "bert_pretrained_dir": bert_pretrained_dir,
+        "use_multilingual_bert": str(bool(use_multilingual_bert)),
+        "multilingual_bert_model": str(multilingual_bert_model),
     }
     gpu_names = gpu_numbers.split("-")
     all_parts = len(gpu_names)
@@ -3889,6 +3899,28 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                     lines=2,
                                 )
                             with gr.Row():
+                                use_multilingual_bert = gr.Checkbox(
+                                    label=(
+                                        "영어·한국어 multilingual BERT 사용 "
+                                        "(새 GPT/S1 파인튜닝용)"
+                                    ),
+                                    value=False,
+                                    interactive=True,
+                                )
+                                multilingual_bert_model = gr.Textbox(
+                                    label="영어·한국어 BERT 모델",
+                                    value=(
+                                        "google-bert/"
+                                        "bert-base-multilingual-cased"
+                                    ),
+                                    interactive=True,
+                                )
+                            gr.Markdown(
+                                "기존 GPT/S1은 비중국어를 0벡터로 학습했으므로 "
+                                "이 옵션은 **새로 GPT/S1을 파인튜닝할 때만** "
+                                "사용하세요."
+                            )
+                            with gr.Row():
                                 button1a_open = gr.Button(
                                     value=process_info(process_name_1a, "open"), variant="primary", visible=True
                                 )
@@ -4150,7 +4182,15 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
     
                 button1a_open.click(
                     open1a,
-                    [inp_text, inp_wav_dir, exp_name, gpu_numbers1a, bert_pretrained_dir],
+                    [
+                        inp_text,
+                        inp_wav_dir,
+                        exp_name,
+                        gpu_numbers1a,
+                        bert_pretrained_dir,
+                        use_multilingual_bert,
+                        multilingual_bert_model,
+                    ],
                     [info1a, button1a_open, button1a_close],
                 )
                 button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
