@@ -3610,6 +3610,167 @@ def close1abc():
     )
 
 
+preprocess_1abcd_cancel_requested = False
+process_name_1abcd = "전처리 a → b → c → d"
+
+
+def open1abcd(
+    version,
+    inp_text,
+    inp_wav_dir,
+    exp_name,
+    gpu_numbers1a,
+    gpu_numbers1Ba,
+    gpu_numbers1c,
+    bert_pretrained_dir,
+    use_multilingual_bert,
+    multilingual_bert_model,
+    ssl_pretrained_dir,
+    pretrained_s2G_path,
+    emotion_sidecar,
+    emotion_dataset_id,
+    emotion_auto_model,
+    emotion_auto_confidence,
+    emotion_auto_device,
+):
+    global preprocess_1abcd_cancel_requested
+
+    preprocess_1abcd_cancel_requested = False
+    sidecar_update = {"__type__": "update"}
+
+    yield (
+        "### 전처리 일괄 실행\n\n**a → b → c 실행 중**",
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        sidecar_update,
+    )
+
+    abc_finished = False
+    for result in open1abc(
+        version,
+        inp_text,
+        inp_wav_dir,
+        exp_name,
+        gpu_numbers1a,
+        gpu_numbers1Ba,
+        gpu_numbers1c,
+        bert_pretrained_dir,
+        use_multilingual_bert,
+        multilingual_bert_model,
+        ssl_pretrained_dir,
+        pretrained_s2G_path,
+    ):
+        if preprocess_1abcd_cancel_requested:
+            return
+
+        child_status = result[0] if result else ""
+        abc_finished = (
+            child_status
+            == process_info(process_name_1abc, "finish")
+        )
+        yield (
+            "### 전처리 일괄 실행\n\n"
+            f"**a → b → c**\n\n{child_status}",
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            sidecar_update,
+        )
+
+    if not abc_finished:
+        yield (
+            "### 전처리 일괄 실행 실패\n\n"
+            "a/b/c 중 하나가 완료되지 않아 d 단계는 실행하지 않습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            sidecar_update,
+        )
+        return
+
+    if preprocess_1abcd_cancel_requested:
+        return
+
+    yield (
+        "### 전처리 일괄 실행\n\n"
+        "a → b → c 완료. **d 감정 라벨 생성 중**",
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        sidecar_update,
+    )
+
+    d_finished = False
+    for result in run_auto_emotion_sidecar(
+        inp_text,
+        inp_wav_dir,
+        emotion_sidecar,
+        emotion_dataset_id,
+        emotion_auto_model,
+        emotion_auto_confidence,
+        emotion_auto_device,
+    ):
+        if preprocess_1abcd_cancel_requested:
+            return
+
+        child_status = result[0] if result else ""
+        child_sidecar = (
+            result[1]
+            if len(result) > 1
+            else {"__type__": "update"}
+        )
+        if (
+            isinstance(child_sidecar, dict)
+            and child_sidecar.get("value")
+        ):
+            sidecar_update = child_sidecar
+            d_finished = True
+
+        yield (
+            "### 전처리 일괄 실행\n\n"
+            f"a → b → c 완료\n\n**d 단계**\n\n{child_status}",
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            sidecar_update,
+        )
+
+    if not d_finished:
+        yield (
+            "### 전처리 일괄 실행 실패\n\n"
+            "d 감정 sidecar가 생성되지 않았습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            sidecar_update,
+        )
+        return
+
+    yield (
+        "### 전처리 일괄 실행 완료\n\n"
+        "**a → b → c → d 전부 완료했습니다.**",
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+        sidecar_update,
+    )
+
+
+def close1abcd():
+    global preprocess_1abcd_cancel_requested
+
+    preprocess_1abcd_cancel_requested = True
+
+    if ps1abc:
+        close1abc()
+
+    if (
+        p_emotion_training is not None
+        and p_emotion_training.poll() is None
+    ):
+        stop_emotion_training()
+
+    return (
+        "### 전처리 일괄 실행 중지됨",
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
+
+
 def switch_version(version_):
     os.environ["version"] = version_
     global version
