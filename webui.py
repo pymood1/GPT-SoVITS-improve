@@ -2455,7 +2455,7 @@ def run_gpt_then_sovits(
     gpt_update = {"__type__": "update"}
 
     yield (
-        "### GPT → SoVITS 연속 학습\n\n**GPT 학습 시작**",
+        process_info(process_name_gpt, "open"),
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
         sovits_update,
@@ -2489,8 +2489,7 @@ def run_gpt_then_sovits(
             == process_info(process_name_gpt, "finish")
         )
         yield (
-            "### GPT → SoVITS 연속 학습\n\n"
-            f"**GPT 단계**\n\n{child_status}",
+            child_status,
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
             sovits_update,
@@ -2499,8 +2498,7 @@ def run_gpt_then_sovits(
 
     if not gpt_finished:
         yield (
-            "### GPT → SoVITS 연속 학습 실패\n\n"
-            "GPT 학습이 완료되지 않아 SoVITS는 시작하지 않습니다.",
+            process_info(process_name_gpt, "failed"),
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             sovits_update,
@@ -2512,8 +2510,7 @@ def run_gpt_then_sovits(
         return
 
     yield (
-        "### GPT → SoVITS 연속 학습\n\n"
-        "GPT 완료. **SoVITS 학습 시작**",
+        process_info(process_name_sovits, "open"),
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
         sovits_update,
@@ -2549,9 +2546,7 @@ def run_gpt_then_sovits(
             == process_info(process_name_sovits, "finish")
         )
         yield (
-            "### GPT → SoVITS 연속 학습\n\n"
-            "GPT 완료\n\n"
-            f"**SoVITS 단계**\n\n{child_status}",
+            child_status,
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
             sovits_update,
@@ -2560,8 +2555,7 @@ def run_gpt_then_sovits(
 
     if not sovits_finished:
         yield (
-            "### GPT → SoVITS 연속 학습 실패\n\n"
-            "GPT는 완료됐지만 SoVITS 학습이 완료되지 않았습니다.",
+            process_info(process_name_sovits, "failed"),
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             sovits_update,
@@ -2570,14 +2564,12 @@ def run_gpt_then_sovits(
         return
 
     yield (
-        "### GPT → SoVITS 연속 학습 완료\n\n"
-        "**GPT → SoVITS 순서로 전부 완료했습니다.**",
+        process_info(process_name_train_sequence, "finish"),
         {"__type__": "update", "visible": True},
         {"__type__": "update", "visible": False},
         sovits_update,
         gpt_update,
     )
-
 
 def stop_gpt_then_sovits():
     global training_sequence_cancel_requested
