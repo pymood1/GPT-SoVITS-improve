@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.auto_emotion_sidecar import assign_speaker_relative_labels
+from tools.emotion_dataset_builder import parse_list_line, sidecar_for
 from tools.emotion_training_pipeline import create_reference_map
 from tools.run_emotion_v5_preprocess import (
     PreprocessError,
@@ -46,6 +47,41 @@ class PreprocessCompletenessTests(unittest.TestCase):
             (root / "4-cnhubert" / "b.wav.pt").unlink()
             with self.assertRaises(PreprocessError):
                 validate_complete_outputs(root, names)
+
+
+
+class DatasetParsingTests(unittest.TestCase):
+    def test_transcript_may_contain_pipe_character(self):
+        wav, speaker, language, text_value = parse_list_line(
+            "audio.wav|speaker|ko|앞부분|뒷부분",
+            1,
+        )
+        self.assertEqual(wav, "audio.wav")
+        self.assertEqual(speaker, "speaker")
+        self.assertEqual(language, "ko")
+        self.assertEqual(text_value, "앞부분|뒷부분")
+
+    def test_unique_basename_sidecar_fallback(self):
+        sidecar = {
+            "audio.wav": {
+                "emotion_intended": "happy",
+            }
+        }
+        matched = sidecar_for(
+            sidecar,
+            "/old/location/audio.wav",
+            Path("/new/location/audio.wav"),
+            basename_is_unique=True,
+        )
+        self.assertEqual(matched["emotion_intended"], "happy")
+
+        ambiguous = sidecar_for(
+            sidecar,
+            "/old/location/audio.wav",
+            Path("/new/location/audio.wav"),
+            basename_is_unique=False,
+        )
+        self.assertEqual(ambiguous, {})
 
 
 class ReferenceSelectionTests(unittest.TestCase):
