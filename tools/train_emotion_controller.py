@@ -82,7 +82,12 @@ def read_semantics(path: Path) -> Dict[str, List[int]]:
             name, values = parts
             if name in result:
                 raise TrainingDataError(f"duplicate semantic item: {name}")
-            result[name] = [int(value) for value in values.split()]
+            semantic_ids = [int(value) for value in values.split()]
+            if not semantic_ids:
+                raise TrainingDataError(
+                    f"{path}:{line_number}: empty semantic token sequence"
+                )
+            result[name] = semantic_ids
     return result
 
 
@@ -93,7 +98,7 @@ def read_phone_rows(path: Path, version: str) -> Dict[str, dict]:
             line = line.rstrip("\r\n")
             if not line:
                 continue
-            parts = line.split("\t")
+            parts = line.split("\t", 3)
             if len(parts) != 4:
                 raise TrainingDataError(
                     f"{path}:{line_number}: expected 4 tab-separated fields"
