@@ -61,7 +61,50 @@ class LowRankEmotionPreference(nn.Module):
         self.u_proj = nn.Parameter(torch.zeros(self.hidden_dim, self.rank))
         self.emotion_coeff = nn.Embedding(self.num_emotions, self.rank)
         nn.init.normal_(self.v_proj, mean=0.0, std=self.hidden_dim ** -0.5)
-        nn.init.normal_(self.emotion_coeff.weight, mean=1.0, std=0.01)
+        self._init_emotion_coeff_simplex()
+
+    def _init_emotion_coeff_simplex(self) -> None:
+        """Break class symmetry while preserving exact zero-effect output.
+
+        u_proj starts at zero, so controller output remains exactly zero for
+        every emotion. The class coefficients themselves are initialized as a
+        centered regular simplex instead of nearly-identical all-ones vectors.
+        This gives the first u_proj update an O(1) class-discriminative signal.
+        """
+        k = self.num_emotions
+        r = self.rank
+
+        if k == 1:
+            with torch.no_grad():
+                self.emotion_coeff.weight.fill_(1.0)
+            return
+
+        if r >= k - 1:
+            centered = torch.eye(k) - torch.full((k, k), 1.0 / k)
+            # Build an orthonormal basis for the sum-zero subspace, then
+            # randomly rotate it into the full rank space. Pairwise geometry
+            # stays that of a regular simplex while all rank dimensions can
+            # participate from the first update.
+            basis, _ = torch.linalg.qr(centered[:, :-1], mode="reduced")
+            coords = centered @ basis
+            rotation, _ = torch.linalg.qr(
+                torch.randn(r, k - 1),
+                mode="reduced",
+            )
+            coeff = coords @ rotation.transpose(0, 1)
+        else:
+            # Exact K-simplex geometry needs rank >= K-1. Fall back to
+            # centered, normalized random directions rather than restoring
+            # the old near-identical initialization.
+            coeff = torch.randn(k, r)
+            coeff = coeff - coeff.mean(dim=0, keepdim=True)
+
+        coeff = coeff / coeff.norm(
+            dim=1,
+            keepdim=True,
+        ).clamp_min(1e-12)
+        with torch.no_grad():
+            self.emotion_coeff.weight.copy_(coeff)
 
     def preference_scores(
         self,
