@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import hashlib
-from typing import Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import torch
 from torch import nn
@@ -192,6 +192,164 @@ class LowRankEmotionPreference(nn.Module):
 
         return result, state
 
+
+
+def vectorized_sequence_relative_score(
+    controller: LowRankEmotionPreference,
+    hidden: torch.Tensor,
+    base_probs: torch.Tensor,
+    target_semantic: Sequence[int],
+    valid_mask: Sequence[bool],
+    output_weight: torch.Tensor,
+    emotion_id: int,
+    eos_id: int,
+) -> Optional[torch.Tensor]:
+    """Match sequential tilt scoring while vectorizing heavy GPU math."""
+    if hidden.ndim != 2 or base_probs.ndim != 2:
+        raise ValueError("hidden/base_probs must be rank-2 tensors")
+    if hidden.shape[0] != base_probs.shape[0]:
+        raise ValueError("hidden/base_probs sequence lengths differ")
+    if len(target_semantic) != hidden.shape[0]:
+        raise ValueError("target semantic length does not match hidden")
+    if len(valid_mask) != hidden.shape[0]:
+        raise ValueError("valid mask length does not match hidden")
+
+    preference_scores = controller.preference_scores(
+        hidden_state=hidden,
+        output_weight=output_weight,
+        emotion_id=emotion_id,
+        vocab_size=base_probs.shape[-1],
+    )
+
+    support = base_probs > 0
+    support_count = support.sum(dim=-1)
+    finite_rows = (
+        torch.isfinite(base_probs).all(dim=-1)
+        & torch.isfinite(preference_scores).all(dim=-1)
+    )
+
+    if 0 <= eos_id < base_probs.shape[-1]:
+        eos_present = support[:, eos_id]
+        eos_mass = base_probs[:, eos_id]
+    else:
+        eos_present = torch.zeros(
+            base_probs.shape[0],
+            dtype=torch.bool,
+            device=base_probs.device,
+        )
+        eos_mass = torch.zeros(
+            base_probs.shape[0],
+            dtype=base_probs.dtype,
+            device=base_probs.device,
+        )
+
+    non_eos_support = support.clone()
+    if 0 <= eos_id < base_probs.shape[-1]:
+        non_eos_support[:, eos_id] = False
+
+    delta = torch.clamp(
+        preference_scores,
+        min=-controller.max_log_odds_shift,
+        max=controller.max_log_odds_shift,
+    )
+    delta = torch.where(
+        support,
+        delta,
+        torch.zeros_like(delta),
+    )
+
+    weighted = torch.where(
+        non_eos_support,
+        base_probs * torch.exp(delta),
+        torch.zeros_like(base_probs),
+    )
+    denom = weighted.sum(dim=-1)
+
+    structurally_active = (
+        finite_rows
+        & (support_count > 1)
+        & (non_eos_support.sum(dim=-1) > 0)
+        & torch.isfinite(denom)
+        & (denom > 0)
+    )
+
+    target_ids = torch.tensor(
+        target_semantic,
+        dtype=torch.long,
+        device=base_probs.device,
+    )
+    target_base = base_probs.gather(
+        1,
+        target_ids.unsqueeze(1),
+    ).squeeze(1)
+    target_delta = delta.gather(
+        1,
+        target_ids.unsqueeze(1),
+    ).squeeze(1)
+
+    target_is_eos = (target_ids == eos_id) & eos_present
+    non_eos_target_prob = (
+        (1.0 - eos_mass)
+        * target_base
+        * torch.exp(target_delta)
+        / denom.clamp_min(1e-30)
+    )
+    steered_target = torch.where(
+        target_is_eos,
+        eos_mass,
+        non_eos_target_prob,
+    )
+    steered_target = torch.where(
+        structurally_active,
+        steered_target,
+        target_base,
+    )
+
+    raw_ratio = (
+        torch.log(steered_target.clamp_min(1e-12))
+        - torch.log(target_base.clamp_min(1e-12))
+    )
+
+    valid_tensor = torch.tensor(
+        valid_mask,
+        dtype=torch.bool,
+        device=base_probs.device,
+    )
+    if not torch.any(valid_tensor):
+        return None
+
+    budget_mask = torch.zeros(
+        len(target_semantic),
+        dtype=raw_ratio.dtype,
+        device=base_probs.device,
+    )
+    cumulative = 0.0
+    detached_ratios = raw_ratio.detach().cpu().tolist()
+
+    for index, is_valid in enumerate(valid_mask):
+        if not is_valid:
+            continue
+
+        if controller.prefix_log_ratio_budget > 0:
+            remaining = (
+                controller.prefix_log_ratio_budget
+                - abs(cumulative)
+            )
+            is_active = (
+                remaining
+                >= 2.0 * controller.max_log_odds_shift
+            )
+        else:
+            is_active = True
+
+        if is_active:
+            budget_mask[index] = 1.0
+            cumulative += float(detached_ratios[index])
+
+    ratios = (raw_ratio * budget_mask)[valid_tensor]
+    if ratios.numel() == 0:
+        return None
+    return ratios.mean()
 
 def sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
     """Hash a checkpoint so tiny controllers cannot silently bind to another model."""
