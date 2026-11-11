@@ -1448,23 +1448,49 @@ def main() -> int:
         best_other = score_tensor[other_mask].max()
         gap = correct_score - best_other
 
+        next_step = accepted_steps + 1
+        should_log_step = (
+            next_step == 1
+            or next_step % args.log_every == 0
+        )
+
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(
+
+        if should_log_step:
+            grad_u_norm = controller.u_proj.grad.detach().norm()
+            grad_c_norm = (
+                controller.emotion_coeff.weight.grad.detach().norm()
+                if controller.emotion_coeff.weight.grad is not None
+                else torch.zeros((), device=device)
+            )
+            score_span = (
+                score_tensor.detach().max()
+                - score_tensor.detach().min()
+            )
+
+        total_grad_norm = torch.nn.utils.clip_grad_norm_(
             controller.parameters(),
             max_norm=1.0,
         )
         optimizer.step()
 
-        accepted_steps += 1
+        accepted_steps = next_step
         running_loss.add_(loss.detach())
         running_gap.add_(gap.detach())
         running_count += 1
 
-        if (
-            accepted_steps == 1
-            or accepted_steps % args.log_every == 0
-        ):
+        if should_log_step:
+            u_norm = controller.u_proj.detach().norm()
+            centered_coeff = (
+                controller.emotion_coeff.weight.detach()
+                - controller.emotion_coeff.weight.detach().mean(
+                    dim=0,
+                    keepdim=True,
+                )
+            )
+            coeff_spread = centered_coeff.norm(dim=1).mean()
+
             if device.type == "cuda":
                 torch.cuda.synchronize()
                 gpu_mem_gib = (
@@ -1485,6 +1511,12 @@ def main() -> int:
                 f"emotion={sample['emotion']} "
                 f"loss={mean_loss:.5f} "
                 f"gap={mean_gap:.5f} "
+                f"score_span={float(score_span.item()):.6f} "
+                f"grad_u={float(grad_u_norm.item()):.4e} "
+                f"grad_c={float(grad_c_norm.item()):.4e} "
+                f"grad_total={float(total_grad_norm.item()):.4e} "
+                f"u_norm={float(u_norm.item()):.4e} "
+                f"c_spread={float(coeff_spread.item()):.4f} "
                 f"coverage={coverage:.2%} "
                 f"cache={'hit' if cache_hit else 'miss'} "
                 f"cache_size={len(frozen_sample_cache)} "
