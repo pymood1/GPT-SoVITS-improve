@@ -151,6 +151,13 @@ class ReferenceSelectionTests(unittest.TestCase):
                 root,
                 [
                     {
+                        "canonical_wav": "neutral_ref.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "neutral",
+                    },
+                    {
                         "canonical_wav": "happy_only.wav",
                         "speaker_uid": "speaker-a",
                         "split": "train",
@@ -192,55 +199,59 @@ class ReferenceSelectionTests(unittest.TestCase):
                     trainable_emotions={"sad"},
                 )
 
-            self.assertIn(
+            self.assertEqual(
                 result["speaker-a"],
-                {"sad_1.wav", "sad_2.wav", "sad_3.wav"},
+                "neutral_ref.wav",
             )
-            self.assertNotEqual(result["speaker-a"], "happy_only.wav")
 
     def test_low_sample_emotion_is_not_auto_detected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            metadata = self._write_metadata(
-                root,
+            rows = []
+
+            for emotion in ("happy", "surprised"):
+                for index in range(3):
+                    rows.append(
+                        {
+                            "canonical_wav": (
+                                f"{emotion}_{index}.wav"
+                            ),
+                            "speaker_uid": "speaker-a",
+                            "split": "train",
+                            "tts_usable": True,
+                            "emotion_intended": emotion,
+                        }
+                    )
+
+            rows.append(
+                {
+                    "canonical_wav": "fearful_1.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "fearful",
+                }
+            )
+            rows.extend(
                 [
                     {
-                        "canonical_wav": "happy_1.wav",
+                        "canonical_wav": "angry_1.wav",
                         "speaker_uid": "speaker-a",
                         "split": "train",
                         "tts_usable": True,
-                        "emotion_intended": "happy",
+                        "emotion_intended": "angry",
                     },
                     {
-                        "canonical_wav": "happy_2.wav",
+                        "canonical_wav": "angry_2.wav",
                         "speaker_uid": "speaker-a",
                         "split": "train",
                         "tts_usable": True,
-                        "emotion_intended": "happy",
+                        "emotion_intended": "angry",
                     },
-                    {
-                        "canonical_wav": "fearful_1.wav",
-                        "speaker_uid": "speaker-a",
-                        "split": "train",
-                        "tts_usable": True,
-                        "emotion_intended": "fearful",
-                    },
-                    {
-                        "canonical_wav": "surprised_1.wav",
-                        "speaker_uid": "speaker-a",
-                        "split": "train",
-                        "tts_usable": True,
-                        "emotion_intended": "surprised",
-                    },
-                    {
-                        "canonical_wav": "surprised_2.wav",
-                        "speaker_uid": "speaker-a",
-                        "split": "train",
-                        "tts_usable": True,
-                        "emotion_intended": "surprised",
-                    },
-                ],
+                ]
             )
+
+            metadata = self._write_metadata(root, rows)
 
             self.assertEqual(
                 detect_pair_emotions(metadata),
