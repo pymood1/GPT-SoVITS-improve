@@ -188,7 +188,7 @@ python tools/train_emotion_controller.py \
   --output output/emotion_opt/example/example_emotion_controller.pt \
   --emotions happy,sad,angry \
   --version v5dev \
-  --steps 1000
+  --steps 500
 ```
 
 Neutral/default is the unmodified base distribution and is not a controller ID.
@@ -198,6 +198,14 @@ Each labeled utterance is evaluated against every configured emotion direction
 on its own semantic sequence. Training chooses an emotion class uniformly and
 then samples an utterance from that class, avoiding majority-class domination.
 The fixed speaker reference is never reused as a training target.
+
+The default controller run uses at most 500 accepted steps. Each retained
+emotion needs at least three usable samples: a deterministic 20% per-emotion
+hold-out is reserved for validation while at least two samples remain in
+training. Every 100 accepted steps the trainer reports class-balanced
+validation loss, accuracy and gap. The best validation-loss controller is kept,
+and training stops early after two consecutive validations without at least
+0.001 loss improvement.
 
 The checkpoint is bound to the exact S1 SHA-256 and the semantic S2 SHA-256.
 The reference prompt cache must use the same S2 token space as the preprocessing
