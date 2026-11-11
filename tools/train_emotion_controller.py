@@ -45,6 +45,7 @@ from AR.models.t2s_lightning_module import Text2SemanticLightningModule  # noqa:
 from AR.models.utils import logits_to_probs  # noqa: E402
 from text import cleaned_text_to_sequence  # noqa: E402
 from text.multilingual_bert import (  # noqa: E402
+    ALIGNMENT_VERSION,
     MULTILINGUAL_BERT_LANGUAGES,
     checkpoint_multilingual_bert_config,
 )
@@ -780,8 +781,12 @@ def main() -> int:
     )
     args.text_features = {
         "multilingual_bert": use_multilingual_bert,
-        "multilingual_bert_model": (
-            multilingual_bert_model
+        "multilingual_bert_alignment": (
+            ALIGNMENT_VERSION
+            if use_multilingual_bert
+            else None
+        ),
+        "multilingual_bert_model": (            multilingual_bert_model
             if use_multilingual_bert
             else None
         ),
