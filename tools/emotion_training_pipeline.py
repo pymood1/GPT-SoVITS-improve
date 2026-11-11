@@ -134,6 +134,294 @@ def split_train_validation_samples(
     return train_samples, val_samples
 
 
+def stratified_kfold_indices(
+    labels: Sequence[int],
+    *,
+    max_folds: int = 5,
+    seed: int,
+) -> list[tuple[list[int], list[int]]]:
+    """Build deterministic stratified folds without sklearn."""
+    if max_folds < 2:
+        raise EmotionPipelineError("max_folds must be >= 2")
+    if len(labels) < 2:
+        raise EmotionPipelineError("need at least two samples for k-fold")
+
+    by_label: dict[int, list[int]] = defaultdict(list)
+    for index, label in enumerate(labels):
+        by_label[int(label)].append(index)
+
+    if len(by_label) < 2:
+        raise EmotionPipelineError(
+            "representation probe needs at least two classes"
+        )
+
+    min_class_count = min(len(indices) for indices in by_label.values())
+    fold_count = min(max_folds, min_class_count)
+    if fold_count < 2:
+        raise EmotionPipelineError(
+            "representation probe needs at least two samples per class"
+        )
+
+    split_rng = random.Random(seed + 32452843)
+    fold_validation: list[list[int]] = [
+        [] for _ in range(fold_count)
+    ]
+
+    for label in sorted(by_label):
+        indices = list(by_label[label])
+        split_rng.shuffle(indices)
+        for position, index in enumerate(indices):
+            fold_validation[position % fold_count].append(index)
+
+    all_indices = list(range(len(labels)))
+    folds: list[tuple[list[int], list[int]]] = []
+    for validation in fold_validation:
+        validation = sorted(validation)
+        validation_set = set(validation)
+        training = [
+            index for index in all_indices
+            if index not in validation_set
+        ]
+        folds.append((training, validation))
+
+    return folds
+
+
+def run_mean_pool_linear_probe(
+    features,
+    labels: Sequence[int],
+    emotion_names: Sequence[str],
+    *,
+    seed: int,
+    max_folds: int = 5,
+    permutations: int = 3,
+    steps: int = 120,
+) -> dict:
+    """Cross-validated frozen-representation probe with permutation baseline.
+
+    Torch is imported lazily so the lightweight WebUI orchestration helpers
+    remain importable in environments that do not install the training stack.
+    The probe measures label separability in frozen S1 hidden states. It does
+    not prove that the separable signal is emotion rather than text or another
+    correlated cue.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    labels = [int(label) for label in labels]
+    class_count = len(emotion_names)
+    sample_count = len(labels)
+
+    counts = {
+        str(emotion_names[index]): labels.count(index)
+        for index in range(class_count)
+    }
+    report = {
+        "method": "mean_pool_linear_stratified_cv_v1",
+        "samples": sample_count,
+        "class_counts": counts,
+        "max_folds": int(max_folds),
+        "permutations": int(permutations),
+        "steps": int(steps),
+        "chance_accuracy": (
+            1.0 / class_count if class_count else 0.0
+        ),
+    }
+
+    if (
+        class_count < 2
+        or sample_count != int(features.shape[0])
+        or min(counts.values(), default=0) < 2
+    ):
+        report.update(
+            {
+                "status": "insufficient_data",
+                "verdict": "unavailable",
+            }
+        )
+        return report
+
+    x = features.detach().to(
+        device="cpu",
+        dtype=torch.float32,
+    )
+    if x.ndim != 2 or not torch.isfinite(x).all():
+        report.update(
+            {
+                "status": "invalid_features",
+                "verdict": "unavailable",
+            }
+        )
+        return report
+
+    def _macro_accuracy(logits, target) -> float:
+        prediction = logits.argmax(dim=-1)
+        per_class = []
+        for class_id in range(class_count):
+            mask = target == class_id
+            if bool(mask.any()):
+                per_class.append(
+                    (prediction[mask] == target[mask])
+                    .float()
+                    .mean()
+                )
+        if not per_class:
+            return 0.0
+        return float(torch.stack(per_class).mean().item())
+
+    def _evaluate(label_values: list[int], run_seed: int):
+        folds = stratified_kfold_indices(
+            label_values,
+            max_folds=max_folds,
+            seed=run_seed,
+        )
+        fold_scores: list[float] = []
+
+        y_all = torch.tensor(label_values, dtype=torch.long)
+
+        for fold_index, (train_idx, val_idx) in enumerate(folds):
+            train_index = torch.tensor(train_idx, dtype=torch.long)
+            val_index = torch.tensor(val_idx, dtype=torch.long)
+
+            x_train = x.index_select(0, train_index)
+            x_val = x.index_select(0, val_index)
+            y_train = y_all.index_select(0, train_index)
+            y_val = y_all.index_select(0, val_index)
+
+            mean = x_train.mean(dim=0, keepdim=True)
+            std = x_train.std(
+                dim=0,
+                unbiased=False,
+                keepdim=True,
+            ).clamp_min(1e-3)
+            x_train = (x_train - mean) / std
+            x_val = (x_val - mean) / std
+
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(
+                    run_seed + 1009 * (fold_index + 1)
+                )
+                classifier = torch.nn.Linear(
+                    x.shape[1],
+                    class_count,
+                )
+
+            class_counts = torch.bincount(
+                y_train,
+                minlength=class_count,
+            ).float().clamp_min(1.0)
+            class_weights = (
+                float(y_train.numel())
+                / (class_count * class_counts)
+            )
+
+            optimizer = torch.optim.AdamW(
+                classifier.parameters(),
+                lr=3e-2,
+                weight_decay=5e-2,
+            )
+
+            classifier.train()
+            for _ in range(steps):
+                optimizer.zero_grad(set_to_none=True)
+                logits = classifier(x_train)
+                loss = F.cross_entropy(
+                    logits,
+                    y_train,
+                    weight=class_weights,
+                )
+                loss.backward()
+                optimizer.step()
+
+            classifier.eval()
+            with torch.no_grad():
+                fold_scores.append(
+                    _macro_accuracy(
+                        classifier(x_val),
+                        y_val,
+                    )
+                )
+
+        values = torch.tensor(fold_scores, dtype=torch.float32)
+        return (
+            fold_scores,
+            float(values.mean().item()),
+            float(values.std(unbiased=False).item()),
+        )
+
+    try:
+        folds = stratified_kfold_indices(
+            labels,
+            max_folds=max_folds,
+            seed=seed,
+        )
+    except EmotionPipelineError:
+        report.update(
+            {
+                "status": "insufficient_data",
+                "verdict": "unavailable",
+            }
+        )
+        return report
+
+    real_scores, real_mean, real_std = _evaluate(labels, seed)
+
+    permutation_means: list[float] = []
+    for permutation_index in range(max(permutations, 0)):
+        permuted = list(labels)
+        permutation_rng = random.Random(
+            seed + 49979687 + permutation_index
+        )
+        permutation_rng.shuffle(permuted)
+        _scores, perm_mean, _perm_std = _evaluate(
+            permuted,
+            seed + 86028121 + permutation_index,
+        )
+        permutation_means.append(perm_mean)
+
+    if permutation_means:
+        perm_tensor = torch.tensor(
+            permutation_means,
+            dtype=torch.float32,
+        )
+        permutation_mean = float(perm_tensor.mean().item())
+        permutation_std = float(
+            perm_tensor.std(unbiased=False).item()
+        )
+    else:
+        permutation_mean = report["chance_accuracy"]
+        permutation_std = 0.0
+
+    chance = float(report["chance_accuracy"])
+    delta = real_mean - permutation_mean
+
+    if real_mean >= chance + 0.10 and delta >= 0.10:
+        verdict = "informative"
+    elif real_mean <= chance + 0.05 or delta <= 0.05:
+        verdict = "weak"
+    else:
+        verdict = "uncertain"
+
+    report.update(
+        {
+            "status": "ok",
+            "folds": len(folds),
+            "fold_macro_accuracy": real_scores,
+            "macro_accuracy_mean": real_mean,
+            "macro_accuracy_std": real_std,
+            "permutation_macro_accuracy_mean": permutation_mean,
+            "permutation_macro_accuracy_std": permutation_std,
+            "delta_vs_permutation": delta,
+            "verdict": verdict,
+            "note": (
+                "Separability is diagnostic only; text or other correlated "
+                "cues can also make the probe score above chance."
+            ),
+        }
+    )
+    return report
+
+
 def update_early_stop_state(
     *,
     current_loss: float,
