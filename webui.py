@@ -471,6 +471,9 @@ def _stream_emotion_command(
 
     child_env = os.environ.copy()
     child_env["PYTHONUNBUFFERED"] = "1"
+    child_env.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    child_env.setdefault("ABSL_MIN_LOG_LEVEL", "3")
+    child_env.setdefault("GLOG_minloglevel", "2")
     if cuda_visible_devices is not None:
         child_env["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices)
 
