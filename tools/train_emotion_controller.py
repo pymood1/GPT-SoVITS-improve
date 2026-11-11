@@ -1488,12 +1488,15 @@ def main() -> int:
             f"samples={representation_probe.get('samples', 0)}"
         )
 
-    probe_report_path = output.with_name(
-        f"{output.stem}.probe.json"
+    diagnostics_report_path = output.with_name(
+        f"{output.stem}.diagnostics.json"
     )
-    probe_report_path.write_text(
+    diagnostics_report_path.write_text(
         json.dumps(
-            representation_probe,
+            {
+                "representation_probe": representation_probe,
+                "training_diagnosis": None,
+            },
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -1501,7 +1504,7 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
-    print(f"[probe] saved {probe_report_path}")
+    print(f"[probe] saved {diagnostics_report_path}")
     accepted_steps = 0
     attempts = 0
     training_limit = args.steps
@@ -1848,7 +1851,7 @@ def main() -> int:
     if controller_signal == "generalization_detected":
         likely_bottleneck = "none_obvious"
     elif probe_verdict == "informative":
-        likely_bottleneck = "controller_objective"
+        likely_bottleneck = "controller_objective_or_score_path"
     elif probe_verdict == "weak":
         likely_bottleneck = "representation_or_labels"
     else:
@@ -1871,6 +1874,19 @@ def main() -> int:
         ),
     }
     args.training_diagnosis = training_diagnosis
+    diagnostics_report_path.write_text(
+        json.dumps(
+            {
+                "representation_probe": representation_probe,
+                "training_diagnosis": training_diagnosis,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     print(
         "[diagnosis] "
         f"random_ce={random_ce:.5f} "
