@@ -60,11 +60,11 @@ def normalize_language(language: str) -> str:
 
 
 def parse_list_line(line: str, line_number: int) -> Tuple[str, str, str, str]:
-    parts = line.split("|")
+    parts = line.split("|", 3)
     if len(parts) != 4:
         raise DatasetError(
-            f"Line {line_number}: expected exactly 4 pipe-separated fields, got {len(parts)}. "
-            "The transcript/path/speaker must not contain '|'."
+            f"Line {line_number}: expected 4 pipe-separated fields. "
+            "The wav path, speaker and language fields must not contain '|'."
         )
     wav, speaker, language, text = parts
     if not wav.strip() or not speaker.strip() or not language.strip() or not text.strip():
