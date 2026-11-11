@@ -493,7 +493,10 @@ def prepare_controller_sample(
 
     for target_offset, token in enumerate(target_semantic):
         position = prompt_len + target_offset
-        row_logits = logits[position : position + 1].clone()
+        row_logits = logits[
+            0,
+            position : position + 1,
+        ].clone()
 
         if target_offset < 11:
             row_logits = row_logits[:, :-1]
