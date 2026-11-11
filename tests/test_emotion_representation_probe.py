@@ -39,6 +39,11 @@ class RepresentationProbeTests(unittest.TestCase):
             report["macro_accuracy_mean"],
             0.90,
         )
+        self.assertLess(report["oof_ce"], 0.20)
+        self.assertGreater(report["oof_accuracy"], 0.90)
+        self.assertGreater(report["oof_macro_accuracy"], 0.90)
+        self.assertIsNotNone(report["oof_macro_auc"])
+        self.assertGreater(report["oof_macro_auc"], 0.95)
         self.assertGreater(
             report["delta_vs_permutation"],
             0.30,
