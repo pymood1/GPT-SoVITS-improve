@@ -259,6 +259,13 @@ acceleration backend owns a separate sampler.
 
 ## 11. WebUI flow
 
+If the exact S1 checkpoint was fine-tuned with the optional English/Korean
+multilingual-BERT text features, emotion preprocessing, reference-prompt export,
+controller training and inference must use the same text-feature contract.
+The pipeline now derives this automatically from the S1 checkpoint and rejects
+mismatched feature builds/caches.
+
+
 In the main WebUI:
 
 ```text
