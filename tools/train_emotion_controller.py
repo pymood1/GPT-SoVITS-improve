@@ -2535,6 +2535,15 @@ def main() -> int:
         encoding="utf-8",
     )
     print(
+        "[coverage:train] "
+        + " ".join(
+            f"{emotion}="
+            f"{values['accepted']}/{values['attempts']} accepted, "
+            f"skip={values['coverage_skip_rate']:.0%}"
+            for emotion, values in training_sampling_by_emotion.items()
+        )
+    )
+    print(
         "[diagnosis] "
         f"random_ce={random_ce:.5f} "
         f"best_val={final_best_loss:.5f} "
