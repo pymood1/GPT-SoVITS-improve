@@ -1001,6 +1001,11 @@ def save_checkpoint(
                     "representation_probe",
                     None,
                 ),
+                "diagnostic_probes": getattr(
+                    args,
+                    "diagnostic_probes",
+                    None,
+                ),
                 "training_diagnosis": getattr(
                     args,
                     "training_diagnosis",
@@ -1471,18 +1476,24 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
 
     # Precompute the same frozen S1 representations that controller training
-    # will reuse, then run an automatic linear probe before optimization.
-    # This separates "S1 representation / label signal is weak" from
-    # "controller objective fails to use an otherwise separable signal"
-    # without adding another user-facing pipeline stage.
+    # will reuse. Diagnostics deliberately compare representation, full-softmax
+    # residual, truncated-policy residual, and transcript-only signals.
     print(
         f"[probe] preparing frozen S1 representations: "
         f"samples={len(all_usable_samples)}"
     )
-    probe_features: List[torch.Tensor] = []
-    probe_labels: List[int] = []
+    h_features: List[torch.Tensor] = []
+    g_full_features: List[torch.Tensor] = []
+    text_features: List[torch.Tensor] = []
+    all_probe_labels: List[int] = []
+    g_topk_features: List[torch.Tensor] = []
+    topk_probe_labels: List[int] = []
     probe_coverage_skipped = 0
     probe_invalid_hidden = 0
+    coverage_by_emotion = {
+        emotion: {"total": 0, "eligible": 0, "skipped": 0}
+        for emotion in emotion_names
+    }
 
     for probe_index, sample in enumerate(all_usable_samples, 1):
         cache_key = (sample["reference"], sample["name"])
@@ -1507,9 +1518,14 @@ def main() -> int:
             frozen_sample_cache[cache_key] = prepared
             cache_misses += 1
 
-        if float(prepared["coverage"]) < args.min_support_coverage:
+        emotion = sample["emotion"]
+        coverage = float(prepared["coverage"])
+        coverage_by_emotion[emotion]["total"] += 1
+        if coverage >= args.min_support_coverage:
+            coverage_by_emotion[emotion]["eligible"] += 1
+        else:
+            coverage_by_emotion[emotion]["skipped"] += 1
             probe_coverage_skipped += 1
-            continue
 
         hidden = prepared["hidden"].float()
         if (
@@ -1520,8 +1536,25 @@ def main() -> int:
             probe_invalid_hidden += 1
             continue
 
-        probe_features.append(hidden.mean(dim=0))
-        probe_labels.append(int(sample["emotion_id"]))
+        g_full, g_topk = residual_summary_features(
+            prepared,
+            output_weight,
+            device,
+        )
+        label = int(sample["emotion_id"])
+        h_features.append(hidden.mean(dim=0))
+        g_full_features.append(g_full)
+        text_features.append(
+            text_only_probe_features(
+                store,
+                sample["name"],
+            )
+        )
+        all_probe_labels.append(label)
+
+        if coverage >= args.min_support_coverage:
+            g_topk_features.append(g_topk)
+            topk_probe_labels.append(label)
 
         if (
             probe_index == len(all_usable_samples)
@@ -1530,74 +1563,133 @@ def main() -> int:
             print(
                 f"[probe] cached={probe_index}/"
                 f"{len(all_usable_samples)} "
-                f"usable={len(probe_features)} "
+                f"usable={len(h_features)} "
                 f"coverage_skipped={probe_coverage_skipped}"
             )
 
-    if probe_features:
-        probe_tensor = torch.stack(probe_features, dim=0)
-        representation_probe = run_mean_pool_linear_probe(
-            probe_tensor,
-            probe_labels,
+    def _run_probe(
+        values: List[torch.Tensor],
+        labels: List[int],
+        method: str,
+    ) -> dict:
+        if not values:
+            return {
+                "method": method,
+                "status": "insufficient_data",
+                "verdict": "unavailable",
+                "samples": 0,
+            }
+        return run_mean_pool_linear_probe(
+            torch.stack(values, dim=0),
+            labels,
             emotion_names,
             seed=args.seed,
             max_folds=5,
             permutations=3,
             steps=80,
+            method=method,
         )
-    else:
-        representation_probe = {
-            "method": "mean_pool_linear_stratified_cv_v1",
-            "status": "insufficient_data",
-            "verdict": "unavailable",
-            "samples": 0,
+
+    representation_probe = _run_probe(
+        h_features,
+        all_probe_labels,
+        "s1_hidden_mean_linear_oof_v2",
+    )
+    g_full_probe = _run_probe(
+        g_full_features,
+        all_probe_labels,
+        "semantic_residual_full_softmax_oof_v1",
+    )
+    g_topk_probe = _run_probe(
+        g_topk_features,
+        topk_probe_labels,
+        "semantic_residual_topk_supported_oof_v1",
+    )
+    text_probe = _run_probe(
+        text_features,
+        all_probe_labels,
+        "transcript_hashed_char_ngram_oof_v1",
+    )
+
+    coverage_report = {}
+    for emotion, values in coverage_by_emotion.items():
+        total = values["total"]
+        coverage_report[emotion] = {
+            **values,
+            "eligible_rate": (
+                values["eligible"] / total
+                if total
+                else 0.0
+            ),
+            "skip_rate": (
+                values["skipped"] / total
+                if total
+                else 0.0
+            ),
         }
 
     representation_probe["coverage_skipped"] = probe_coverage_skipped
     representation_probe["invalid_hidden"] = probe_invalid_hidden
+    diagnostic_probes = {
+        "s1_hidden": representation_probe,
+        "g_full": g_full_probe,
+        "g_topk": g_topk_probe,
+        "text_only": text_probe,
+        "coverage_by_emotion": coverage_report,
+    }
     args.representation_probe = representation_probe
+    args.diagnostic_probes = diagnostic_probes
+
+    for probe_name, report in (
+        ("h", representation_probe),
+        ("G(full)", g_full_probe),
+        ("G(top-k)", g_topk_probe),
+        ("text", text_probe),
+    ):
+        if report.get("status") == "ok":
+            auc = report.get("oof_macro_auc")
+            auc_text = (
+                f"{auc:.3f}"
+                if auc is not None
+                else "nan"
+            )
+            print(
+                f"[probe:{probe_name}] "
+                f"n={report['samples']} "
+                f"OOF_CE={report['oof_ce']:.5f} "
+                f"macro_acc={report['oof_macro_accuracy']:.2%} "
+                f"macro_auc={auc_text} "
+                f"perm={report['permutation_macro_accuracy_mean']:.2%} "
+                f"verdict={report['verdict']}"
+            )
+        else:
+            print(
+                f"[probe:{probe_name}][WARNING] "
+                f"status={report.get('status')} "
+                f"n={report.get('samples', 0)}"
+            )
+
+    print(
+        "[coverage] "
+        + " ".join(
+            f"{emotion}="
+            f"{values['eligible']}/{values['total']}"
+            f"({values['eligible_rate']:.0%})"
+            for emotion, values in coverage_report.items()
+        )
+    )
 
     if representation_probe.get("status") == "ok":
-        print(
-            "[probe] "
-            f"folds={representation_probe['folds']} "
-            f"samples={representation_probe['samples']} "
-            f"macro_acc="
-            f"{representation_probe['macro_accuracy_mean']:.2%}"
-            f"±{representation_probe['macro_accuracy_std']:.2%} "
-            f"permuted="
-            f"{representation_probe['permutation_macro_accuracy_mean']:.2%}"
-            f"±"
-            f"{representation_probe['permutation_macro_accuracy_std']:.2%} "
-            f"chance={representation_probe['chance_accuracy']:.2%} "
-            f"delta="
-            f"{representation_probe['delta_vs_permutation']:+.2%} "
-            f"verdict={representation_probe['verdict']}"
-        )
         if representation_probe["verdict"] == "weak":
             print(
                 "[probe][WARNING] Frozen S1 hidden states do not separate "
-                "the current emotion labels reliably. Controller validation "
-                "may remain near chance even when optimization is healthy."
+                "the current labels reliably."
             )
         elif representation_probe["verdict"] == "informative":
             print(
                 "[probe][OK] Frozen S1 hidden states contain a separable "
-                "signal for the current labels. If controller validation "
-                "stays near chance, inspect the controller objective before "
-                "blaming representation capacity."
+                "signal for the current labels."
             )
-        else:
-            print(
-                "[probe] Frozen S1 separability is inconclusive on this "
-                "dataset; controller training will continue normally."
-            )
-    else:
-        print(
-            "[probe][WARNING] representation probe unavailable: "
-            f"status={representation_probe.get('status')} "
-            f"samples={representation_probe.get('samples', 0)}"
-        )
 
     diagnostics_report_path = output.with_name(
         f"{output.stem}.diagnostics.json"
@@ -1606,6 +1698,7 @@ def main() -> int:
         json.dumps(
             {
                 "representation_probe": representation_probe,
+                "diagnostic_probes": diagnostic_probes,
                 "training_diagnosis": None,
             },
             ensure_ascii=False,
