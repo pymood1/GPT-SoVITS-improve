@@ -70,7 +70,7 @@ NON_CONTROLLER_EMOTIONS = {
     "other",
 }
 
-DEFAULT_MIN_SAMPLES_PER_EMOTION = 2
+DEFAULT_MIN_SAMPLES_PER_EMOTION = 3
 
 
 def validate_emotion_dataset(dataset_dir: Path) -> dict:
