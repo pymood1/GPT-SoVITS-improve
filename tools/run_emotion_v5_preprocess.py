@@ -82,7 +82,7 @@ def validate_list(path: Path) -> tuple[str, list[str]]:
         raise PreprocessError("train list is empty")
 
     for line_number, line in enumerate(rows, 1):
-        parts = line.split("|")
+        parts = line.split("|", 3)
         if len(parts) != 4:
             raise PreprocessError(
                 f"{path}:{line_number}: expected 4 pipe-separated fields"
