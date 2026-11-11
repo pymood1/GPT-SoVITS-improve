@@ -4,6 +4,7 @@ scipy
 tensorboard
 librosa==0.10.2; python_version < "3.13"
 librosa>=0.11,<0.12; python_version >= "3.13"
+resampy>=0.4.3,<0.5
 numba; python_version < "3.13"
 numba>=0.68.1; python_version >= "3.13"
 pytorch-lightning>=2.4
