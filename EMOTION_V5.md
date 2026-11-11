@@ -52,33 +52,24 @@ Equivalent CLI:
 python tools/auto_emotion_sidecar.py \
   --list /content/data/train.list \
   --wav-root /content/data/wav \
-  --output /content/data/emotion_sidecar.auto.jsonl \
-  --model iic/emotion2vec_plus_base \
+  --output output/emotion_opt/example/emotion_sidecar.jsonl \
+  --model iic/emotion2vec_plus_large \
   --min-confidence 0.45
 ```
 
-Current automatic rule:
+The default classifier is emotion2vec+ large through FunASR. The tool keeps
+per-sample emotion scores, calibrates them against each speaker's own median
+voice profile, and only assigns a non-neutral controller label when the
+speaker-relative deviation passes the confidence/relative-score thresholds.
 
-```text
-same speaker
-+ same language
-+ exact normalized transcript
-+ different confident predicted emotion
-= automatic pair candidate
-```
+Exact-text emotion pairs are not required. Automatic rows therefore use
+`pair_group_id=null` and `pair_source=none`. Failed SER predictions remain
+unlabeled and are excluded from the speaker baseline. Prediction results are
+cached so unchanged audio does not need to be classified again.
 
-The default classifier is emotion2vec+ base through FunASR. Only
-neutral/happy/sad/angry are used for controller training by default. Other
-classes or predictions below the threshold remain unpaired.
-
-The tool also reserves a 3-10 second reference sample per usable speaker outside
-the final pair samples and writes `pair_source=auto_exact_text`. Predictions
-are cached next to the sidecar so reruns do not need to classify every unchanged
-audio file again.
-
-This is intentionally a first implementation. It does not do fuzzy transcript
-matching or pretend uncertain predictions are ground truth. The generated
-sidecar remains editable and can be replaced by a manual sidecar.
+Manual/recording-manifest pair metadata is still accepted by the canonical
+dataset builder as optional provenance, but controller training consumes the
+per-sample `emotion_intended` labels.
 
 ## 4. Canonicalize an existing wav + .list dataset
 
@@ -149,7 +140,7 @@ It creates an isolated directory such as:
 If any fingerprinted input changes, a different build ID is used. A partial
 directory without a valid `build.json` is never reused.
 
-## 6. Choose one fixed train reference per speaker
+## 6. Choose one fixed train reference per trained speaker
 
 Create `reference_map.json`:
 
@@ -159,13 +150,13 @@ Create `reference_map.json`:
 }
 ```
 
-The reference must:
+Only speakers that actually have non-neutral controller targets need a fixed
+reference. The automatic selector uses train-split, TTS-usable 3-10 second
+audio, prefers neutral/unlabeled samples, and rejects pair-group samples.
 
-- belong to that speaker;
-- be in the train split;
-- not belong to an emotion `pair_group_id`.
-
-A normal legacy/base-training utterance is a good choice.
+The fixed reference is excluded from controller supervision. If the only
+candidate is the sole sample of a trainable emotion, it is not consumed as a
+reference; training fails clearly instead of silently deleting that class.
 
 ## 7. Export inference-exact reference prompts
 
@@ -189,48 +180,32 @@ pretrained/fine-tuned models.
 ```bash
 python tools/train_emotion_controller.py \
   --s1-checkpoint GPT_SoVITS/pretrained_models/s1v3.ckpt \
-  --feature-dir /content/emotion_features/build_0123456789abcdef \
-  --feature-build-manifest /content/emotion_features/build_0123456789abcdef/build.json \
-  --metadata /content/data_ready/metadata.jsonl \
-  --reference-map /content/data_ready/reference_map.json \
-  --reference-prompt-cache /content/data_ready/reference_prompts.pt \
-  --output /content/emotion_controller.pt \
-  --emotions neutral,happy,sad,angry \
+  --feature-dir output/emotion_opt/example/features/build_0123456789abcdef \
+  --feature-build-manifest output/emotion_opt/example/features/build_0123456789abcdef/build.json \
+  --metadata output/emotion_opt/example/dataset/metadata.jsonl \
+  --reference-map output/emotion_opt/example/dataset/reference_map.json \
+  --reference-prompt-cache output/emotion_opt/example/dataset/reference_prompts.pt \
+  --output output/emotion_opt/example/example_emotion_controller.pt \
+  --emotions happy,sad,angry \
+  --version v5dev \
   --steps 1000
 ```
 
-Only the small controller is optimized. The S1 backbone is frozen.
+Neutral/default is the unmodified base distribution and is not a controller ID.
+Only the small controller is optimized; S1 stays frozen.
 
-The controller checkpoint stores the SHA-256 identity of the S1 checkpoint used
-for training. `TTS.load_emotion_controller()` refuses to attach it to another
-S1 checkpoint, even when the tensor dimensions happen to match.
+Each labeled utterance is evaluated against every configured emotion direction
+on its own semantic sequence. Training chooses an emotion class uniformly and
+then samples an utterance from that class, avoiding majority-class domination.
+The fixed speaker reference is never reused as a training target.
 
-When an inference-exact reference prompt cache is used, the trainer checks the
-S2 SHA-256 stored in the preprocessing `build.json` against the S2 SHA-256
-stored in the reference prompt cache. This prevents target/reference semantic
-token spaces from being mixed silently. `--semantic-s2-checkpoint` remains a
-fallback only when a build manifest is unavailable.
+The checkpoint is bound to the exact S1 SHA-256 and the semantic S2 SHA-256.
+The reference prompt cache must use the same S2 token space as the preprocessing
+build. Inference refuses incompatible S1/S2/controller combinations.
 
-Training samples are selected as:
-
-```text
-pair group
-  -> target emotion
-  -> positive take of that emotion
-  -> negative take of another emotion
-```
-
-No Cartesian-product pair expansion and no SER reward are used.
-
-The trainer uses the same default inference sampling settings:
-
-- top-k: 15
-- top-p: 1.0
-- temperature: 1.0
-- repetition penalty: 1.35
-
-A target token contributes to the preference loss only if it survives the
-original GPT-SoVITS sampler support.
+The trainer mirrors the ordinary sampler support (top-k 15, top-p 1.0,
+temperature 1.0, repetition penalty 1.35). A target token contributes only when
+it survives the base sampler support.
 
 ## 9. Load the controller in TTS
 
@@ -289,32 +264,22 @@ In the main WebUI:
 ```text
 1A - preprocessing
      - ordinary GPT-SoVITS dataset formatting
-     - optional emotion-pair metadata
+     - optional automatic/manual emotion metadata
 1B - training
      - SoVITS / GPT fine-tuning
-     - optional emotion controller
+     - optional V5dev emotion controller
 1C - inference
 ```
 
-The optional emotion controls are integrated into the normal GPT-SoVITS stages
-rather than exposed as a separate top-level tab. The controller path still runs
-the existing scripts in order instead of reimplementing their training logic.
+When emotion output paths are left blank, artifacts are grouped under
+`output/emotion_opt/<dataset-id>/` (sidecar, canonical dataset, features and
+controller). emotion2vec+ large is the default automatic classifier.
 
-The emotion pipeline reuses the same .list and audio-directory inputs shown in
-1A. The sidecar can be generated automatically with the exact-text rule above
-or supplied manually. Each usable pair group still explicitly records the
-emotion and pair provenance, for example:
-
-```json
-{"wav":"neutral_001.wav","split":"train","emotion_intended":"neutral","pair_group_id":"prompt_0001","pair_source":"recording_manifest"}
-{"wav":"happy_001.wav","split":"train","emotion_intended":"happy","pair_group_id":"prompt_0001","pair_source":"recording_manifest"}
-```
-
-Keep at least one 3-10 second train sample per paired speaker outside all
-`pair_group_id` groups. The WebUI selects that sample as the fixed reference.
-
-When optional emotion training in 1B finishes, the controller path is passed to
-the 1C inference WebUI and loaded automatically when its S1/S2 provenance matches.
+The controller path runs canonicalization, fixed-reference selection, V5dev
+preprocessing, inference-exact reference prompt export and controller training.
+The selected GPU is honored for preprocessing, reference prompt generation and
+controller training. On completion, the controller path is handed to the normal
+1C inference WebUI and is loaded only when S1/S2 provenance matches.
 
 ## 12. Not implemented on purpose
 
