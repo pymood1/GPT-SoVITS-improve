@@ -970,6 +970,7 @@ def run_emotion_training_pipeline(
         create_reference_map(
             metadata_path,
             reference_map_path,
+            trainable_emotions=parsed_emotions,
         )
         log_lines.append(
             f"[reference] {reference_map_path}"
