@@ -1154,6 +1154,13 @@ class TTS:
                 "Refusing to attach it to the current GPT model."
             )
         extra = metadata.get("extra", {})
+        expected_version = extra.get("version")
+        if expected_version and expected_version != self.configs.version:
+            raise ValueError(
+                "Emotion controller V5 version does not match the active "
+                f"TTS version: {expected_version!r} != "
+                f"{self.configs.version!r}"
+            )
         expected_s2_hash = (
             extra.get("semantic_s2_sha256")
             or extra.get("s2_sha256")
