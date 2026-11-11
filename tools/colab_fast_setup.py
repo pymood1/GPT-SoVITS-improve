@@ -620,12 +620,19 @@ from pathlib import Path
 repo = Path("/content/GPT-SoVITS")
 sys.path.insert(0, str(repo / "GPT_SoVITS"))
 import numpy, torch, torchaudio
+from AR.models.emotion_control import LowRankEmotionPreference
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from module.models import Generator
 from module.models_v5 import V5_VERSIONS
 from text.cleaner import clean_text
 from text.tone_sandhi import ToneSandhi
 from TTS_infer_pack.TextPreprocessor import TextPreprocessor
+from TTS_infer_pack.TTS import TTS_Config
+from funasr import AutoModel as FunASRAutoModel
+import tools.auto_emotion_sidecar
+import tools.emotion_training_pipeline
+import tools.export_emotion_reference_prompts
+import tools.train_emotion_controller
 if sys.version_info >= (3, 14):
     from importlib.metadata import version
     from packaging.version import Version
@@ -639,7 +646,17 @@ phones, _, normalized = clean_text("안녕하세요", "ko", "v2")
 if not phones:
     raise RuntimeError("Korean G2P smoke test returned no phones")
 
+controller = LowRankEmotionPreference(
+    hidden_dim=16,
+    num_emotions=2,
+    rank=2,
+)
+assert controller.num_emotions == 2
+assert FunASRAutoModel is not None
+assert TTS_Config is not None
+
 print("V5_SMOKE_OK")
+print("EMOTION_IMPORT_SMOKE_OK")
 print("python=", sys.version.split()[0])
 print("numpy=", numpy.__version__)
 print("torch=", torch.__version__)
