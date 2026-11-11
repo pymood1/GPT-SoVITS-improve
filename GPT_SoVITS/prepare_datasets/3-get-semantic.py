@@ -106,7 +106,7 @@ if os.path.exists(semantic_path) == False:
         # print(line)
         try:
             # wav_name,text=line.split("\t")
-            wav_name, spk_name, language, text = line.split("|")
+            wav_name, spk_name, language, text = line.split("|", 3)
             wav_name = clean_path(wav_name)
             wav_name = os.path.basename(wav_name)
             # name2go(name,lines1)
