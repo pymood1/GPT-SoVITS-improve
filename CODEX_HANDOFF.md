@@ -397,6 +397,44 @@ get_sovits_version_from_path_fast instead of treating every large S2 file as V3.
 
 ---
 
+## 8A. English/Korean multilingual BERT text features
+
+Upstream GPT-SoVITS uses Chinese RoBERTa contextual features for Chinese but
+normally feeds zero 1024-D BERT features for non-Chinese text. This fork adds an
+opt-in English/Korean path for newly fine-tuned S1 checkpoints.
+
+Primary files:
+
+- `GPT_SoVITS/text/multilingual_bert.py`
+- `GPT_SoVITS/prepare_datasets/1-get-text.py`
+- `GPT_SoVITS/TTS_infer_pack/TextPreprocessor.py`
+- `GPT_SoVITS/TTS_infer_pack/TTS.py`
+- `GPT_SoVITS/inference_webui.py`
+
+Current design:
+
+- default encoder: `google-bert/bert-base-multilingual-cased`;
+- languages: English and Korean only;
+- 768-D multilingual BERT features are zero-padded into the existing 1024-D
+  GPT-SoVITS BERT feature slot, so S1 tensor shapes do not change;
+- fast-tokenizer character offsets are mapped monotonically to phone positions;
+- Chinese continues to use the original Chinese RoBERTa path;
+- Japanese/Cantonese and other languages keep the legacy zero-vector path.
+
+This is deliberately **not** enabled for legacy S1 checkpoints. Existing S1
+models were trained with zero non-Chinese BERT features, so injecting a new
+encoder at inference time would be out-of-distribution. The 1A WebUI checkbox
+must be enabled before training a new S1. The feature contract is stored in
+`text_feature_config.json` and in the S1 checkpoint under `text_features`.
+TTS/inference and the emotion-controller pipeline read that contract
+automatically and reject mismatched preprocessing artifacts.
+
+The alignment is currently approximate monotonic token-to-phone alignment, not
+forced phoneme alignment. Measure an A/B improvement before adding a larger
+alignment subsystem.
+
+---
+
 ## 9. Emotion-control architecture
 
 Primary model code:
