@@ -879,6 +879,7 @@ def save_checkpoint(
     emotion_names: Sequence[str],
     args: argparse.Namespace,
     step: int,
+    validation: Optional[dict] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(
@@ -915,7 +916,12 @@ def save_checkpoint(
                 "repetition_penalty": args.repetition_penalty,
                 "min_support_coverage": args.min_support_coverage,
                 "min_samples_per_emotion": args.min_samples_per_emotion,
-                "training_mode": "balanced_emotion_multiclass_v2",
+                "val_interval": args.val_interval,
+                "val_fraction": args.val_fraction,
+                "early_stop_patience": args.early_stop_patience,
+                "early_stop_min_delta": args.early_stop_min_delta,
+                "validation": validation,
+                "training_mode": "balanced_emotion_multiclass_v3_val",
                 "version": args.version,
                 "text_features": args.text_features,
                 "neutral_is_base": True,
@@ -1303,6 +1309,24 @@ def main() -> int:
             f"{emotion}={usable_counts[emotion]}"
             for emotion in emotion_names
         )
+    )
+
+    all_usable_samples = list(training_samples)
+    training_samples, validation_samples = (
+        split_train_validation_samples(
+            all_usable_samples,
+            emotion_names,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+            min_train_samples=2,
+        )
+    )
+    print(
+        f"[data] held-out validation: "
+        f"train={len(training_samples)} "
+        f"val={len(validation_samples)} "
+        f"interval={args.val_interval} "
+        f"patience={args.early_stop_patience}"
     )
 
     samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
