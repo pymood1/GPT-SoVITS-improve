@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 from AR.models.emotion_control import sha256_file  # noqa: E402
 from TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
 from TTS_infer_pack.text_segmentation_method import splits  # noqa: E402
+from text.multilingual_bert import ALIGNMENT_VERSION  # noqa: E402
 
 
 class ReferenceExportError(RuntimeError):
@@ -166,8 +167,12 @@ def main() -> int:
             "multilingual_bert": bool(
                 tts.use_multilingual_bert
             ),
-            "multilingual_bert_model": (
-                tts.multilingual_bert_model
+            "multilingual_bert_alignment": (
+                ALIGNMENT_VERSION
+                if tts.use_multilingual_bert
+                else None
+            ),
+            "multilingual_bert_model": (                tts.multilingual_bert_model
                 if tts.use_multilingual_bert
                 else None
             ),
