@@ -28,12 +28,6 @@ from typing import Dict, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
 
-import torch
-
-from text.multilingual_bert import (
-    checkpoint_multilingual_bert_config,
-)
-
 
 class PreprocessError(RuntimeError):
     pass
@@ -341,6 +335,12 @@ def main() -> int:
         raise PreprocessError(f"S2 config not found: {s2_config}")
 
     if s1_path is not None:
+        import torch
+
+        from text.multilingual_bert import (
+            checkpoint_multilingual_bert_config,
+        )
+
         if not s1_path.is_file():
             raise PreprocessError(
                 f"S1 checkpoint not found: {s1_path}"
