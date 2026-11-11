@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build emotion-pair sidecar metadata from an existing GPT-SoVITS dataset.
+"""Build conservative per-sample emotion metadata for GPT-SoVITS.
 
-The tool deliberately starts with the most conservative automatic pairing rule:
-same speaker + same language + exact normalized transcript. It predicts utterance-level emotion scores, calibrates them against each
-speaker's own median voice profile, and writes conservative per-sample labels
-for controller training. Ambiguous samples become neutral/default.
+The tool predicts utterance-level emotion scores with emotion2vec+, calibrates
+them against each speaker's own median voice profile, and writes controller
+labels into a sidecar JSONL. Exact-text emotion pairs are not required.
+Ambiguous samples become neutral/default; failed predictions remain unlabeled.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ except ModuleNotFoundError:
 
 
 DEFAULT_MODEL = "iic/emotion2vec_plus_large"
+PREDICTION_CACHE_VERSION = 2
 LOCAL_EMOTION_MODELS = {
     "iic/emotion2vec_plus_large": (
         Path(__file__).resolve().parents[1]
@@ -105,6 +106,7 @@ def audio_duration_seconds(path: Path) -> float | None:
 def prediction_cache_key(path: Path, model_name: str) -> str:
     stat = path.stat()
     return stable_hash(
+        str(PREDICTION_CACHE_VERSION),
         model_name,
         str(path),
         str(stat.st_size),
@@ -418,22 +420,51 @@ def assign_speaker_relative_labels(
     baselines: dict[str, dict[str, float]] = {}
 
     for speaker, speaker_rows in by_speaker.items():
-        clr_rows = [
-            _clr_scores(
+        valid_rows = [
+            row
+            for row in speaker_rows
+            if (
+                not row.get("emotion_prediction_error")
+                and bool(row.get("emotion_scores"))
+            )
+        ]
+
+        if not valid_rows:
+            baselines[speaker] = {}
+            for row in speaker_rows:
+                row["accepted_emotion"] = None
+                row["emotion_relative_scores"] = {}
+                row["emotion_relative_score"] = 0.0
+                row["emotion_relative_confidence"] = 0.0
+                row["emotion_is_default"] = False
+            continue
+
+        clr_by_index = {
+            id(row): _clr_scores(
                 row.get("emotion_scores") or {},
                 supported,
             )
-            for row in speaker_rows
-        ]
+            for row in valid_rows
+        }
         baseline = {
             emotion: median(
-                values[emotion] for values in clr_rows
+                values[emotion]
+                for values in clr_by_index.values()
             )
             for emotion in supported
         }
         baselines[speaker] = baseline
 
-        for row, clr in zip(speaker_rows, clr_rows):
+        for row in speaker_rows:
+            if id(row) not in clr_by_index:
+                row["accepted_emotion"] = None
+                row["emotion_relative_scores"] = {}
+                row["emotion_relative_score"] = 0.0
+                row["emotion_relative_confidence"] = 0.0
+                row["emotion_is_default"] = False
+                continue
+
+            clr = clr_by_index[id(row)]
             relative = {
                 emotion: clr[emotion] - baseline[emotion]
                 for emotion in supported
@@ -611,6 +642,10 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
         "prediction_reused": reused,
         "prediction_new": predicted,
         "prediction_counts": dict(prediction_counts),
+        "prediction_failures": sum(
+            bool(row.get("emotion_prediction_error"))
+            for row in rows
+        ),
         "accepted_counts": dict(accepted_counts),
         "speaker_baselines": speaker_baselines,
         "pair_groups": 0,
@@ -708,16 +743,6 @@ def make_parser() -> argparse.ArgumentParser:
             "Minimum speaker-relative CLR log-score lift required for a "
             "non-neutral controller label"
         ),
-    )
-    parser.add_argument(
-        "--reference-min-seconds",
-        type=float,
-        default=3.0,
-    )
-    parser.add_argument(
-        "--reference-max-seconds",
-        type=float,
-        default=10.0,
     )
     parser.add_argument(
         "--refresh",
