@@ -22,6 +22,14 @@ if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 opt_dir = os.environ.get("opt_dir")
 bert_pretrained_dir = os.environ.get("bert_pretrained_dir")
+use_multilingual_bert = (
+    os.environ.get("use_multilingual_bert", "False").lower()
+    in {"1", "true", "yes", "on"}
+)
+multilingual_bert_model = os.environ.get(
+    "multilingual_bert_model",
+    "google-bert/bert-base-multilingual-cased",
+)
 import torch
 
 is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
@@ -29,6 +37,10 @@ version = os.environ.get("version", None)
 import traceback
 import os.path
 from text.cleaner import clean_text
+from text.multilingual_bert import (
+    MULTILINGUAL_BERT_LANGUAGES,
+    MultilingualBertFeatureExtractor,
+)
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 from tools.my_utils import clean_path
 
@@ -81,6 +93,19 @@ if True:
     else:
         bert_model = bert_model.to(device)
 
+    multilingual_state = {"extractor": None}
+
+    def get_multilingual_extractor():
+        extractor = multilingual_state["extractor"]
+        if extractor is None:
+            extractor = MultilingualBertFeatureExtractor(
+                multilingual_bert_model,
+                device=device,
+                is_half=is_half,
+            )
+            multilingual_state["extractor"] = extractor
+        return extractor
+
     def get_bert_feature(text, word2ph):
         with torch.no_grad():
             inputs = tokenizer(text, return_tensors="pt")
@@ -113,10 +138,30 @@ if True:
                     version,
                 )
                 path_bert = "%s/%s.pt" % (bert_dir, name)
-                if os.path.exists(path_bert) == False and lan == "zh":
-                    bert_feature = get_bert_feature(norm_text, word2ph)
-                    assert bert_feature.shape[-1] == len(phones)
-                    my_save(bert_feature, path_bert)
+                if os.path.exists(path_bert) == False:
+                    bert_feature = None
+                    if lan == "zh":
+                        bert_feature = get_bert_feature(
+                            norm_text,
+                            word2ph,
+                        )
+                    elif (
+                        use_multilingual_bert
+                        and lan in MULTILINGUAL_BERT_LANGUAGES
+                    ):
+                        bert_feature = (
+                            get_multilingual_extractor().extract(
+                                norm_text,
+                                phone_count=len(phones),
+                            )
+                        )
+
+                    if bert_feature is not None:
+                        assert bert_feature.shape == (
+                            1024,
+                            len(phones),
+                        )
+                        my_save(bert_feature, path_bert)
                 phones = " ".join(phones)
                 res.append([name, phones, word2ph, norm_text])
             except Exception:
