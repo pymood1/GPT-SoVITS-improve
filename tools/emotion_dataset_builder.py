@@ -121,12 +121,26 @@ def load_sidecar(path: Optional[Path]) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def portable_basename(path_text: str) -> str:
+    return str(path_text).replace("\\", "/").rsplit("/", 1)[-1]
+
+
 def sidecar_for(
-    sidecar: Dict[str, Dict[str, Any]], raw_path: str, resolved_path: Path
+    sidecar: Dict[str, Dict[str, Any]],
+    raw_path: str,
+    resolved_path: Path,
+    *,
+    basename_is_unique: bool,
 ) -> Dict[str, Any]:
     for key in (raw_path, str(resolved_path), resolved_path.as_posix()):
         if key in sidecar:
             return dict(sidecar[key])
+
+    if basename_is_unique:
+        for key in (portable_basename(raw_path), resolved_path.name):
+            if key in sidecar:
+                return dict(sidecar[key])
+
     return {}
 
 
@@ -226,6 +240,23 @@ def build_dataset(args: argparse.Namespace) -> None:
     with list_path.open("r", encoding="utf-8-sig") as handle:
         raw_lines = [line.rstrip("\r\n") for line in handle if line.strip()]
 
+    raw_basenames = [
+        portable_basename(parse_list_line(line, index)[0])
+        for index, line in enumerate(raw_lines, 1)
+    ]
+    basename_counts = Counter(raw_basenames)
+    ambiguous_sidecar_basenames = sorted(
+        name
+        for name, count in basename_counts.items()
+        if count > 1 and name in sidecar
+    )
+    if ambiguous_sidecar_basenames:
+        raise DatasetError(
+            "Basename-only sidecar keys are ambiguous; use the exact .list "
+            "path for: "
+            + ", ".join(ambiguous_sidecar_basenames[:20])
+        )
+
     for line_number, line in enumerate(raw_lines, 1):
         raw_wav, speaker, raw_language, text = parse_list_line(line, line_number)
         language = normalize_language(raw_language)
@@ -234,16 +265,24 @@ def build_dataset(args: argparse.Namespace) -> None:
             raise DatasetError(f"Not a regular audio file: {resolved}")
 
         file_hash = sha256_file(resolved)
-        metadata = sidecar_for(sidecar, raw_wav, resolved)
+        metadata = sidecar_for(
+            sidecar,
+            raw_wav,
+            resolved,
+            basename_is_unique=(
+                basename_counts[portable_basename(raw_wav)] == 1
+            ),
+        )
         validate_pair_metadata(metadata)
 
-        split = str(metadata.get("split", "train")).lower()
+        split = str(metadata.get("split", "train")).strip().lower()
         if split not in VALID_SPLITS:
             raise DatasetError(f"Invalid split {split!r} for {raw_wav}")
 
         normalized = canonical_text(text)
-        speaker_uid = str(
-            metadata.get("speaker_uid") or f"{args.dataset_id}:{speaker}"
+        speaker_uid = (
+            str(metadata.get("speaker_uid") or "").strip()
+            or f"{args.dataset_id}:{speaker}"
         )
         text_group_id = stable_hash(speaker_uid, language, normalized)
         source_id = metadata.get("source_id")
@@ -254,7 +293,15 @@ def build_dataset(args: argparse.Namespace) -> None:
             )
         pair_group_id = metadata.get("pair_group_id")
         pair_source = metadata.get("pair_source", "none")
-        emotion_intended = metadata.get("emotion_intended") or metadata.get("emotion")
+        raw_emotion = (
+            metadata.get("emotion_intended")
+            or metadata.get("emotion")
+        )
+        emotion_intended = (
+            str(raw_emotion).strip().lower()
+            if raw_emotion is not None and str(raw_emotion).strip()
+            else None
+        )
         emotion_predicted = metadata.get("emotion_predicted")
 
         canonical_name = unique_canonical_name(
