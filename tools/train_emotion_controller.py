@@ -758,12 +758,47 @@ def main() -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise TrainingDataError("CUDA requested but unavailable")
 
+    s1_path = Path(args.s1_checkpoint).resolve()
+    args.s1_sha256 = sha256_file(str(s1_path))
+    checkpoint = torch.load(
+        s1_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    if (
+        not isinstance(checkpoint, dict)
+        or "config" not in checkpoint
+        or "weight" not in checkpoint
+        or not isinstance(checkpoint["config"], dict)
+    ):
+        raise TrainingDataError(
+            "S1 checkpoint must contain config and weight mappings"
+        )
+    config = checkpoint["config"]
+    use_multilingual_bert, multilingual_bert_model = (
+        checkpoint_multilingual_bert_config(config)
+    )
+    args.text_features = {
+        "multilingual_bert": use_multilingual_bert,
+        "multilingual_bert_model": (
+            multilingual_bert_model
+            if use_multilingual_bert
+            else None
+        ),
+    }
+    required_bert_languages = {"zh"}
+    if use_multilingual_bert:
+        required_bert_languages.update(
+            MULTILINGUAL_BERT_LANGUAGES
+        )
+
     feature_dir = Path(args.feature_dir).resolve()
     metadata_path = Path(args.metadata).resolve()
     store = FeatureStore(
         metadata_path=metadata_path,
         feature_dir=feature_dir,
         version=args.version,
+        required_bert_languages=required_bert_languages,
     )
     reference_map = load_reference_map(
         Path(args.reference_map).resolve(),
@@ -791,6 +826,14 @@ def main() -> int:
             raise TrainingDataError(
                 "feature build version mismatch: "
                 f"{manifest_version!r} != {args.version!r}"
+            )
+        if manifest_identity.get("s1_sha256") != args.s1_sha256:
+            raise TrainingDataError(
+                "feature build was generated for a different S1 checkpoint"
+            )
+        if manifest_identity.get("text_features") != args.text_features:
+            raise TrainingDataError(
+                "feature build text-feature contract does not match S1"
             )
         actual_s2_hash = manifest_identity.get("s2_sha256")
         if not actual_s2_hash:
@@ -841,6 +884,13 @@ def main() -> int:
                 "reference prompt cache version mismatch: "
                 f"{cache_version!r} != {args.version!r}"
             )
+        if (
+            reference_cache_metadata.get("text_features")
+            != args.text_features
+        ):
+            raise TrainingDataError(
+                "reference prompt cache text features do not match S1"
+            )
         expected_s2_hash = reference_cache_metadata.get("s2_sha256")
         if not expected_s2_hash:
             raise TrainingDataError(
@@ -878,19 +928,6 @@ def main() -> int:
     for sample in training_samples:
         samples_by_emotion[sample["emotion"]].append(sample)
 
-    args.s1_sha256 = sha256_file(
-        str(Path(args.s1_checkpoint).resolve())
-    )
-    checkpoint = torch.load(
-        args.s1_checkpoint,
-        map_location="cpu",
-        weights_only=False,
-    )
-    if "config" not in checkpoint or "weight" not in checkpoint:
-        raise TrainingDataError(
-            "S1 checkpoint must contain 'config' and 'weight'"
-        )
-    config = checkpoint["config"]
     model_wrapper = Text2SemanticLightningModule(
         config,
         ROOT / "TEMP" / "emotion-controller",
