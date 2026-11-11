@@ -70,6 +70,8 @@ NON_CONTROLLER_EMOTIONS = {
     "other",
 }
 
+DEFAULT_MIN_SAMPLES_PER_EMOTION = 2
+
 
 def validate_emotion_dataset(dataset_dir: Path) -> dict:
     metadata_path = dataset_dir / "metadata.jsonl"
@@ -97,21 +99,50 @@ def validate_emotion_dataset(dataset_dir: Path) -> dict:
     return report
 
 
-def detect_pair_emotions(metadata_path: Path) -> list[str]:
-    """Return trainable per-sample emotions.
+def detect_pair_emotions(
+    metadata_path: Path,
+    min_samples_per_emotion: int = DEFAULT_MIN_SAMPLES_PER_EMOTION,
+) -> list[str]:
+    """Return trainable per-sample emotions with enough usable train samples."""
+    if min_samples_per_emotion < 1:
+        raise ValueError("min_samples_per_emotion must be >= 1")
 
-    The function name is kept for WebUI compatibility. Exact-text pair groups
-    are no longer required: each labeled utterance is contrasted against the
-    other controller emotions on its own semantic sequence.
-    """
     rows = read_jsonl(metadata_path)
+    counts: dict[str, int] = {}
+
+    for row in rows:
+        if row.get("split") != "train":
+            continue
+        if not row.get("tts_usable", True):
+            continue
+
+        emotion = str(
+            row.get("emotion_intended") or ""
+        ).strip().lower()
+        if emotion in NON_CONTROLLER_EMOTIONS:
+            continue
+        counts[emotion] = counts.get(emotion, 0) + 1
 
     detected = {
-        str(row.get("emotion_intended") or "").strip().lower()
-        for row in rows
-        if row.get("split") == "train"
+        emotion
+        for emotion, count in counts.items()
+        if count >= min_samples_per_emotion
     }
-    detected -= NON_CONTROLLER_EMOTIONS
+
+    excluded = {
+        emotion: count
+        for emotion, count in counts.items()
+        if count < min_samples_per_emotion
+    }
+    if excluded:
+        print(
+            "[emotions] excluded low-sample classes: "
+            + ", ".join(
+                f"{emotion}={count}"
+                for emotion, count in sorted(excluded.items())
+            )
+            + f" (min={min_samples_per_emotion})"
+        )
 
     preferred_order = [
         "happy",
@@ -123,7 +154,8 @@ def detect_pair_emotions(metadata_path: Path) -> list[str]:
     ]
 
     ordered = [
-        emotion for emotion in preferred_order
+        emotion
+        for emotion in preferred_order
         if emotion in detected
     ]
     ordered.extend(
@@ -132,7 +164,8 @@ def detect_pair_emotions(metadata_path: Path) -> list[str]:
 
     if len(ordered) < 2:
         raise EmotionPipelineError(
-            "Fewer than two trainable non-neutral emotions are present"
+            "Fewer than two trainable non-neutral emotions have enough "
+            f"samples (min={min_samples_per_emotion})"
         )
 
     return ordered
@@ -155,6 +188,7 @@ def _reference_duration_seconds(audio_path: Path) -> float | None:
 def _reference_candidates(
     rows: Iterable[dict],
     dataset_dir: Path,
+    trainable_emotions: set[str] | None = None,
 ) -> dict[str, list[tuple[int, float, str]]]:
     rows = list(rows)
     candidates: dict[str, list[tuple[int, float, str]]] = {}
@@ -170,9 +204,13 @@ def _reference_candidates(
         emotion = str(
             row.get("emotion_intended") or ""
         ).strip().lower()
+        if not speaker_uid:
+            continue
+        if emotion in NON_CONTROLLER_EMOTIONS:
+            continue
         if (
-            not speaker_uid
-            or emotion in NON_CONTROLLER_EMOTIONS
+            trainable_emotions is not None
+            and emotion not in trainable_emotions
         ):
             continue
         key = (speaker_uid, emotion)
@@ -202,6 +240,10 @@ def _reference_candidates(
         # consume the only available sample of a trainable emotion.
         if (
             emotion not in NON_CONTROLLER_EMOTIONS
+            and (
+                trainable_emotions is None
+                or emotion in trainable_emotions
+            )
             and controller_counts.get((speaker_uid, emotion), 0) <= 1
         ):
             continue
@@ -228,12 +270,22 @@ def _reference_candidates(
 def create_reference_map(
     metadata_path: Path,
     output_path: Path,
+    trainable_emotions: Iterable[str] | None = None,
 ) -> dict[str, str]:
     metadata_path = metadata_path.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
     dataset_dir = metadata_path.parent
 
     rows = read_jsonl(metadata_path)
+    selected_emotions = (
+        {
+            str(emotion).strip().lower()
+            for emotion in trainable_emotions
+            if str(emotion).strip()
+        }
+        if trainable_emotions is not None
+        else None
+    )
 
     speakers = {
         str(row.get("speaker_uid") or "").strip()
@@ -245,10 +297,20 @@ def create_reference_map(
             and str(
                 row.get("emotion_intended") or ""
             ).strip().lower() not in NON_CONTROLLER_EMOTIONS
+            and (
+                selected_emotions is None
+                or str(
+                    row.get("emotion_intended") or ""
+                ).strip().lower() in selected_emotions
+            )
         )
     }
 
-    candidates = _reference_candidates(rows, dataset_dir)
+    candidates = _reference_candidates(
+        rows,
+        dataset_dir,
+        trainable_emotions=selected_emotions,
+    )
     reference_map: dict[str, str] = {}
 
     missing: list[str] = []
