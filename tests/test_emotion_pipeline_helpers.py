@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 from tools.auto_emotion_sidecar import assign_speaker_relative_labels
 from tools.emotion_dataset_builder import parse_list_line, sidecar_for
-from tools.emotion_training_pipeline import create_reference_map
+from tools.emotion_training_pipeline import (
+    create_reference_map,
+    detect_pair_emotions,
+)
 from tools.run_emotion_v5_preprocess import (
     PreprocessError,
     validate_complete_outputs,
@@ -140,7 +143,7 @@ class ReferenceSelectionTests(unittest.TestCase):
 
             self.assertEqual(result, {"speaker-a": "a_neutral.wav"})
 
-    def test_singleton_emotion_is_not_consumed_as_reference(self):
+    def test_reference_preserves_minimum_trainable_class_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "wav").mkdir()
@@ -168,6 +171,13 @@ class ReferenceSelectionTests(unittest.TestCase):
                         "tts_usable": True,
                         "emotion_intended": "sad",
                     },
+                    {
+                        "canonical_wav": "sad_3.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "sad",
+                    },
                 ],
             )
             output = root / "reference_map.json"
@@ -176,10 +186,67 @@ class ReferenceSelectionTests(unittest.TestCase):
                 "_reference_duration_seconds",
                 return_value=5.0,
             ):
-                result = create_reference_map(metadata, output)
+                result = create_reference_map(
+                    metadata,
+                    output,
+                    trainable_emotions={"sad"},
+                )
 
-            self.assertIn(result["speaker-a"], {"sad_1.wav", "sad_2.wav"})
+            self.assertIn(
+                result["speaker-a"],
+                {"sad_1.wav", "sad_2.wav", "sad_3.wav"},
+            )
             self.assertNotEqual(result["speaker-a"], "happy_only.wav")
+
+    def test_low_sample_emotion_is_not_auto_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata = self._write_metadata(
+                root,
+                [
+                    {
+                        "canonical_wav": "happy_1.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "happy",
+                    },
+                    {
+                        "canonical_wav": "happy_2.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "happy",
+                    },
+                    {
+                        "canonical_wav": "fearful_1.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "fearful",
+                    },
+                    {
+                        "canonical_wav": "surprised_1.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "surprised",
+                    },
+                    {
+                        "canonical_wav": "surprised_2.wav",
+                        "speaker_uid": "speaker-a",
+                        "split": "train",
+                        "tts_usable": True,
+                        "emotion_intended": "surprised",
+                    },
+                ],
+            )
+
+            self.assertEqual(
+                detect_pair_emotions(metadata),
+                ["happy", "surprised"],
+            )
+
 
 
 class AutoEmotionCalibrationTests(unittest.TestCase):
