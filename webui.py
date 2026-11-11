@@ -3205,6 +3205,8 @@ def open1abc(
     gpu_numbers1Ba,
     gpu_numbers1c,
     bert_pretrained_dir,
+    use_multilingual_bert,
+    multilingual_bert_model,
     ssl_pretrained_dir,
     pretrained_s2G_path,
 ):
@@ -3236,9 +3238,14 @@ def open1abc(
         try:
             #############################1a
             path_text = "%s/2-name2text.txt" % opt_dir
+            text_feature_config = _text_feature_config(
+                use_multilingual_bert,
+                multilingual_bert_model,
+            )
             if not _text_preprocess_cache_valid(
                 path_text,
                 inp_text,
+                text_feature_config,
             ):
                 config = {
                     "inp_text": inp_text,
@@ -3246,6 +3253,12 @@ def open1abc(
                     "exp_name": exp_name,
                     "opt_dir": opt_dir,
                     "bert_pretrained_dir": bert_pretrained_dir,
+                    "use_multilingual_bert": str(
+                        bool(use_multilingual_bert)
+                    ),
+                    "multilingual_bert_model": str(
+                        multilingual_bert_model
+                    ),
                     "is_half": str(is_half),
                 }
                 gpu_names = gpu_numbers1a.split("-")
@@ -3309,6 +3322,11 @@ def open1abc(
                     )
                 with open(path_text, "w", encoding="utf8") as f:
                     f.write("\n".join(opt) + "\n")
+                _write_text_feature_config(
+                    path_text,
+                    use_multilingual_bert,
+                    multilingual_bert_model,
+                )
                 assert len("".join(opt)) > 0, process_info(process_name_1a, "failed")
             yield (
                 i18n("进度") + ": 1A-Done",
