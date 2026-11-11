@@ -506,7 +506,10 @@ syntax_targets = [
     REPO_DIR / "tools/emotion_dataset_builder.py",
     REPO_DIR / "tools/run_emotion_v5_preprocess.py",
     REPO_DIR / "tools/train_emotion_controller.py",
+    REPO_DIR / "GPT_SoVITS/TTS_infer_pack/TTS.py",
+    REPO_DIR / "GPT_SoVITS/TTS_infer_pack/TextPreprocessor.py",
     REPO_DIR / "GPT_SoVITS/inference_webui.py",
+    REPO_DIR / "GPT_SoVITS/AR/data/dataset.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/1-get-text.py",
     REPO_DIR / "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
     REPO_DIR / "GPT_SoVITS/text/tone_sandhi.py",
@@ -514,6 +517,7 @@ syntax_targets = [
     REPO_DIR / "GPT_SoVITS/text/chinese.py",
     REPO_DIR / "GPT_SoVITS/text/chinese2.py",
     REPO_DIR / "GPT_SoVITS/text/korean.py",
+    REPO_DIR / "GPT_SoVITS/text/multilingual_bert.py",
 ]
 
 run(
