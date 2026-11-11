@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 import math
@@ -146,11 +147,24 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(
-                json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
-            )
+    temp_path = path.with_name(
+        f".{path.name}.tmp-{os.getpid()}"
+    )
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(
+                    json.dumps(
+                        row,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def parse_prediction(result: Any) -> tuple[str, float, dict[str, float]]:
@@ -687,16 +701,24 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
     report_path = output_path.with_suffix(
         output_path.suffix + ".report.json"
     )
-    report_path.write_text(
-        json.dumps(
-            report,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    report_temp = report_path.with_name(
+        f".{report_path.name}.tmp-{os.getpid()}"
     )
+    try:
+        report_temp.write_text(
+            json.dumps(
+                report,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(report_temp, report_path)
+    finally:
+        if report_temp.exists():
+            report_temp.unlink()
 
     print(
         json.dumps(
