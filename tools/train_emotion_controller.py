@@ -631,6 +631,248 @@ def build_single_sample_batch(
         "target_semantic": target_semantic,
     }
 
+
+def split_train_validation_samples(
+    samples: Sequence[dict],
+    emotion_names: Sequence[str],
+    *,
+    val_fraction: float,
+    seed: int,
+    min_train_samples: int = 2,
+) -> Tuple[List[dict], List[dict]]:
+    """Create a deterministic per-emotion hold-out split."""
+    if not 0.0 < val_fraction < 1.0:
+        raise TrainingDataError("--val-fraction must be in (0,1)")
+    if min_train_samples < 1:
+        raise TrainingDataError("min_train_samples must be >= 1")
+
+    by_emotion: Dict[str, List[dict]] = defaultdict(list)
+    for sample in samples:
+        by_emotion[sample["emotion"]].append(sample)
+
+    split_rng = random.Random(seed + 104729)
+    train_samples: List[dict] = []
+    val_samples: List[dict] = []
+
+    for emotion in emotion_names:
+        bucket = sorted(
+            by_emotion.get(emotion, []),
+            key=lambda sample: sample["name"],
+        )
+        if len(bucket) < min_train_samples + 1:
+            raise TrainingDataError(
+                f"Emotion {emotion!r} needs at least "
+                f"{min_train_samples + 1} usable samples for validation"
+            )
+
+        split_rng.shuffle(bucket)
+        requested_val = max(
+            1,
+            int(round(len(bucket) * val_fraction)),
+        )
+        val_count = min(
+            requested_val,
+            len(bucket) - min_train_samples,
+        )
+        if val_count < 1:
+            raise TrainingDataError(
+                f"Emotion {emotion!r} has no room for held-out validation"
+            )
+
+        val_samples.extend(bucket[:val_count])
+        train_samples.extend(bucket[val_count:])
+
+        print(
+            f"[data] split {emotion}: "
+            f"train={len(bucket) - val_count} val={val_count}"
+        )
+
+    if not train_samples or not val_samples:
+        raise TrainingDataError("train/validation split is empty")
+
+    return train_samples, val_samples
+
+
+def evaluate_controller(
+    *,
+    controller: LowRankEmotionPreference,
+    model,
+    store: FeatureStore,
+    samples: Sequence[dict],
+    emotion_names: Sequence[str],
+    reference_prompt_cache: Dict[str, dict],
+    frozen_sample_cache: Dict[Tuple[str, str], dict],
+    output_weight: torch.Tensor,
+    device: torch.device,
+    pad_val: int,
+    preference_beta: float,
+    top_k: int,
+    top_p: float,
+    temperature: float,
+    repetition_penalty: float,
+    min_support_coverage: float,
+) -> dict:
+    """Evaluate balanced held-out CE/accuracy/gap without updating weights."""
+    losses_by_emotion: Dict[str, List[float]] = defaultdict(list)
+    gaps_by_emotion: Dict[str, List[float]] = defaultdict(list)
+    correct_by_emotion: Dict[str, int] = defaultdict(int)
+    evaluated_by_emotion: Dict[str, int] = defaultdict(int)
+    skipped = 0
+
+    controller.eval()
+    try:
+        with torch.no_grad():
+            for sample in samples:
+                cache_key = (sample["reference"], sample["name"])
+                prepared = frozen_sample_cache.get(cache_key)
+
+                if prepared is None:
+                    batch = build_single_sample_batch(
+                        store=store,
+                        reference_name=sample["reference"],
+                        target_name=sample["name"],
+                        device=device,
+                        pad_val=pad_val,
+                        reference_prompt_cache=reference_prompt_cache,
+                    )
+                    prepared = prepare_controller_sample(
+                        model=model,
+                        batch=batch,
+                        top_k=top_k,
+                        top_p=top_p,
+                        temperature=temperature,
+                        repetition_penalty=repetition_penalty,
+                    )
+                    frozen_sample_cache[cache_key] = prepared
+
+                if float(prepared["coverage"]) < min_support_coverage:
+                    skipped += 1
+                    continue
+
+                hidden = prepared["hidden"].to(
+                    device=device,
+                    dtype=torch.float32,
+                )
+                base_probs = prepared["base_probs"].to(
+                    device=device,
+                    dtype=torch.float32,
+                )
+
+                scores: List[torch.Tensor] = []
+                for emotion_id in range(len(emotion_names)):
+                    score = vectorized_sequence_relative_score(
+                        controller=controller,
+                        hidden=hidden,
+                        base_probs=base_probs,
+                        target_semantic=prepared["target_semantic"],
+                        valid_mask=prepared["valid_mask"],
+                        output_weight=output_weight,
+                        emotion_id=emotion_id,
+                        eos_id=model.EOS,
+                    )
+                    if score is None:
+                        scores = []
+                        break
+                    scores.append(score)
+
+                if not scores:
+                    skipped += 1
+                    continue
+
+                score_tensor = torch.stack(scores)
+                target_id = int(sample["emotion_id"])
+                logits_by_emotion = (
+                    preference_beta
+                    * score_tensor.unsqueeze(0)
+                )
+                target = torch.tensor(
+                    [target_id],
+                    dtype=torch.long,
+                    device=device,
+                )
+                loss = F.cross_entropy(
+                    logits_by_emotion,
+                    target,
+                )
+
+                other_mask = torch.ones(
+                    len(emotion_names),
+                    dtype=torch.bool,
+                    device=device,
+                )
+                other_mask[target_id] = False
+                gap = (
+                    score_tensor[target_id]
+                    - score_tensor[other_mask].max()
+                )
+                predicted = int(
+                    torch.argmax(score_tensor).item()
+                )
+                emotion = sample["emotion"]
+
+                losses_by_emotion[emotion].append(
+                    float(loss.cpu())
+                )
+                gaps_by_emotion[emotion].append(
+                    float(gap.cpu())
+                )
+                evaluated_by_emotion[emotion] += 1
+                correct_by_emotion[emotion] += int(
+                    predicted == target_id
+                )
+    finally:
+        controller.train()
+
+    missing = [
+        emotion
+        for emotion in emotion_names
+        if evaluated_by_emotion.get(emotion, 0) == 0
+    ]
+    if missing:
+        raise TrainingDataError(
+            "Validation has no usable held-out sample for: "
+            + ", ".join(missing)
+        )
+
+    per_class_loss = {
+        emotion: (
+            sum(losses_by_emotion[emotion])
+            / len(losses_by_emotion[emotion])
+        )
+        for emotion in emotion_names
+    }
+    per_class_gap = {
+        emotion: (
+            sum(gaps_by_emotion[emotion])
+            / len(gaps_by_emotion[emotion])
+        )
+        for emotion in emotion_names
+    }
+    per_class_accuracy = {
+        emotion: (
+            correct_by_emotion[emotion]
+            / evaluated_by_emotion[emotion]
+        )
+        for emotion in emotion_names
+    }
+
+    balanced_loss = sum(per_class_loss.values()) / len(emotion_names)
+    balanced_gap = sum(per_class_gap.values()) / len(emotion_names)
+    balanced_accuracy = (
+        sum(per_class_accuracy.values()) / len(emotion_names)
+    )
+
+    return {
+        "loss": balanced_loss,
+        "accuracy": balanced_accuracy,
+        "gap": balanced_gap,
+        "evaluated": sum(evaluated_by_emotion.values()),
+        "skipped": skipped,
+        "per_class_loss": per_class_loss,
+        "per_class_accuracy": per_class_accuracy,
+        "per_class_gap": per_class_gap,
+    }
+
 def save_checkpoint(
     controller: LowRankEmotionPreference,
     path: Path,
@@ -735,7 +977,7 @@ def main() -> int:
     parser.add_argument(
         "--prefix-log-ratio-budget", type=float, default=2.0
     )
-    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--preference-beta", type=float, default=4.0)
@@ -751,11 +993,38 @@ def main() -> int:
     parser.add_argument(
         "--min-samples-per-emotion",
         type=int,
-        default=2,
+        default=3,
         help=(
             "Drop controller classes with fewer usable training samples "
             "after the fixed reference is excluded."
         ),
+    )
+    parser.add_argument(
+        "--val-interval",
+        type=int,
+        default=100,
+        help="Validate every N accepted training steps.",
+    )
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.20,
+        help="Per-emotion held-out validation fraction.",
+    )
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=2,
+        help=(
+            "Stop after this many consecutive validations without "
+            "meaningful validation-loss improvement."
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=1e-3,
+        help="Minimum validation-loss decrease counted as improvement.",
     )
     parser.add_argument("--save-every", type=int, default=250)
     parser.add_argument("--log-every", type=int, default=20)
@@ -774,10 +1043,18 @@ def main() -> int:
         )
     if args.temperature <= 0:
         raise TrainingDataError("--temperature must be positive")
-    if args.min_samples_per_emotion < 1:
+    if args.min_samples_per_emotion < 3:
         raise TrainingDataError(
-            "--min-samples-per-emotion must be >= 1"
+            "--min-samples-per-emotion must be >= 3 when validation is enabled"
         )
+    if args.val_interval <= 0:
+        raise TrainingDataError("--val-interval must be positive")
+    if not 0.0 < args.val_fraction < 1.0:
+        raise TrainingDataError("--val-fraction must be in (0,1)")
+    if args.early_stop_patience < 1:
+        raise TrainingDataError("--early-stop-patience must be >= 1")
+    if args.early_stop_min_delta < 0:
+        raise TrainingDataError("--early-stop-min-delta must be >= 0")
 
     emotion_names = [
         item.strip().lower()
