@@ -4701,6 +4701,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         save_every_epoch1Bb,
                         gpu_numbers1Bb,
                         pretrained_s1,
+                        use_multilingual_bert,
+                        multilingual_bert_model,
                     ],
                     [info1Bb, button1Bb_open, button1Bb_close, SoVITS_dropdown, GPT_dropdown],
                 )
