@@ -84,6 +84,113 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
             values.append(score)
         return torch.stack(values)
 
+
+    def test_simplex_init_is_centered_and_zero_effect(self):
+        torch.manual_seed(1234)
+        controller = LowRankEmotionPreference(
+            hidden_dim=16,
+            num_emotions=4,
+            rank=8,
+        )
+        coeff = controller.emotion_coeff.weight.detach()
+
+        torch.testing.assert_close(
+            coeff.mean(dim=0),
+            torch.zeros(8),
+            rtol=0.0,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(
+            coeff.norm(dim=1),
+            torch.ones(4),
+            rtol=0.0,
+            atol=1e-6,
+        )
+
+        gram = coeff @ coeff.transpose(0, 1)
+        expected = torch.full((4, 4), -1.0 / 3.0)
+        expected.fill_diagonal_(1.0)
+        torch.testing.assert_close(
+            gram,
+            expected,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+        hidden = torch.randn(7, 16)
+        output_weight = torch.randn(29, 16)
+        for emotion_id in range(4):
+            scores = controller.preference_scores(
+                hidden,
+                output_weight,
+                emotion_id,
+            )
+            torch.testing.assert_close(
+                scores,
+                torch.zeros_like(scores),
+                rtol=0.0,
+                atol=0.0,
+            )
+
+    def test_simplex_init_gives_u_proj_first_step_gradient(self):
+        torch.manual_seed(4321)
+        controller = LowRankEmotionPreference(
+            hidden_dim=16,
+            num_emotions=4,
+            rank=8,
+            prefix_log_ratio_budget=2.0,
+        )
+        time_steps = 17
+        vocab_size = 31
+        hidden = torch.randn(time_steps, 16)
+        output_weight = torch.randn(vocab_size, 16)
+        logits = torch.randn(time_steps, vocab_size)
+        top_values, top_indices = torch.topk(logits, 8, dim=-1)
+        base_probs = torch.zeros_like(logits)
+        base_probs.scatter_(
+            1,
+            top_indices,
+            torch.softmax(top_values, dim=-1),
+        )
+        target_semantic = top_indices[:, 0]
+        valid_mask = torch.ones(time_steps, dtype=torch.bool)
+
+        scores = vectorized_sequence_relative_scores(
+            controller=controller,
+            hidden=hidden,
+            base_probs=base_probs,
+            target_semantic=target_semantic,
+            valid_mask=valid_mask,
+            output_weight=output_weight,
+            eos_id=vocab_size - 1,
+        )
+        self.assertIsNotNone(scores)
+        torch.testing.assert_close(
+            scores,
+            torch.zeros_like(scores),
+            rtol=0.0,
+            atol=0.0,
+        )
+
+        loss = F.cross_entropy(
+            4.0 * scores.unsqueeze(0),
+            torch.tensor([2], dtype=torch.long),
+        )
+        loss.backward()
+
+        self.assertIsNotNone(controller.u_proj.grad)
+        self.assertGreater(
+            float(controller.u_proj.grad.norm()),
+            1e-8,
+        )
+        self.assertIsNotNone(controller.emotion_coeff.weight.grad)
+        torch.testing.assert_close(
+            controller.emotion_coeff.weight.grad,
+            torch.zeros_like(controller.emotion_coeff.weight.grad),
+            rtol=0.0,
+            atol=0.0,
+        )
+
     def test_all_emotion_scores_match_legacy_path(self):
         case = self._make_case()
         legacy = self._legacy_scores(*case)
