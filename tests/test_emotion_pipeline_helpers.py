@@ -9,6 +9,8 @@ from tools.emotion_dataset_builder import parse_list_line, sidecar_for
 from tools.emotion_training_pipeline import (
     create_reference_map,
     detect_pair_emotions,
+    split_train_validation_samples,
+    update_early_stop_state,
 )
 from tools.run_emotion_v5_preprocess import (
     PreprocessError,
@@ -258,6 +260,90 @@ class ReferenceSelectionTests(unittest.TestCase):
                 ["happy", "surprised"],
             )
 
+
+
+class ValidationPolicyTests(unittest.TestCase):
+    def test_stratified_split_keeps_two_train_samples_per_emotion(self):
+        samples = []
+        for emotion, count in (
+            ("happy", 10),
+            ("angry", 5),
+            ("disgusted", 3),
+        ):
+            for index in range(count):
+                samples.append(
+                    {
+                        "name": f"{emotion}_{index}.wav",
+                        "emotion": emotion,
+                    }
+                )
+
+        train, val = split_train_validation_samples(
+            samples,
+            ["happy", "angry", "disgusted"],
+            val_fraction=0.20,
+            seed=233333,
+            min_train_samples=2,
+        )
+
+        train_counts = {}
+        val_counts = {}
+        for sample in train:
+            train_counts[sample["emotion"]] = (
+                train_counts.get(sample["emotion"], 0) + 1
+            )
+        for sample in val:
+            val_counts[sample["emotion"]] = (
+                val_counts.get(sample["emotion"], 0) + 1
+            )
+
+        self.assertEqual(train_counts["happy"], 8)
+        self.assertEqual(val_counts["happy"], 2)
+        self.assertEqual(train_counts["angry"], 4)
+        self.assertEqual(val_counts["angry"], 1)
+        self.assertEqual(train_counts["disgusted"], 2)
+        self.assertEqual(val_counts["disgusted"], 1)
+
+        train2, val2 = split_train_validation_samples(
+            samples,
+            ["happy", "angry", "disgusted"],
+            val_fraction=0.20,
+            seed=233333,
+            min_train_samples=2,
+        )
+        self.assertEqual(train, train2)
+        self.assertEqual(val, val2)
+
+    def test_early_stop_state_uses_min_delta_and_patience_counter(self):
+        best, bad, improved = update_early_stop_state(
+            current_loss=1.30,
+            best_loss=float("inf"),
+            validations_without_improvement=0,
+            min_delta=0.001,
+        )
+        self.assertTrue(improved)
+        self.assertEqual(bad, 0)
+        self.assertAlmostEqual(best, 1.30)
+
+        best, bad, improved = update_early_stop_state(
+            current_loss=1.2995,
+            best_loss=best,
+            validations_without_improvement=bad,
+            min_delta=0.001,
+        )
+        self.assertFalse(improved)
+        self.assertEqual(bad, 1)
+        self.assertAlmostEqual(best, 1.30)
+
+        best, bad, improved = update_early_stop_state(
+            current_loss=1.295,
+            best_loss=best,
+            validations_without_improvement=bad,
+            min_delta=0.001,
+        )
+        self.assertTrue(improved)
+        self.assertEqual(bad, 0)
+        self.assertAlmostEqual(best, 1.295)
 
 
 class AutoEmotionCalibrationTests(unittest.TestCase):
