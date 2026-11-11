@@ -20,6 +20,7 @@ supervision.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -507,6 +508,7 @@ def prepare_controller_sample(
         )
 
     base_prob_rows: List[torch.Tensor] = []
+    full_prob_rows: List[torch.Tensor] = []
     valid_mask: List[bool] = []
 
     for target_offset, token in enumerate(target_semantic):
@@ -525,8 +527,16 @@ def prepare_controller_sample(
             dtype=torch.long,
             device=row_logits.device,
         )
+        full_probs = logits_to_probs(
+            logits=row_logits.clone(),
+            previous_tokens=previous_tokens,
+            top_k=None,
+            top_p=1.0,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+        )
         base_probs = logits_to_probs(
-            logits=row_logits,
+            logits=row_logits.clone(),
             previous_tokens=previous_tokens,
             top_k=top_k,
             top_p=top_p,
@@ -544,6 +554,16 @@ def prepare_controller_sample(
             padded[:, : base_probs.shape[-1]] = base_probs
             base_probs = padded
 
+        if full_probs.shape[-1] < vocab_size:
+            padded_full = torch.zeros(
+                1,
+                vocab_size,
+                dtype=full_probs.dtype,
+                device=full_probs.device,
+            )
+            padded_full[:, : full_probs.shape[-1]] = full_probs
+            full_probs = padded_full
+
         valid = (
             token < base_probs.shape[-1]
             and bool(torch.isfinite(base_probs[0, token]).item())
@@ -551,8 +571,10 @@ def prepare_controller_sample(
         )
         valid_mask.append(valid)
         base_prob_rows.append(base_probs[0].float())
+        full_prob_rows.append(full_probs[0].float())
 
     base_probs = torch.stack(base_prob_rows, dim=0)
+    full_probs = torch.stack(full_prob_rows, dim=0)
     coverage = sum(valid_mask) / max(target_count, 1)
 
     return {
@@ -561,6 +583,10 @@ def prepare_controller_sample(
             dtype=torch.float16,
         ),
         "base_probs": base_probs.detach().to(
+            device="cpu",
+            dtype=torch.float32,
+        ),
+        "full_probs": full_probs.detach().to(
             device="cpu",
             dtype=torch.float32,
         ),
@@ -638,6 +664,91 @@ def build_single_sample_batch(
         "target_semantic": target_semantic,
     }
 
+
+
+def residual_summary_features(
+    prepared: dict,
+    output_weight: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return mean residual features for full and truncated token policies."""
+    target_ids = torch.as_tensor(
+        prepared["target_semantic"],
+        dtype=torch.long,
+        device=device,
+    )
+    full_probs = prepared["full_probs"].to(
+        device=device,
+        dtype=torch.float32,
+        non_blocking=True,
+    )
+    topk_probs = prepared["base_probs"].to(
+        device=device,
+        dtype=torch.float32,
+        non_blocking=True,
+    )
+    valid_mask = torch.as_tensor(
+        prepared["valid_mask"],
+        dtype=torch.bool,
+        device=device,
+    )
+
+    vocab_size = full_probs.shape[-1]
+    weight = output_weight[:vocab_size]
+    target_weight = weight.index_select(0, target_ids)
+
+    full_expected = full_probs @ weight
+    full_residual = target_weight - full_expected
+    g_full = full_residual.mean(dim=0)
+
+    if bool(valid_mask.any()):
+        topk_expected = topk_probs[valid_mask] @ weight
+        topk_residual = (
+            target_weight[valid_mask] - topk_expected
+        )
+        g_topk = topk_residual.mean(dim=0)
+    else:
+        g_topk = torch.zeros_like(g_full)
+
+    return (
+        g_full.detach().cpu(),
+        g_topk.detach().cpu(),
+    )
+
+
+def text_only_probe_features(
+    store: FeatureStore,
+    sample_name: str,
+    *,
+    buckets: int = 128,
+) -> torch.Tensor:
+    """Cheap transcript-only diagnostic features with hashed char n-grams."""
+    text_value = str(
+        store.phones[sample_name].get("norm_text") or ""
+    )
+    phone_count = len(store.phone_ids(sample_name))
+    semantic_count = len(store.semantic_ids(sample_name))
+    char_count = len(text_value)
+    vector = torch.zeros(3 + buckets, dtype=torch.float32)
+    vector[0] = math.log1p(phone_count)
+    vector[1] = math.log1p(semantic_count)
+    vector[2] = math.log1p(char_count)
+
+    normalized = " ".join(text_value.lower().split())
+    for width in (2, 3):
+        for start in range(max(len(normalized) - width + 1, 0)):
+            ngram = normalized[start : start + width]
+            digest = hashlib.blake2b(
+                ngram.encode("utf-8"),
+                digest_size=8,
+            ).digest()
+            bucket = int.from_bytes(digest, "little") % buckets
+            vector[3 + bucket] += 1.0
+
+    total = vector[3:].sum()
+    if total > 0:
+        vector[3:] /= total
+    return vector
 
 
 def controller_sample_to_device(
