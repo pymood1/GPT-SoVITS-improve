@@ -114,9 +114,14 @@ def load_bert(
     feature_dir: Path,
     item_name: str,
     phone_len: int,
+    language: str,
 ) -> torch.Tensor:
     path = feature_dir / "3-bert" / f"{item_name}.pt"
     if not path.exists():
+        if str(language).strip().lower() == "zh":
+            raise TrainingDataError(
+                f"Chinese BERT feature missing for {item_name}: {path}"
+            )
         return torch.zeros(1024, phone_len, dtype=torch.float32)
     value = torch.load(path, map_location="cpu")
     if value.ndim != 2 or value.shape[0] != 1024:
@@ -192,6 +197,7 @@ class FeatureStore:
                 self.feature_dir,
                 name,
                 phone_len,
+                str(self.metadata[name].get("language") or ""),
             )
         return self._bert_cache[name]
 
@@ -323,6 +329,8 @@ def build_training_samples(
             raise TrainingDataError(
                 f"No fixed reference for speaker {speaker_uid!r}"
             )
+        if name == reference_map[speaker_uid]:
+            continue
 
         samples.append(
             {
@@ -611,7 +619,7 @@ def save_checkpoint(
             "temperature": args.temperature,
             "repetition_penalty": args.repetition_penalty,
             "min_support_coverage": args.min_support_coverage,
-            "training_mode": "single_sample_multiclass_v1",
+            "training_mode": "balanced_emotion_multiclass_v2",
             "neutral_is_base": True,
         },
     )
@@ -652,7 +660,11 @@ def main() -> int:
         default="neutral,happy,sad,angry",
         help="Comma-separated stable emotion ID order",
     )
-    parser.add_argument("--version", default="v5")
+    parser.add_argument(
+        "--version",
+        choices=("v5dev", "v5turbo"),
+        default="v5dev",
+    )
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument(
         "--max-log-odds-shift", type=float, default=0.35
@@ -664,7 +676,6 @@ def main() -> int:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--preference-beta", type=float, default=4.0)
-    parser.add_argument("--margin", type=float, default=0.02)
     parser.add_argument("--top-k", type=int, default=15)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -820,6 +831,10 @@ def main() -> int:
             + ", ".join(unused_emotions)
         )
 
+    samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
+    for sample in training_samples:
+        samples_by_emotion[sample["emotion"]].append(sample)
+
     args.s1_sha256 = sha256_file(
         str(Path(args.s1_checkpoint).resolve())
     )
@@ -875,7 +890,8 @@ def main() -> int:
 
     while accepted_steps < args.steps and attempts < max_attempts:
         attempts += 1
-        sample = rng.choice(training_samples)
+        sampled_emotion = rng.choice(emotion_names)
+        sample = rng.choice(samples_by_emotion[sampled_emotion])
         batch = build_single_sample_batch(
             store=store,
             reference_name=sample["reference"],
