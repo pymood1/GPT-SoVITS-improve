@@ -117,6 +117,14 @@ from tools.runtime_status import (
     build_runtime_status_html,
     build_runtime_status_payload,
 )
+from tools.preprocess_contract import (
+    build_stage_contract,
+    contract_matches,
+    contracts_share_dataset,
+    read_stage_contract,
+    stage_contract_path,
+    write_stage_contract,
+)
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -430,6 +438,118 @@ def _resolve_repo_path(value):
     if not path.is_absolute():
         path = Path(now_dir) / path
     return path.resolve()
+
+
+def _preprocess_contract(
+    stage,
+    inp_text,
+    inp_wav_dir,
+    version_name,
+    settings=None,
+):
+    return build_stage_contract(
+        stage=stage,
+        list_path=_clean_user_path(inp_text),
+        wav_root=_clean_user_path(inp_wav_dir) or None,
+        version=str(version_name),
+        settings=settings or {},
+    )
+
+
+def _clear_preprocess_stage_outputs(exp_dir, stage):
+    exp_dir = Path(exp_dir)
+    marker = stage_contract_path(exp_dir, stage)
+
+    if stage == "1a":
+        targets = [
+            exp_dir / "2-name2text.txt",
+            exp_dir / "3-bert",
+            exp_dir / "text_feature_config.json",
+        ]
+        targets.extend(exp_dir.glob("2-name2text-*.txt"))
+    elif stage == "1b":
+        targets = [
+            exp_dir / "4-cnhubert",
+            exp_dir / "5-wav32k",
+            exp_dir / "7-sv",
+        ]
+    elif stage == "1c":
+        targets = list(exp_dir.glob("6-name2semantic*.tsv"))
+    else:
+        targets = []
+
+    for target in targets:
+        try:
+            if Path(target).is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            elif Path(target).exists():
+                Path(target).unlink()
+        except OSError:
+            traceback.print_exc()
+
+    try:
+        if marker.exists():
+            marker.unlink()
+    except OSError:
+        traceback.print_exc()
+
+
+def _ensure_stage_contract(exp_dir, expected):
+    marker = stage_contract_path(exp_dir, expected["stage"])
+    if contract_matches(marker, expected):
+        return False
+    _clear_preprocess_stage_outputs(exp_dir, expected["stage"])
+    return True
+
+
+def _validate_training_dataset_contract(
+    exp_dir,
+    inp_text,
+    inp_wav_dir,
+    version_name,
+    required_stages,
+):
+    exp_dir = Path(exp_dir)
+    try:
+        current = _preprocess_contract(
+            "_current",
+            inp_text,
+            inp_wav_dir,
+            version_name,
+        )
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        return f"현재 학습 데이터셋 fingerprint 생성 실패: {exc}"
+
+    contracts = []
+    for stage in required_stages:
+        marker = stage_contract_path(exp_dir, stage)
+        contract = read_stage_contract(marker)
+        if contract is None:
+            return (
+                f"{stage} 전처리 provenance가 없습니다. "
+                "현재 데이터로 전처리를 다시 실행하세요."
+            )
+        if str(contract.get("version")) != str(version_name):
+            return (
+                f"{stage} 전처리 버전({contract.get('version')})과 "
+                f"현재 학습 버전({version_name})이 다릅니다."
+            )
+        if (
+            contract.get("dataset", {}).get("digest")
+            != current.get("dataset", {}).get("digest")
+        ):
+            return (
+                f"{stage} 전처리 데이터셋과 현재 .list/WAV가 다릅니다. "
+                "전처리를 다시 실행하세요."
+            )
+        contracts.append(contract)
+
+    if not contracts_share_dataset(*contracts):
+        return (
+            "전처리 단계들이 서로 다른 데이터셋에서 생성되었습니다. "
+            "a → b → c 전처리를 다시 실행하세요."
+        )
+    return None
 
 
 def _emotion_dataset_slug(dataset_id):
@@ -2325,15 +2445,6 @@ def open1Bb(
     if is_half is False:
         data["train"]["precision"] = "32"
         batch_size = max(1, batch_size // 2)
-
-    if if_dpo:
-        original_batch_size = batch_size
-        batch_size = max(1, batch_size // 2)
-        print(
-            "[GPT/DPO] "
-            f"batch_size {original_batch_size} -> {batch_size} "
-            "(DPO memory safety)"
-        )
 
     data["train"]["batch_size"] = batch_size
     data["train"]["epochs"] = total_epoch
