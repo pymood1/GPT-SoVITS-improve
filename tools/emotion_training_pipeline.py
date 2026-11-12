@@ -567,6 +567,7 @@ def run_mean_pool_linear_probe(
     labels: Sequence[int],
     emotion_names: Sequence[str],
     *,
+    samples: Sequence[dict] | None = None,
     seed: int,
     max_folds: int = 5,
     permutations: int = 3,
@@ -597,6 +598,7 @@ def run_mean_pool_linear_probe(
         "max_folds": int(max_folds),
         "permutations": int(permutations),
         "steps": int(steps),
+        "grouped_validation": samples is not None,
         "chance_accuracy": (
             1.0 / class_count if class_count else 0.0
         ),
@@ -610,6 +612,10 @@ def run_mean_pool_linear_probe(
     if (
         class_count < 2
         or sample_count != int(features.shape[0])
+        or (
+            samples is not None
+            and len(samples) != sample_count
+        )
         or min(counts.values(), default=0) < 2
     ):
         report.update(
@@ -672,12 +678,33 @@ def run_mean_pool_linear_probe(
             return None
         return sum(values) / len(values)
 
-    def _evaluate(label_values: list[int], run_seed: int):
-        folds = stratified_kfold_indices(
-            label_values,
-            max_folds=max_folds,
-            seed=run_seed,
+    try:
+        if samples is not None:
+            folds = stratified_group_kfold_indices(
+                samples,
+                labels,
+                max_folds=max_folds,
+                seed=seed,
+            )
+        else:
+            folds = stratified_kfold_indices(
+                labels,
+                max_folds=max_folds,
+                seed=seed,
+            )
+    except EmotionPipelineError:
+        report.update(
+            {
+                "status": "insufficient_data",
+                "verdict": "unavailable",
+            }
         )
+        return report
+
+    def _evaluate(label_values: list[int], run_seed: int):
+        # Keep the folds fixed for the real labels and every permutation.
+        # Otherwise the permutation baseline changes both labels and the
+        # evaluation partition, making the comparison noisier and unfair.
         fold_scores: list[float] = []
         y_all = torch.tensor(label_values, dtype=torch.long)
         oof_logits = torch.full(
@@ -784,21 +811,6 @@ def run_mean_pool_linear_probe(
                 y_all,
             ),
         }
-
-    try:
-        folds = stratified_kfold_indices(
-            labels,
-            max_folds=max_folds,
-            seed=seed,
-        )
-    except EmotionPipelineError:
-        report.update(
-            {
-                "status": "insufficient_data",
-                "verdict": "unavailable",
-            }
-        )
-        return report
 
     real = _evaluate(labels, seed)
 
