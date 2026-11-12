@@ -118,6 +118,10 @@ class GradioLayoutRegressionTests(unittest.TestCase):
             'child_env[STATUS_PATH_ENV] = str(status_slot_path("sovits"))',
             webui,
         )
+        self.assertIn(
+            'child_env[STATUS_PATH_ENV] = str(status_slot_path("emotion"))',
+            webui,
+        )
 
     def test_header_is_responsive(self):
         assets = (ROOT / "tools" / "assets.py").read_text(
