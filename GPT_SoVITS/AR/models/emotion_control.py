@@ -205,7 +205,9 @@ class LowRankEmotionPreference(nn.Module):
             non_eos_support = row_support.clone()
             if eos_present:
                 non_eos_support[eos_id] = False
-            if int(non_eos_support.sum().item()) == 0:
+            if int(non_eos_support.sum().item()) <= 1:
+                # With EOS mass fixed, one surviving non-EOS token leaves no
+                # probability mass that the controller can redistribute.
                 continue
 
             weighted = torch.zeros_like(p0)
@@ -329,7 +331,7 @@ def vectorized_sequence_relative_scores(
     structurally_active = (
         finite_rows
         & (support_count > 1).unsqueeze(1)
-        & (non_eos_support.sum(dim=-1) > 0).unsqueeze(1)
+        & (non_eos_support.sum(dim=-1) > 1).unsqueeze(1)
         & torch.isfinite(denom)
         & (denom > 0)
     )
@@ -495,7 +497,7 @@ def vectorized_sequence_relative_score(
     structurally_active = (
         finite_rows
         & (support_count > 1)
-        & (non_eos_support.sum(dim=-1) > 0)
+        & (non_eos_support.sum(dim=-1) > 1)
         & torch.isfinite(denom)
         & (denom > 0)
     )
