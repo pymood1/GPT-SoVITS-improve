@@ -343,6 +343,13 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn('("1b",)', block)
         self.assertIn("1B dependency mismatch", block)
 
+    def test_emotion_preprocess_cache_ignores_unrelated_git_head(self):
+        script = (
+            ROOT / "tools" / "run_emotion_v5_preprocess.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"preprocess_code_sha256"', script)
+        self.assertNotIn('"git_commit": code_commit', script)
+
     def test_emotion_reuse_checks_source_provenance(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         builder = (
