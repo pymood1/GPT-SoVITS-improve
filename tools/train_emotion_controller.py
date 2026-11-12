@@ -1933,31 +1933,6 @@ def main() -> int:
             method=method,
         )
 
-    representation_probe = _run_probe(
-        h_features,
-        all_probe_labels,
-        all_probe_samples,
-        "s1_hidden_mean_linear_grouped_oof_v3",
-    )
-    g_full_probe = _run_probe(
-        g_full_features,
-        all_probe_labels,
-        all_probe_samples,
-        "semantic_residual_full_softmax_grouped_oof_v2",
-    )
-    g_topk_probe = _run_probe(
-        g_topk_features,
-        topk_probe_labels,
-        topk_probe_samples,
-        "semantic_residual_topk_supported_grouped_oof_v2",
-    )
-    text_probe = _run_probe(
-        text_features,
-        all_probe_labels,
-        all_probe_samples,
-        "transcript_hashed_char_ngram_grouped_oof_v2",
-    )
-
     coverage_report = {}
     for emotion, values in coverage_by_emotion.items():
         total = values["total"]
@@ -1996,9 +1971,8 @@ def main() -> int:
         < args.min_samples_per_emotion
     ]
     if insufficient_support:
-        raise TrainingDataError(
-            "Too few controller-trainable samples remain after top-k support "
-            "coverage filtering: "
+        print(
+            "[data] excluded low-support controller classes: "
             + ", ".join(
                 f"{emotion}={eligible_counts.get(emotion, 0)}"
                 for emotion in insufficient_support
@@ -2006,6 +1980,101 @@ def main() -> int:
             + f" (min={args.min_samples_per_emotion}, "
             f"coverage>={args.min_support_coverage:.2f})"
         )
+
+    emotion_names = [
+        emotion
+        for emotion in emotion_names
+        if eligible_counts.get(emotion, 0)
+        >= args.min_samples_per_emotion
+    ]
+    if len(emotion_names) < 2:
+        raise TrainingDataError(
+            "Need at least two controller emotions after top-k support "
+            "coverage filtering "
+            f"(min={args.min_samples_per_emotion}, "
+            f"coverage>={args.min_support_coverage:.2f})"
+        )
+
+    emotion_to_id = {
+        name: index
+        for index, name in enumerate(emotion_names)
+    }
+    controller_eligible_samples = [
+        sample
+        for sample in controller_eligible_samples
+        if sample["emotion"] in emotion_to_id
+    ]
+    for sample in controller_eligible_samples:
+        sample["emotion_id"] = emotion_to_id[sample["emotion"]]
+
+    retained_probe_indices = [
+        index
+        for index, sample in enumerate(all_probe_samples)
+        if sample["emotion"] in emotion_to_id
+    ]
+    h_features = [
+        h_features[index]
+        for index in retained_probe_indices
+    ]
+    g_full_features = [
+        g_full_features[index]
+        for index in retained_probe_indices
+    ]
+    text_features = [
+        text_features[index]
+        for index in retained_probe_indices
+    ]
+    all_probe_samples = [
+        all_probe_samples[index]
+        for index in retained_probe_indices
+    ]
+    all_probe_labels = [
+        emotion_to_id[sample["emotion"]]
+        for sample in all_probe_samples
+    ]
+
+    retained_topk_indices = [
+        index
+        for index, sample in enumerate(topk_probe_samples)
+        if sample["emotion"] in emotion_to_id
+    ]
+    g_topk_features = [
+        g_topk_features[index]
+        for index in retained_topk_indices
+    ]
+    topk_probe_samples = [
+        topk_probe_samples[index]
+        for index in retained_topk_indices
+    ]
+    topk_probe_labels = [
+        emotion_to_id[sample["emotion"]]
+        for sample in topk_probe_samples
+    ]
+
+    representation_probe = _run_probe(
+        h_features,
+        all_probe_labels,
+        all_probe_samples,
+        "s1_hidden_mean_linear_grouped_oof_v3",
+    )
+    g_full_probe = _run_probe(
+        g_full_features,
+        all_probe_labels,
+        all_probe_samples,
+        "semantic_residual_full_softmax_grouped_oof_v2",
+    )
+    g_topk_probe = _run_probe(
+        g_topk_features,
+        topk_probe_labels,
+        topk_probe_samples,
+        "semantic_residual_topk_supported_grouped_oof_v2",
+    )
+    text_probe = _run_probe(
+        text_features,
+        all_probe_labels,
+        all_probe_samples,
+        "transcript_hashed_char_ngram_grouped_oof_v2",
+    )
 
     training_samples, validation_samples = (
         split_train_validation_samples(
