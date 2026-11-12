@@ -108,6 +108,7 @@ from tools.emotion_training_pipeline import (
     detect_pair_emotions,
     format_dataset_summary,
     latest_feature_build,
+    latest_gpt_checkpoint_for_experiment,
     validate_emotion_dataset,
     write_v5_tts_config,
 )
@@ -712,6 +713,7 @@ def run_emotion_training_pipeline(
     dataset_dir,
     feature_root,
     controller_output,
+    experiment_name,
     s1_checkpoint_path,
     emotion_names,
     steps,
@@ -773,11 +775,29 @@ def run_emotion_training_pipeline(
         s1_checkpoint_path = _clean_user_path(
             s1_checkpoint_path
         )
+        experiment_name = str(experiment_name or "").strip()
 
         if not s1_checkpoint_path:
-            s1_checkpoint_path = (
-                "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+            auto_checkpoint = latest_gpt_checkpoint_for_experiment(
+                Path(GPT_weight_version2root["v5dev"]),
+                experiment_name,
             )
+            if auto_checkpoint is not None:
+                s1_checkpoint_path = str(auto_checkpoint)
+                log_lines.append(
+                    "[s1] auto-selected latest fine-tuned GPT/S1: "
+                    f"{auto_checkpoint}"
+                )
+            else:
+                s1_checkpoint_path = (
+                    pretrained_gpt_name.get("v5dev")
+                    or "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+                )
+                log_lines.append(
+                    "[s1] no fine-tuned GPT/S1 found for "
+                    f"exp_name={experiment_name!r}; using base: "
+                    f"{s1_checkpoint_path}"
+                )
 
         s1_checkpoint_path = name2gpt_path.get(
             s1_checkpoint_path,
@@ -4956,9 +4976,13 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             emotion_s1_checkpoint = gr.Textbox(
                                 label=(
                                     "Controller에 사용할 GPT/S1 체크포인트 "
-                                    "(추론 모델과 정확히 일치해야 함)"
+                                    "(비우면 현재 실험의 최신 GPT 자동 선택)"
                                 ),
-                                value="GPT_SoVITS/pretrained_models/s1v3.ckpt",
+                                value="",
+                                placeholder=(
+                                    "비우면 GPT_weights_v5dev/<현재 실험명>-e*.ckpt "
+                                    "중 최신 epoch 자동 선택"
+                                ),
                                 interactive=True,
                             )
 
@@ -5021,6 +5045,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             emotion_dataset_dir,
                             emotion_feature_root,
                             emotion_controller_output,
+                            exp_name,
                             emotion_s1_checkpoint,
                             emotion_names,
                             emotion_steps,
