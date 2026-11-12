@@ -836,6 +836,7 @@ def _stream_emotion_command(
     child_env.setdefault("GLOG_minloglevel", "2")
     if cuda_visible_devices is not None:
         child_env["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices)
+    child_env[STATUS_PATH_ENV] = str(status_slot_path("emotion"))
 
     command_text = " ".join(repr(str(item)) for item in cmd)
     log_lines.append(f"$ {command_text}")
