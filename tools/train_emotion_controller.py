@@ -2538,13 +2538,20 @@ def main() -> int:
         and accepted_steps < training_limit
         and not stopped_early
     ):
-        raise TrainingDataError(
-            f"Only {accepted_steps}/{training_limit} training steps were "
-            f"accepted after {attempts} attempts. "
-            f"Low-support skips={skipped_low_coverage}, "
-            f"no-gradient skips={skipped_no_gradient}. "
-            "Do not weaken safety settings blindly; inspect data and sampler "
-            "support first."
+        if best_controller_state is None:
+            raise TrainingDataError(
+                f"Only {accepted_steps}/{training_limit} training steps were "
+                f"accepted after {attempts} attempts and no validated "
+                "checkpoint exists. "
+                f"Low-support skips={skipped_low_coverage}, "
+                f"no-gradient skips={skipped_no_gradient}. "
+                "Inspect data and sampler support before weakening safeguards."
+            )
+        stopped_early = True
+        print(
+            "[early-stop] effective controller gradients were exhausted "
+            f"after {accepted_steps} accepted steps / {attempts} attempts; "
+            f"restoring best validation checkpoint from step {best_val_step}"
         )
 
     if best_controller_state is not None:
