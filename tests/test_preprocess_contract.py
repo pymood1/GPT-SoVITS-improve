@@ -455,6 +455,7 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             webui.index(")", webui.index("from tools.preprocess_contract import ("))
         ]
         self.assertIn("validate_stage_dataset,", import_block)
+        self.assertIn("stage_version_key,", import_block)
         self.assertIn("inp_text,\n    inp_wav_dir,", webui)
 
     def test_hubert_nan_retry_uses_a_snapshot(self):
