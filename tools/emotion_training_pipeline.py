@@ -522,11 +522,11 @@ def stratified_group_kfold_indices(
             groups_per_class[class_id] += 1
         group_counts.append((indices, counts))
 
-    fold_count = min(
+    max_fold_count = min(
         max_folds,
         min(groups_per_class.values(), default=0),
     )
-    if fold_count < 2:
+    if max_fold_count < 2:
         raise EmotionPipelineError(
             "controller OOF needs at least two independent leakage groups "
             "per class"
@@ -554,83 +554,85 @@ def stratified_group_kfold_indices(
             ) / len(ratios)
         return score
 
-    # Greedy stratified-group assignment can have tie-sensitive outcomes.
-    # Retry deterministic shuffles and keep the first complete allocation.
-    for retry in range(32):
-        split_rng = random.Random(
-            seed + 32452843 + retry * 1009
-        )
-        ordered = list(group_counts)
-        split_rng.shuffle(ordered)
-        ordered.sort(
-            key=lambda item: (
-                -max(
-                    (
-                        item[1][class_id]
-                        / max(total_by_class[class_id], 1)
-                    )
-                    for class_id in class_ids
-                ),
-                -len(item[0]),
+    # Prefer the largest viable fold count, but fall back to fewer folds
+    # when correlated groups cannot be allocated across all requested folds.
+    # A failed K-fold assignment is not evidence that (K-1)-fold is impossible.
+    for fold_count in range(max_fold_count, 1, -1):
+        for retry in range(32):
+            split_rng = random.Random(
+                seed + 32452843 + retry * 1009
             )
-        )
+            ordered = list(group_counts)
+            split_rng.shuffle(ordered)
+            ordered.sort(
+                key=lambda item: (
+                    -max(
+                        (
+                            item[1][class_id]
+                            / max(total_by_class[class_id], 1)
+                        )
+                        for class_id in class_ids
+                    ),
+                    -len(item[0]),
+                )
+            )
 
-        fold_counts = [
-            {class_id: 0 for class_id in class_ids}
-            for _ in range(fold_count)
-        ]
-        fold_groups: list[list[list[int]]] = [
-            [] for _ in range(fold_count)
-        ]
+            fold_counts = [
+                {class_id: 0 for class_id in class_ids}
+                for _ in range(fold_count)
+            ]
+            fold_groups: list[list[list[int]]] = [
+                [] for _ in range(fold_count)
+            ]
 
-        for indices, counts in ordered:
-            best_fold = None
-            best_score = None
-            for fold_index in range(fold_count):
-                trial = [
-                    dict(values)
-                    for values in fold_counts
-                ]
+            for indices, counts in ordered:
+                best_fold = None
+                best_score = None
+                for fold_index in range(fold_count):
+                    trial = [
+                        dict(values)
+                        for values in fold_counts
+                    ]
+                    for class_id in class_ids:
+                        trial[fold_index][class_id] += counts[class_id]
+
+                    balance = assignment_score(trial)
+                    fold_size = sum(trial[fold_index].values())
+                    score = (balance, fold_size, fold_index)
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best_fold = fold_index
+
                 for class_id in class_ids:
-                    trial[fold_index][class_id] += counts[class_id]
+                    fold_counts[best_fold][class_id] += counts[class_id]
+                fold_groups[best_fold].append(indices)
 
-                balance = assignment_score(trial)
-                fold_size = sum(trial[fold_index].values())
-                score = (balance, fold_size, fold_index)
-                if best_score is None or score < best_score:
-                    best_score = score
-                    best_fold = fold_index
+            folds: list[tuple[list[int], list[int]]] = []
+            valid = True
+            all_indices = set(range(len(labels)))
+            for fold_index in range(fold_count):
+                validation = sorted(
+                    index
+                    for group in fold_groups[fold_index]
+                    for index in group
+                )
+                validation_set = set(validation)
+                training = sorted(all_indices - validation_set)
 
-            for class_id in class_ids:
-                fold_counts[best_fold][class_id] += counts[class_id]
-            fold_groups[best_fold].append(indices)
+                val_labels = {labels[index] for index in validation}
+                train_labels = {labels[index] for index in training}
+                if (
+                    not validation
+                    or not training
+                    or val_labels != set(class_ids)
+                    or train_labels != set(class_ids)
+                ):
+                    valid = False
+                    break
+                folds.append((training, validation))
 
-        folds: list[tuple[list[int], list[int]]] = []
-        valid = True
-        all_indices = set(range(len(labels)))
-        for fold_index in range(fold_count):
-            validation = sorted(
-                index
-                for group in fold_groups[fold_index]
-                for index in group
-            )
-            validation_set = set(validation)
-            training = sorted(all_indices - validation_set)
-
-            val_labels = {labels[index] for index in validation}
-            train_labels = {labels[index] for index in training}
-            if (
-                not validation
-                or not training
-                or val_labels != set(class_ids)
-                or train_labels != set(class_ids)
-            ):
-                valid = False
-                break
-            folds.append((training, validation))
-
-        if valid:
-            return folds
+            if valid:
+                return folds
 
     raise EmotionPipelineError(
         "Could not build leakage-safe stratified OOF folds from the current "
