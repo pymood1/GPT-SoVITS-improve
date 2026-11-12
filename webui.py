@@ -123,6 +123,7 @@ from tools.preprocess_contract import (
     contracts_share_dataset,
     read_stage_contract,
     stage_contract_path,
+    validate_dataset_fingerprint,
     write_stage_contract,
 )
 
@@ -494,6 +495,15 @@ def _clear_preprocess_stage_outputs(exp_dir, stage):
         traceback.print_exc()
 
 
+def _stage_dataset_error(contract):
+    errors = validate_dataset_fingerprint(
+        contract.get("dataset", {})
+    )
+    if not errors:
+        return None
+    return "; ".join(errors)
+
+
 def _ensure_stage_contract(exp_dir, expected):
     marker = stage_contract_path(exp_dir, expected["stage"])
     if contract_matches(marker, expected):
@@ -519,6 +529,10 @@ def _validate_training_dataset_contract(
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
         return f"현재 학습 데이터셋 fingerprint 생성 실패: {exc}"
+
+    source_error = _stage_dataset_error(current)
+    if source_error:
+        return "현재 .list/WAV 데이터셋이 유효하지 않습니다: " + source_error
 
     contracts = []
     for stage in required_stages:
