@@ -770,7 +770,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-confidence",
         type=float,
-        default=0.45,
+        default=0.35,
         help="Minimum speaker-relative confidence for a non-neutral label",
     )
     parser.add_argument(
