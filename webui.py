@@ -662,7 +662,39 @@ def _training_artifact_error(exp_dir, mode, version_name):
                 "semantic token에 1A text가 없는 샘플이 있습니다: "
                 + ", ".join(unknown[:10])
             )
-        if len(names_semantic & names_text) < 2:
+
+        usable_names = names_semantic & names_text
+        contract_1a = read_stage_contract(
+            stage_contract_path(exp_dir, "1a")
+        )
+        required_bert_languages = {"zh"}
+        language_by_name = {}
+        if contract_1a:
+            settings_1a = contract_1a.get("settings") or {}
+            if bool(settings_1a.get("use_multilingual_bert")):
+                required_bert_languages.update({"en", "ko"})
+            dataset_1a = contract_1a.get("dataset") or {}
+            for row in dataset_1a.get("rows") or []:
+                name = str(row.get("basename") or "").strip()
+                language = str(row.get("language") or "").strip().lower()
+                if name:
+                    language_by_name[name] = language
+
+        missing_bert = sorted(
+            name
+            for name in usable_names
+            if (
+                language_by_name.get(name) in required_bert_languages
+                and not file_ok(bert_dir / f"{name}.pt")
+            )
+        )
+        if missing_bert:
+            return (
+                "BERT feature가 없는 GPT 학습 샘플이 있습니다: "
+                + ", ".join(missing_bert[:10])
+            )
+
+        if len(usable_names) < 2:
             return "GPT/S1 학습에 사용할 일치 샘플이 2개 미만입니다."
         return None
 

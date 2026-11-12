@@ -589,6 +589,17 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             self.assertNotIn("check_for_existance(", block)
             self.assertNotIn("check_details(", block)
 
+    def test_gpt_training_requires_contract_bert_artifacts(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def _training_artifact_error(")
+        end = webui.index("def _emotion_dataset_slug(", start)
+        block = webui[start:end]
+        self.assertIn('required_bert_languages = {"zh"}', block)
+        self.assertIn('required_bert_languages.update({"en", "ko"})', block)
+        self.assertIn("language_by_name", block)
+        self.assertIn("BERT feature가 없는 GPT 학습 샘플", block)
+
+
     def test_gpt_training_rejects_stale_1c_upstream(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         start = webui.index("def _validate_training_dataset_contract(")
