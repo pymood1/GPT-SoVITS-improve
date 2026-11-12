@@ -3656,7 +3656,7 @@ def open1a(
             stage_contract_path(opt_dir, "1a"),
             expected_contract,
         )
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         yield (
             process_info(process_name_1a, "failed") + f": {exc}",
             {"__type__": "update", "visible": True},
