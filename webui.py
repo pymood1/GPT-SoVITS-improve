@@ -3473,6 +3473,19 @@ def open1c(
         )
         return
 
+    expected_contract = _preprocess_contract(
+        "1c",
+        inp_text,
+        inp_wav_dir,
+        version,
+        {
+            "pretrained_s2G": str(s2_path),
+            "pretrained_s2G_signature": str(_file_signature(s2_path)),
+            "s2config_path": str(config_path),
+        },
+    )
+    _ensure_stage_contract(opt_dir, expected_contract)
+
     base_config = {
         "inp_text": inp_text,
         "exp_name": exp_name,
@@ -3480,6 +3493,7 @@ def open1c(
         "pretrained_s2G": str(s2_path),
         "s2config_path": str(config_path),
         "is_half": str(is_half),
+        "version": str(version),
     }
     gpu_names = gpu_numbers.split("-")
     all_parts = len(gpu_names)
@@ -3583,6 +3597,11 @@ def open1c(
             {"__type__": "update", "visible": False},
         )
         return
+
+    write_stage_contract(
+        stage_contract_path(opt_dir, "1c"),
+        expected_contract,
+    )
 
     yield (
         process_info(process_name_1c, "finish"),
