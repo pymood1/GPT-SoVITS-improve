@@ -4002,7 +4002,7 @@ def sync(text):
     return {"__type__": "update", "value": text}
 
 
-with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css) as app:
+with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css, fill_width=True) as app:
     gr.HTML(
         top_html.format(
             i18n("本软件以MIT协议开源, 作者不对软件具备任何控制力, 使用软件者、传播软件导出的声音者自负全责.")
@@ -4189,7 +4189,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
         with gr.TabItem(i18n("1-GPT-SoVITS-TTS"), id="tts"):
             with gr.Accordion(i18n("微调模型信息")):
-                with gr.Row():
+                with gr.Column():
                     with gr.Row(equal_height=True):
                         exp_name = gr.Textbox(
                             label=i18n("*实验/模型名"),
@@ -4211,7 +4211,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             scale=5,
                         )
             with gr.Accordion(label=i18n("预训练模型路径"), open=False):
-                with gr.Row():
+                with gr.Column():
                     with gr.Row(equal_height=True):
                         pretrained_s1 = gr.Textbox(
                             label=i18n("预训练GPT模型路径"),
@@ -4328,7 +4328,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         )
 
                     with gr.Accordion(label=i18n("输出logs/实验名目录下应有23456开头的文件和文件夹")):
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 inp_text = gr.Textbox(
                                     label=i18n("*文本标注文件"),
@@ -4347,7 +4347,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 )
     
                     with gr.Accordion(label="1Aa-" + process_name_1a):
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 gpu_numbers1a = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
@@ -4394,7 +4394,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 info1a = gr.Textbox(label=process_info(process_name_1a, "info"))
     
                     with gr.Accordion(label="1Ab-" + process_name_1b):
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 gpu_numbers1Ba = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
@@ -4419,7 +4419,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                 info1b = gr.Textbox(label=process_info(process_name_1b, "info"))
     
                     with gr.Accordion(label="1Ac-" + process_name_1c):
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 gpu_numbers1c = gr.Textbox(
                                     label=i18n("GPU卡号以-分割，每个卡号一个进程"),
@@ -4571,7 +4571,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         )
 
                     with gr.Accordion(label="1Aabcd-" + process_name_1abcd):
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 button1abc_open = gr.Button(
                                     value="a → b → c → d 순서대로 실행", variant="primary", visible=True
@@ -4779,7 +4779,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         value="%s" % (gpus),
                                         interactive=True,
                                     )
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 button1Ba_open = gr.Button(
                                     value=process_info(process_name_sovits, "open"), variant="primary", visible=True
@@ -4844,7 +4844,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         value="%s" % (gpus),
                                         interactive=True,
                                     )
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 button1Bb_open = gr.Button(
                                     value=process_info(process_name_gpt, "open"), variant="primary", visible=True
@@ -4859,7 +4859,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                     with gr.Accordion(
                         label="1Bc-" + i18n("GPT → SoVITS 연속 학습")
                     ):
-                        with gr.Row():
+                        with gr.Column():
                             with gr.Row():
                                 button_train_sequence_open = gr.Button(
                                     value=process_info(
@@ -5037,7 +5037,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 )
                                 refresh_button = gr.Button(i18n("刷新模型路径"), variant="primary")
                         refresh_button.click(fn=change_choices, inputs=[], outputs=[SoVITS_dropdown, GPT_dropdown])
-                    with gr.Row(equal_height=True):
+                    with gr.Column():
                         with gr.Row():
                             batched_infer_enabled = gr.Checkbox(
                                 label=i18n("启用并行推理版本"), value=False, interactive=True, show_label=True
