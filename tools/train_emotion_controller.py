@@ -766,14 +766,15 @@ def text_only_probe_features(
         store.phones[sample_name].get("norm_text") or ""
     )
     phone_count = len(store.phone_ids(sample_name))
-    semantic_count = len(store.semantic_ids(sample_name))
     char_count = len(text_value)
+    normalized = " ".join(text_value.lower().split())
+    word_count = len(normalized.split())
+
     vector = torch.zeros(3 + buckets, dtype=torch.float32)
     vector[0] = math.log1p(phone_count)
-    vector[1] = math.log1p(semantic_count)
-    vector[2] = math.log1p(char_count)
+    vector[1] = math.log1p(char_count)
+    vector[2] = math.log1p(word_count)
 
-    normalized = " ".join(text_value.lower().split())
     for width in (2, 3):
         for start in range(max(len(normalized) - width + 1, 0)):
             ngram = normalized[start : start + width]
@@ -2058,7 +2059,7 @@ def main() -> int:
         text_features,
         all_probe_labels,
         all_probe_samples,
-        "transcript_hashed_char_ngram_grouped_oof_v2",
+        "transcript_hashed_char_ngram_grouped_oof_v3",
     )
 
     training_samples, validation_samples = (
