@@ -2984,15 +2984,32 @@ def open1a(
         )
         return
 
-    opt_dir = "%s/%s" % (exp_root, exp_name)
+    opt_dir = Path(exp_root) / exp_name
+    expected_contract = _preprocess_contract(
+        "1a",
+        inp_text,
+        inp_wav_dir,
+        version,
+        {
+            "bert_pretrained_dir": str(
+                _resolve_repo_path(bert_pretrained_dir)
+                or bert_pretrained_dir
+            ),
+            "use_multilingual_bert": bool(use_multilingual_bert),
+            "multilingual_bert_model": str(multilingual_bert_model),
+        },
+    )
+    _ensure_stage_contract(opt_dir, expected_contract)
+
     base_config = {
         "inp_text": inp_text,
         "inp_wav_dir": inp_wav_dir,
         "exp_name": exp_name,
-        "opt_dir": opt_dir,
+        "opt_dir": str(opt_dir),
         "bert_pretrained_dir": bert_pretrained_dir,
         "use_multilingual_bert": str(bool(use_multilingual_bert)),
         "multilingual_bert_model": str(multilingual_bert_model),
+        "version": str(version),
     }
     gpu_names = gpu_numbers.split("-")
     all_parts = len(gpu_names)
@@ -3082,6 +3099,10 @@ def open1a(
             path_text,
             use_multilingual_bert,
             multilingual_bert_model,
+        )
+        write_stage_contract(
+            stage_contract_path(opt_dir, "1a"),
+            expected_contract,
         )
     except OSError as exc:
         yield (
