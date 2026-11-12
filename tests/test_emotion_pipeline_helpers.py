@@ -268,6 +268,41 @@ class ReferenceSelectionTests(unittest.TestCase):
                 "neutral_ref.wav",
             )
 
+    def test_reference_can_use_independent_emotional_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "wav").mkdir()
+            rows = [
+                {
+                    "canonical_wav": f"happy_{index}.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "happy",
+                    "text_group_id": f"happy-text-{index}",
+                }
+                for index in range(4)
+            ]
+            metadata = self._write_metadata(root, rows)
+            output = root / "reference_map.json"
+
+            with patch(
+                "tools.emotion_training_pipeline."
+                "_reference_duration_seconds",
+                return_value=5.0,
+            ):
+                result = create_reference_map(
+                    metadata,
+                    output,
+                    trainable_emotions={"happy"},
+                    min_samples_per_emotion=3,
+                )
+
+            self.assertEqual(
+                result["speaker-a"],
+                "happy_0.wav",
+            )
+
     def test_reference_avoids_controller_text_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
