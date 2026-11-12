@@ -44,7 +44,20 @@ class GradioLayoutRegressionTests(unittest.TestCase):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         self.assertIn("def _persistent_gradio_errors(", webui)
         self.assertIn("duration=None", webui)
-        self.assertIn("@_persistent_gradio_errors\ndef open1abcd(", webui)
+        for function_name in (
+            "open1a",
+            "open1b",
+            "open1c",
+            "open1abc",
+            "open1abcd",
+            "open1Ba",
+            "open1Bb",
+            "run_auto_emotion_sidecar",
+        ):
+            self.assertIn(
+                f"@_persistent_gradio_errors\ndef {function_name}(",
+                webui,
+            )
         self.assertIn(
             "@_persistent_gradio_errors\ndef run_gpt_then_sovits(",
             webui,
