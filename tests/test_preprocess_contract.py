@@ -672,6 +672,18 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "accepted_by_class",
             trainer,
         )
+        self.assertIn(
+            "excluded low-support controller classes",
+            trainer,
+        )
+        self.assertIn(
+            "and not text_confound_risk",
+            trainer,
+        )
+        self.assertLess(
+            trainer.index("emotion_names = [", trainer.index("eligible_counts")),
+            trainer.index("controller = LowRankEmotionPreference("),
+        )
 
         emotion_control = (
             ROOT / "GPT_SoVITS" / "AR" / "models" / "emotion_control.py"
