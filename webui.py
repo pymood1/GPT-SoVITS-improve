@@ -456,7 +456,7 @@ def _preprocess_contract(
         stage=stage,
         list_path=_clean_user_path(inp_text),
         wav_root=_clean_user_path(inp_wav_dir) or None,
-        version=stage_version_key(stage, version_name),
+        version=str(version_name),
         settings=settings or {},
     )
 
