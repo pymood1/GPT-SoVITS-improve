@@ -187,6 +187,12 @@ def build_dataset_fingerprint(
             if os.name != "nt"
             else wav_field
         )
+        if (
+            prefer_list_relative_audio
+            and os.name != "nt"
+            and portable_wav_field.startswith("content/")
+        ):
+            portable_wav_field = "/" + portable_wav_field
         wav_path = Path(portable_wav_field).expanduser()
         if wav_root_path is not None:
             if prefer_list_relative_audio:
