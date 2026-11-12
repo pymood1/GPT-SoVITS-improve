@@ -16,9 +16,26 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
+STATUS_PATH_ENV = "GPT_SOVITS_RUNTIME_STATUS_PATH"
+
+
+def _temp_root() -> Path:
+    return Path(os.environ.get("TEMP", "TEMP"))
+
+
 def default_status_path() -> Path:
-    temp_root = Path(os.environ.get("TEMP", "TEMP"))
-    return temp_root / "runtime_status.json"
+    override = str(os.environ.get(STATUS_PATH_ENV) or "").strip()
+    if override:
+        return Path(override)
+    return _temp_root() / "runtime_status.json"
+
+
+def status_slot_path(slot: str) -> Path:
+    safe = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "_"
+        for char in str(slot or "task")
+    ).strip("_") or "task"
+    return _temp_root() / "runtime_status_slots" / f"{safe}.json"
 
 
 def _clamp_percent(value: Any) -> Optional[float]:
@@ -191,6 +208,100 @@ def read_activity(
             }
 
     return payload
+
+
+def read_active_activities(
+    *,
+    stale_after: float = 45.0,
+) -> list[dict[str, Any]]:
+    """Read the legacy status plus independent task slots."""
+
+    candidates = [default_status_path()]
+    slot_dir = _temp_root() / "runtime_status_slots"
+    if slot_dir.is_dir():
+        candidates.extend(sorted(slot_dir.glob("*.json")))
+
+    activities = []
+    seen = set()
+    for path in candidates:
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        activity = read_activity(
+            path=path,
+            stale_after=stale_after,
+        )
+        if activity.get("state") != "idle":
+            activities.append(activity)
+    return activities
+
+
+def merge_activities(
+    activities: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    active = [
+        dict(activity)
+        for activity in activities
+        if str(activity.get("state") or "idle").lower() != "idle"
+    ]
+    if not active:
+        return {
+            "state": "idle",
+            "task": "대기 중",
+            "stage": "idle",
+            "reason": "no_active_tasks",
+        }
+    if len(active) == 1:
+        return active[0]
+
+    progress_values = []
+    parts = []
+    for activity in active:
+        task = str(activity.get("task") or "작업")
+        progress = _clamp_progress(activity.get("progress"))
+        if progress is None:
+            try:
+                step = int(activity.get("step"))
+                total_steps = int(activity.get("total_steps"))
+                if total_steps > 0:
+                    progress = _clamp_progress(step / total_steps)
+            except (TypeError, ValueError):
+                pass
+        if progress is None:
+            try:
+                epoch = int(activity.get("epoch"))
+                total_epochs = int(activity.get("total_epochs"))
+                if total_epochs > 0:
+                    progress = _clamp_progress(epoch / total_epochs)
+            except (TypeError, ValueError):
+                pass
+        if progress is not None:
+            progress_values.append(progress)
+            parts.append(f"{task} {progress:.0%}")
+        else:
+            parts.append(task)
+
+    states = {
+        str(activity.get("state") or "running").lower()
+        for activity in active
+    }
+    state = "running" if "running" in states else "failed"
+    merged = {
+        "state": state,
+        "task": "병렬 작업 · "
+        + " + ".join(str(item.get("task") or "작업") for item in active),
+        "stage": " · ".join(parts),
+        "updated_at": max(
+            float(item.get("updated_at") or 0.0)
+            for item in active
+        ),
+        "metric": " · ".join(parts),
+        "activities": active,
+    }
+    if progress_values:
+        merged["progress"] = sum(progress_values) / len(progress_values)
+    return merged
 
 
 def _query_nvidia_smi() -> Optional[dict[str, Any]]:
@@ -547,7 +658,7 @@ def _runtime_status_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
     except Exception:
         hardware = {}
     try:
-        activity = read_activity()
+        activity = merge_activities(read_active_activities())
     except Exception:
         activity = {
             "state": "idle",
