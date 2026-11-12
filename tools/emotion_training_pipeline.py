@@ -260,6 +260,9 @@ def split_train_validation_samples(
 
     split_rng = random.Random(seed + 104729)
     split_rng.shuffle(group_rows)
+    # Retain the original groups. A greedy pick can make subsequent picks
+    # impossible even when another leakage-safe allocation exists.
+    all_group_rows = list(group_rows)
 
     val_counts = {emotion: 0 for emotion in emotion_names}
     train_counts = dict(total_counts)
@@ -312,17 +315,90 @@ def split_train_validation_samples(
                 best_index = index
 
         if best_index is None:
-            unmet = [
-                emotion
-                for emotion in emotion_names
-                if val_counts[emotion] < target_val[emotion]
-            ]
-            raise EmotionPipelineError(
-                "Leakage-safe validation split is impossible while keeping "
-                f"{min_train_samples} train samples per class. "
-                "Correlated groups are too large for: "
-                + ", ".join(unmet)
+            # Retry from scratch: the greedy partial split is not proof that
+            # no valid split exists. Use bounded, memoized search only here,
+            # so ordinary ungrouped datasets retain the fast greedy path.
+            class_names = tuple(emotion_names)
+            lower = tuple(target_val[name] for name in class_names)
+            upper = tuple(
+                total_counts[name] - min_train_samples
+                for name in class_names
             )
+            vectors = [
+                tuple(group["counts"][name] for name in class_names)
+                for group in all_group_rows
+            ]
+            suffix = [
+                tuple(0 for _ in class_names)
+                for _ in range(len(vectors) + 1)
+            ]
+            for pos in range(len(vectors) - 1, -1, -1):
+                suffix[pos] = tuple(
+                    suffix[pos + 1][k] + vectors[pos][k]
+                    for k in range(len(class_names))
+                )
+
+            exhausted = set()
+            visits = 0
+
+            def find_feasible(
+                pos: int,
+                current: tuple[int, ...],
+            ) -> tuple[int, ...] | None:
+                nonlocal visits
+                if all(
+                    current[k] >= lower[k]
+                    for k in range(len(class_names))
+                ):
+                    return ()
+                if pos == len(vectors) or any(
+                    current[k] + suffix[pos][k] < lower[k]
+                    for k in range(len(class_names))
+                ):
+                    return None
+
+                key = (pos, current)
+                if key in exhausted:
+                    return None
+                visits += 1
+                if visits > 50000:
+                    raise EmotionPipelineError(
+                        "Leakage-safe split search exceeded its safety limit; "
+                        "reduce correlated groups or supply explicit "
+                        "independent recordings"
+                    )
+
+                include = tuple(
+                    current[k] + vectors[pos][k]
+                    for k in range(len(class_names))
+                )
+                if all(
+                    include[k] <= upper[k]
+                    for k in range(len(class_names))
+                ):
+                    found = find_feasible(pos + 1, include)
+                    if found is not None:
+                        return (pos,) + found
+
+                found = find_feasible(pos + 1, current)
+                if found is not None:
+                    return found
+                exhausted.add(key)
+                return None
+
+            solution = find_feasible(
+                0, tuple(0 for _ in class_names)
+            )
+            if solution is None:
+                raise EmotionPipelineError(
+                    "No leakage-safe validation split preserves at least "
+                    f"{min_train_samples} training samples per emotion"
+                )
+            selected_groups = [
+                all_group_rows[index]
+                for index in solution
+            ]
+            break
 
         chosen = group_rows.pop(best_index)
         selected_groups.append(chosen)
