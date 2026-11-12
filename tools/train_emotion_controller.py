@@ -597,8 +597,14 @@ def prepare_controller_sample(
             padded_full[:, : full_probs.shape[-1]] = full_probs
             full_probs = padded_full
 
+        support = base_probs[0] > 0
+        non_eos_support = support.clone()
+        if 0 <= model.EOS < non_eos_support.numel():
+            non_eos_support[model.EOS] = False
+        steerable = int(non_eos_support.sum().item()) > 1
         valid = (
-            token < base_probs.shape[-1]
+            steerable
+            and token < base_probs.shape[-1]
             and bool(torch.isfinite(base_probs[0, token]).item())
             and bool((base_probs[0, token] > 0).item())
         )
@@ -1167,10 +1173,16 @@ def run_controller_oof_cv(
             )
             fold_optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
+            fold_grad_norm = torch.nn.utils.clip_grad_norm_(
                 fold_controller.parameters(),
                 max_norm=1.0,
             )
+            if (
+                not bool(torch.isfinite(fold_grad_norm).item())
+                or float(fold_grad_norm.item()) <= 1e-12
+            ):
+                fold_optimizer.zero_grad(set_to_none=True)
+                continue
             fold_optimizer.step()
             accepted += 1
 
@@ -2218,6 +2230,14 @@ def main() -> int:
             controller.parameters(),
             max_norm=1.0,
         )
+        grad_is_finite = bool(torch.isfinite(total_grad_norm).item())
+        grad_is_nonzero = float(total_grad_norm.item()) > 1e-12
+        if not grad_is_finite or not grad_is_nonzero:
+            optimizer.zero_grad(set_to_none=True)
+            skipped_no_gradient += 1
+            no_grad_skips_by_emotion[sampled_emotion] += 1
+            continue
+
         optimizer.step()
 
         accepted_steps = next_step
