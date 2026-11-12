@@ -1908,6 +1908,15 @@ def main() -> int:
             probe_index == len(all_usable_samples)
             or probe_index % 25 == 0
         ):
+            publish_activity(
+                task="Emotion Controller 학습",
+                stage="probe-cache",
+                progress=probe_index / len(all_usable_samples),
+                metric=(
+                    f"S1 표현 캐시 {probe_index}/"
+                    f"{len(all_usable_samples)}"
+                ),
+            )
             print(
                 f"[probe] cached={probe_index}/"
                 f"{len(all_usable_samples)} "
@@ -1915,12 +1924,16 @@ def main() -> int:
                 f"coverage_skipped={probe_coverage_skipped}"
             )
 
+    probe_counter = 0
+
     def _run_probe(
         values: List[torch.Tensor],
         labels: List[int],
         samples: List[dict],
         method: str,
     ) -> dict:
+        nonlocal probe_counter
+        probe_counter += 1
         if not values:
             return {
                 "method": method,
@@ -1929,6 +1942,12 @@ def main() -> int:
                 "samples": 0,
             }
         started_at = time.perf_counter()
+        publish_activity(
+            task="Emotion Controller 학습",
+            stage="diagnostic-probe",
+            progress=(probe_counter - 1) / 4.0,
+            metric=f"진단 probe {probe_counter}/4 · {method}",
+        )
         print(
             f"[probe] start method={method} "
             f"samples={len(labels)}",
@@ -1944,6 +1963,15 @@ def main() -> int:
             permutations=3,
             steps=80,
             method=method,
+        )
+        publish_activity(
+            task="Emotion Controller 학습",
+            stage="diagnostic-probe",
+            progress=probe_counter / 4.0,
+            metric=(
+                f"진단 probe {probe_counter}/4 완료 · "
+                f"{report.get('status')}"
+            ),
         )
         print(
             f"[probe] done method={method} "
