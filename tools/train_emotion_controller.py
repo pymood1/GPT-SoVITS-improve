@@ -1934,13 +1934,6 @@ def main() -> int:
     ) -> dict:
         nonlocal probe_counter
         probe_counter += 1
-        if not values:
-            return {
-                "method": method,
-                "status": "insufficient_data",
-                "verdict": "unavailable",
-                "samples": 0,
-            }
         started_at = time.perf_counter()
         publish_activity(
             task="Emotion Controller 학습",
@@ -1948,6 +1941,23 @@ def main() -> int:
             progress=(probe_counter - 1) / 4.0,
             metric=f"진단 probe {probe_counter}/4 · {method}",
         )
+        if not values:
+            report = {
+                "method": method,
+                "status": "insufficient_data",
+                "verdict": "unavailable",
+                "samples": 0,
+            }
+            publish_activity(
+                task="Emotion Controller 학습",
+                stage="diagnostic-probe",
+                progress=probe_counter / 4.0,
+                metric=(
+                    f"진단 probe {probe_counter}/4 완료 · "
+                    "insufficient_data"
+                ),
+            )
+            return report
         print(
             f"[probe] start method={method} "
             f"samples={len(labels)}",
