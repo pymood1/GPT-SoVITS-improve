@@ -680,6 +680,24 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "and not text_confound_risk",
             trainer,
         )
+        text_probe_start = trainer.index(
+            "def text_only_probe_features("
+        )
+        text_probe_end = trainer.index(
+            "\ndef ",
+            text_probe_start + 5,
+        )
+        text_probe_block = trainer[
+            text_probe_start:text_probe_end
+        ]
+        self.assertNotIn(
+            "semantic_ids(",
+            text_probe_block,
+        )
+        self.assertIn(
+            "word_count",
+            text_probe_block,
+        )
         self.assertIn(
             "effective controller gradients were exhausted",
             trainer,
