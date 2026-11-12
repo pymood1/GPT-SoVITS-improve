@@ -1069,6 +1069,7 @@ def run_auto_emotion_sidecar(
             ),
             {"__type__": "update"},
         )
+        raise gr.Error(str(exc), duration=None) from exc
 
 
 @_persistent_gradio_errors
@@ -1668,6 +1669,7 @@ def run_emotion_training_pipeline(
             log_lines,
             str(exc),
         )
+        raise gr.Error(str(exc), duration=None) from exc
 
 
 process_name_subfix = i18n("音频标注WebUI")
