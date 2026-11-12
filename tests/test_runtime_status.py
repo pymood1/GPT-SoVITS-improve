@@ -117,6 +117,15 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertIn("cpu_percent", payload["hardware"])
         self.assertIn("state", payload["activity"])
 
+    def test_runtime_gauges_use_smooth_interpolation(self):
+        assets = (ROOT / "tools" / "assets.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("@property --status-value", assets)
+        self.assertIn("syntax: \"<number>\"", assets)
+        self.assertIn("transition:", assets)
+        self.assertIn("--status-value 650ms", assets)
+
     def test_webui_patches_static_dashboard_without_rerender(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         self.assertIn("runtime_status_monitor = gr.HTML(", webui)
