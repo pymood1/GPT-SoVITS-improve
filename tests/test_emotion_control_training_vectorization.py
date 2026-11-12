@@ -191,6 +191,47 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
             atol=0.0,
         )
 
+    def test_single_non_eos_support_has_zero_training_effect(self):
+        torch.manual_seed(20261112)
+        controller = LowRankEmotionPreference(
+            hidden_dim=8,
+            num_emotions=4,
+            rank=4,
+            max_log_odds_shift=0.35,
+            prefix_log_ratio_budget=2.0,
+        )
+        with torch.no_grad():
+            controller.u_proj.normal_(mean=0.0, std=0.2)
+
+        time_steps = 5
+        vocab_size = 7
+        eos_id = vocab_size - 1
+        target_token = 2
+        hidden = torch.randn(time_steps, 8)
+        output_weight = torch.randn(vocab_size, 8)
+        base_probs = torch.zeros(time_steps, vocab_size)
+        base_probs[:, target_token] = 0.7
+        base_probs[:, eos_id] = 0.3
+        targets = [target_token] * time_steps
+        valid_mask = [True] * time_steps
+
+        scores = vectorized_sequence_relative_scores(
+            controller=controller,
+            hidden=hidden,
+            base_probs=base_probs,
+            target_semantic=targets,
+            valid_mask=valid_mask,
+            output_weight=output_weight,
+            eos_id=eos_id,
+        )
+        self.assertIsNotNone(scores)
+        torch.testing.assert_close(
+            scores,
+            torch.zeros_like(scores),
+            rtol=0.0,
+            atol=1e-7,
+        )
+
     def test_all_emotion_scores_match_legacy_path(self):
         case = self._make_case()
         legacy = self._legacy_scores(*case)
