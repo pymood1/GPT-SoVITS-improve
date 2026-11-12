@@ -579,6 +579,53 @@ class ValidationPolicyTests(unittest.TestCase):
         self.assertEqual(len(train), 4)
         self.assertEqual(len(val), 2)
 
+    def test_grouped_split_recovers_from_greedy_dead_end(self):
+        # The highest-gain group alone makes the next greedy choice
+        # impossible, but groups 1 and 3 form a feasible held-out split.
+        group_counts = [
+            (1, 3, 0),
+            (1, 1, 0),
+            (1, 1, 1),
+            (0, 3, 1),
+            (0, 0, 1),
+        ]
+        emotions = ("happy", "sad", "angry")
+        samples = []
+        for group_index, counts in enumerate(group_counts):
+            for emotion, count in zip(emotions, counts):
+                for sample_index in range(count):
+                    samples.append(
+                        {
+                            "name": (
+                                f"group{group_index}_{emotion}_{sample_index}.wav"
+                            ),
+                            "emotion": emotion,
+                            "text_group_id": f"group-{group_index}",
+                        }
+                    )
+
+        train, val = split_train_validation_samples(
+            samples,
+            emotions,
+            val_fraction=0.2,
+            seed=233333,
+            min_train_samples=2,
+        )
+        self.assertFalse(
+            {item["text_group_id"] for item in train}
+            & {item["text_group_id"] for item in val}
+        )
+        for emotion in emotions:
+            self.assertGreaterEqual(
+                sum(item["emotion"] == emotion for item in train),
+                2,
+            )
+            self.assertGreaterEqual(
+                sum(item["emotion"] == emotion for item in val),
+                1,
+            )
+        self.assertEqual(len(train) + len(val), len(samples))
+
     def test_controller_group_kfold_does_not_leak_text_groups(self):
         samples = []
         labels = []
