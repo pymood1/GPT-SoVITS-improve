@@ -276,10 +276,12 @@ def load_reference_prompt_cache(
 ) -> Tuple[Dict[str, dict], dict]:
     if path is None:
         return {}, {}
+    # The exporter writes only dicts, primitives, and tensors. Reject
+    # arbitrary pickled Python objects in an externally supplied prompt cache.
     payload = torch.load(
         path,
         map_location="cpu",
-        weights_only=False,
+        weights_only=True,
     )
     if not isinstance(payload, dict) or "references" not in payload:
         raise TrainingDataError(
