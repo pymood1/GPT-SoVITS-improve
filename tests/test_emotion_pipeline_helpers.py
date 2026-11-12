@@ -12,6 +12,7 @@ from tools.emotion_training_pipeline import (
     split_train_validation_samples,
     stratified_kfold_indices,
     update_early_stop_state,
+    latest_gpt_checkpoint_for_experiment,
 )
 from tools.run_emotion_v5_preprocess import (
     PreprocessError,
@@ -261,6 +262,30 @@ class ReferenceSelectionTests(unittest.TestCase):
                 ["happy", "surprised"],
             )
 
+
+
+class GptCheckpointSelectionTests(unittest.TestCase):
+    def test_latest_checkpoint_is_selected_for_exact_experiment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "demo-e5.ckpt").write_bytes(b"x")
+            (root / "demo-e15.ckpt").write_bytes(b"x")
+            (root / "demo-other-e99.ckpt").write_bytes(b"x")
+
+            selected = latest_gpt_checkpoint_for_experiment(
+                root,
+                "demo",
+            )
+
+            self.assertEqual(selected, root / "demo-e15.ckpt")
+
+    def test_missing_experiment_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "other-e10.ckpt").write_bytes(b"x")
+            self.assertIsNone(
+                latest_gpt_checkpoint_for_experiment(root, "demo")
+            )
 
 
 class ValidationPolicyTests(unittest.TestCase):
