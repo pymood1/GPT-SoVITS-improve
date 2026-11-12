@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from collections import deque
+from functools import wraps
 from pathlib import Path
 
 version = os.environ.get("version", "v2Pro")
@@ -142,6 +143,7 @@ import gradio as gr
 def _persistent_gradio_errors(callback):
     """Keep unexpected callback errors visible until the user closes them."""
 
+    @wraps(callback)
     def wrapped(*args, **kwargs):
         try:
             yield from callback(*args, **kwargs)
@@ -156,8 +158,6 @@ def _persistent_gradio_errors(callback):
                 duration=None,
             ) from exc
 
-    wrapped.__name__ = getattr(callback, "__name__", "wrapped")
-    wrapped.__doc__ = getattr(callback, "__doc__", None)
     return wrapped
 
 
