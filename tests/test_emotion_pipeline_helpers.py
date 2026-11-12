@@ -7,6 +7,7 @@ from unittest.mock import patch
 from tools.auto_emotion_sidecar import assign_speaker_relative_labels
 from tools.emotion_dataset_builder import parse_list_line, sidecar_for
 from tools.emotion_training_pipeline import (
+    controller_artifact_paths,
     create_reference_map,
     detect_pair_emotions,
     split_train_validation_samples,
@@ -285,6 +286,22 @@ class ReferenceSelectionTests(unittest.TestCase):
                 ["happy", "surprised"],
             )
 
+
+
+class ControllerArtifactPromotionTests(unittest.TestCase):
+    def test_candidate_and_failed_paths_do_not_overwrite_final_controller(self):
+        final = Path("/tmp/controller.pt")
+        paths = controller_artifact_paths(final)
+        self.assertEqual(paths["final"], final)
+        self.assertNotEqual(paths["candidate"], final)
+        self.assertNotEqual(paths["failed"], final)
+        self.assertTrue(str(paths["candidate"]).endswith(".candidate.pt"))
+        self.assertTrue(str(paths["failed"]).endswith(".failed.pt"))
+        self.assertTrue(
+            str(paths["candidate_diagnostics"]).endswith(
+                ".candidate.diagnostics.json"
+            )
+        )
 
 
 class GptCheckpointSelectionTests(unittest.TestCase):
