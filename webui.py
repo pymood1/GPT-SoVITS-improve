@@ -139,6 +139,28 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1' # 当遇到mps不支持的步骤时使用cpu
 import gradio as gr
 
+def _persistent_gradio_errors(callback):
+    """Keep unexpected callback errors visible until the user closes them."""
+
+    def wrapped(*args, **kwargs):
+        try:
+            yield from callback(*args, **kwargs)
+        except GeneratorExit:
+            raise
+        except gr.Error:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise gr.Error(
+                f"{type(exc).__name__}: {exc}",
+                duration=None,
+            ) from exc
+
+    wrapped.__name__ = getattr(callback, "__name__", "wrapped")
+    wrapped.__doc__ = getattr(callback, "__doc__", None)
+    return wrapped
+
+
 n_cpu = cpu_count()
 
 set_gpu_numbers = GPU_INDEX
@@ -1025,7 +1047,7 @@ def run_auto_emotion_sidecar(
         )
 
 
-def run_emotion_training_pipeline(
+@_persistent_gradio_errors\ndef run_emotion_training_pipeline(
     source_list,
     wav_root,
     sidecar_path,
@@ -3113,7 +3135,7 @@ training_sequence_cancel_requested = False
 process_name_train_sequence = "GPT → SoVITS 연속 학습"
 
 
-def run_gpt_then_sovits(
+@_persistent_gradio_errors\ndef run_gpt_then_sovits(
     batch_size_gpt,
     total_epoch_gpt,
     exp_name,
@@ -4493,7 +4515,7 @@ preprocess_1abcd_cancel_requested = False
 process_name_1abcd = "전처리 a → b → c → d"
 
 
-def open1abcd(
+@_persistent_gradio_errors\ndef open1abcd(
     version,
     inp_text,
     inp_wav_dir,
@@ -4656,7 +4678,10 @@ def switch_version(version_):
     if pretrained_sovits_name[version] != "" and pretrained_gpt_name[version] != "":
         ...
     else:
-        gr.Warning(i18n("未下载模型") + ": " + version.upper())
+        gr.Warning(
+            i18n("未下载模型") + ": " + version.upper(),
+            duration=None,
+        )
     set_default()
     return (
         {"__type__": "update", "value": pretrained_sovits_name[version]},
@@ -5917,6 +5942,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
         server_name="0.0.0.0",
         inbrowser=True,
         share=True,
+        show_error=True,
         server_port=webui_port_main,
         # quiet=True,
     )
