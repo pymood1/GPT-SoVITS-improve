@@ -268,6 +268,71 @@ class ReferenceSelectionTests(unittest.TestCase):
                 "neutral_ref.wav",
             )
 
+    def test_reference_avoids_controller_text_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "wav").mkdir()
+            rows = [
+                {
+                    "canonical_wav": "neutral_shared.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "neutral",
+                    "text_group_id": "shared-text",
+                },
+                {
+                    "canonical_wav": "happy_shared.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "happy",
+                    "text_group_id": "shared-text",
+                },
+                {
+                    "canonical_wav": "neutral_unique.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "neutral",
+                    "text_group_id": "unique-text",
+                },
+                {
+                    "canonical_wav": "happy_2.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "happy",
+                    "text_group_id": "happy-2",
+                },
+                {
+                    "canonical_wav": "happy_3.wav",
+                    "speaker_uid": "speaker-a",
+                    "split": "train",
+                    "tts_usable": True,
+                    "emotion_intended": "happy",
+                    "text_group_id": "happy-3",
+                },
+            ]
+            metadata = self._write_metadata(root, rows)
+            output = root / "reference_map.json"
+
+            with patch(
+                "tools.emotion_training_pipeline."
+                "_reference_duration_seconds",
+                return_value=5.0,
+            ):
+                result = create_reference_map(
+                    metadata,
+                    output,
+                    trainable_emotions={"happy"},
+                )
+
+            self.assertEqual(
+                result["speaker-a"],
+                "neutral_unique.wav",
+            )
+
     def test_low_sample_emotion_is_not_auto_detected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
