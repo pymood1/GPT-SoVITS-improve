@@ -75,7 +75,7 @@ import shutil
 import subprocess
 from subprocess import Popen
 
-from tools.assets import css, js, top_html
+from tools.assets import css, js, runtime_status_patch_js, top_html
 from GPT_SoVITS.text.multilingual_bert import (
     ALIGNMENT_VERSION as MULTILINGUAL_BERT_ALIGNMENT_VERSION,
 )
@@ -112,7 +112,10 @@ from tools.emotion_training_pipeline import (
     write_v5_tts_config,
 )
 from tools.my_utils import check_details, check_for_existance
-from tools.runtime_status import build_runtime_status_html
+from tools.runtime_status import (
+    build_runtime_status_html,
+    build_runtime_status_payload,
+)
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -4014,14 +4017,29 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 
     runtime_status_monitor = gr.HTML(
         value=build_runtime_status_html(),
+        elem_id="runtime-status-monitor",
         elem_classes="status-monitor-root",
+    )
+    runtime_status_payload = gr.Textbox(
+        value=build_runtime_status_payload(),
+        visible=False,
+        elem_id="runtime-status-payload",
     )
     runtime_status_timer = gr.Timer(value=2, active=True)
     runtime_status_timer.tick(
-        fn=build_runtime_status_html,
+        fn=build_runtime_status_payload,
         inputs=[],
-        outputs=[runtime_status_monitor],
+        outputs=[runtime_status_payload],
         queue=False,
+        show_progress="hidden",
+    )
+    runtime_status_payload.change(
+        fn=None,
+        inputs=[runtime_status_payload],
+        outputs=[],
+        js=runtime_status_patch_js,
+        queue=False,
+        show_progress="hidden",
     )
 
     with gr.Tabs(selected="tts"):
