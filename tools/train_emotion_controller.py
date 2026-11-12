@@ -2675,10 +2675,10 @@ def main() -> int:
         and g_full_acc >= g_topk_acc + 0.10
     )
 
-    if controller_signal == "generalization_detected":
-        likely_bottleneck = "none_obvious"
-    elif text_matches_hidden:
+    if text_matches_hidden:
         likely_bottleneck = "labels_or_text_confound"
+    elif controller_signal == "generalization_detected":
+        likely_bottleneck = "none_obvious"
     elif (
         probe_verdict == "informative"
         and g_full_verdict == "weak"
@@ -2706,14 +2706,22 @@ def main() -> int:
         best_controller_state is not None
         and math.isfinite(final_best_loss)
     )
+    text_confound_risk = bool(text_matches_hidden)
     training_passed = (
         controller_signal == "generalization_detected"
         and validated_checkpoint
+        and not text_confound_risk
     )
     if not validated_checkpoint:
         result_reason = (
             "No finite best held-out validation checkpoint was produced; "
             "controller promotion is blocked."
+        )
+    elif text_confound_risk:
+        result_reason = (
+            "Transcript-only probe nearly matches S1 hidden-state emotion "
+            "separability; controller promotion is blocked because the "
+            "validation signal may be explained by text/label confounding."
         )
     elif training_passed:
         result_reason = (
@@ -2764,6 +2772,7 @@ def main() -> int:
         "controller_oof": controller_oof,
         "controller_signal": controller_signal,
         "validated_checkpoint": validated_checkpoint,
+        "text_confound_risk": text_confound_risk,
         "probe_verdict": probe_verdict,
         "g_full_verdict": g_full_verdict,
         "g_topk_verdict": g_topk_verdict,
