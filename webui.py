@@ -2106,6 +2106,8 @@ def open1Ba(
     batch_size,
     total_epoch,
     exp_name,
+    inp_text,
+    inp_wav_dir,
     text_low_lr_rate,
     if_save_latest,
     if_save_every_weights,
@@ -2156,6 +2158,24 @@ def open1Ba(
         return
 
     check_details([str(s2_dir)], is_train=True)
+
+    dataset_error = _validate_training_dataset_contract(
+        s2_dir,
+        inp_text,
+        inp_wav_dir,
+        version,
+        ("1a", "1b"),
+    )
+    if dataset_error:
+        yield (
+            process_info(process_name_sovits, "failed")
+            + f": {dataset_error}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
 
     config_file = (
         "GPT_SoVITS/configs/s2.json"
@@ -2318,12 +2338,15 @@ def open1Bb(
     batch_size,
     total_epoch,
     exp_name,
+    inp_text,
+    inp_wav_dir,
     if_dpo,
     if_save_latest,
     if_save_every_weights,
     save_every_epoch,
     gpu_numbers,
     pretrained_s1,
+    pretrained_s2G_path,
     use_multilingual_bert,
     multilingual_bert_model,
 ):
@@ -2367,6 +2390,58 @@ def open1Bb(
         return
 
     check_details([str(s1_dir)], is_train=True)
+
+    dataset_error = _validate_training_dataset_contract(
+        s1_dir,
+        inp_text,
+        inp_wav_dir,
+        version,
+        ("1a", "1c"),
+    )
+    if dataset_error:
+        yield (
+            process_info(process_name_gpt, "failed")
+            + f": {dataset_error}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    semantic_contract = read_stage_contract(
+        stage_contract_path(s1_dir, "1c")
+    )
+    semantic_settings = (semantic_contract or {}).get("settings", {})
+    current_s2_path = _resolve_repo_path(pretrained_s2G_path)
+    if current_s2_path is None or not current_s2_path.is_file():
+        yield (
+            process_info(process_name_gpt, "failed")
+            + f": S2 checkpoint not found: {current_s2_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+    if (
+        str(semantic_settings.get("pretrained_s2G") or "")
+        != str(current_s2_path)
+        or str(
+            semantic_settings.get("pretrained_s2G_signature") or ""
+        )
+        != str(_file_signature(current_s2_path))
+    ):
+        yield (
+            process_info(process_name_gpt, "failed")
+            + ": 1C semantic tokens were generated with a different "
+            "S2 checkpoint. Re-run 1C with the selected S2.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
 
     expected_text_features = _text_feature_config(
         use_multilingual_bert,
@@ -2572,6 +2647,8 @@ def run_gpt_then_sovits(
     batch_size_gpt,
     total_epoch_gpt,
     exp_name,
+    inp_text,
+    inp_wav_dir,
     if_dpo,
     if_save_latest_gpt,
     if_save_every_weights_gpt,
@@ -2612,12 +2689,15 @@ def run_gpt_then_sovits(
         batch_size_gpt,
         total_epoch_gpt,
         exp_name,
+        inp_text,
+        inp_wav_dir,
         if_dpo,
         if_save_latest_gpt,
         if_save_every_weights_gpt,
         save_every_epoch_gpt,
         gpu_numbers_gpt,
         pretrained_s1,
+        pretrained_s2G,
         use_multilingual_bert,
         multilingual_bert_model,
     ):
@@ -2668,6 +2748,8 @@ def run_gpt_then_sovits(
         batch_size_sovits,
         total_epoch_sovits,
         exp_name,
+        inp_text,
+        inp_wav_dir,
         text_low_lr_rate,
         if_save_latest_sovits,
         if_save_every_weights_sovits,
