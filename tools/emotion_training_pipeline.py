@@ -1033,7 +1033,7 @@ def _reference_candidates(
     candidates: dict[str, list[tuple[int, float, str]]] = {}
 
     controller_counts: dict[tuple[str, str], int] = {}
-    supervision_tokens: set[str] = set()
+    supervision_token_counts: dict[str, int] = defaultdict(int)
     for row in rows:
         if (
             row.get("split") != "train"
@@ -1058,21 +1058,15 @@ def _reference_candidates(
         for field in ("source_id", "text_group_id", "pair_group_id"):
             value = str(row.get(field) or "").strip()
             if value:
-                supervision_tokens.add(f"{field}:{value}")
+                supervision_token_counts[
+                    f"{field}:{value}"
+                ] += 1
 
     for row in rows:
         if row.get("split") != "train":
             continue
 
         if row.get("pair_group_id"):
-            continue
-
-        candidate_tokens = {
-            f"{field}:{value}"
-            for field in ("source_id", "text_group_id", "pair_group_id")
-            if (value := str(row.get(field) or "").strip())
-        }
-        if candidate_tokens & supervision_tokens:
             continue
 
         if not row.get("tts_usable", True):
@@ -1093,6 +1087,27 @@ def _reference_candidates(
             and emotion not in NON_CONTROLLER_EMOTIONS
             and emotion not in trainable_emotions
         ):
+            continue
+
+        candidate_is_controller = (
+            emotion not in NON_CONTROLLER_EMOTIONS
+            and (
+                trainable_emotions is None
+                or emotion in trainable_emotions
+            )
+        )
+        candidate_tokens = {
+            f"{field}:{value}"
+            for field in ("source_id", "text_group_id", "pair_group_id")
+            if (value := str(row.get(field) or "").strip())
+        }
+        shares_other_supervision = any(
+            supervision_token_counts.get(token, 0)
+            - (1 if candidate_is_controller else 0)
+            > 0
+            for token in candidate_tokens
+        )
+        if shares_other_supervision:
             continue
 
         # A fixed reference is excluded from controller supervision. Never
