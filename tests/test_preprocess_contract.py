@@ -389,6 +389,21 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("close1abc()", block)
         self.assertNotIn("if ps1abc:", block)
 
+    def test_model_paths_are_validated_before_cache_invalidation(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        for function_name, path_var in (
+            ("open1a", "bert_model_path"),
+            ("open1b", "cnhubert_model_path"),
+        ):
+            start = webui.index(f"def {function_name}(")
+            end = webui.index("\ndef ", start + 5)
+            block = webui[start:end]
+            self.assertIn(path_var, block)
+            self.assertLess(
+                block.index(f"if {path_var} is None"),
+                block.index("_ensure_stage_contract"),
+            )
+
     def test_one_click_preprocessing_reuses_canonical_stages(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         start = webui.index("def open1abc(")
