@@ -3140,6 +3140,17 @@ def open1a(
             "multilingual_bert_model": str(multilingual_bert_model),
         },
     )
+    source_error = _stage_dataset_error(expected_contract)
+    if source_error:
+        yield (
+            process_info(process_name_1a, "failed")
+            + ": invalid dataset: "
+            + source_error,
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
     _ensure_stage_contract(opt_dir, expected_contract)
 
     base_config = {
@@ -3354,6 +3365,17 @@ def open1b(
             ),
         },
     )
+    source_error = _stage_dataset_error(expected_contract)
+    if source_error:
+        yield (
+            process_info(process_name_1b, "failed")
+            + ": invalid dataset: "
+            + source_error,
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
     _ensure_stage_contract(opt_dir, expected_contract)
 
     base_config = {
