@@ -2326,6 +2326,15 @@ def open1Bb(
         data["train"]["precision"] = "32"
         batch_size = max(1, batch_size // 2)
 
+    if if_dpo:
+        original_batch_size = batch_size
+        batch_size = max(1, batch_size // 2)
+        print(
+            "[GPT/DPO] "
+            f"batch_size {original_batch_size} -> {batch_size} "
+            "(DPO memory safety)"
+        )
+
     data["train"]["batch_size"] = batch_size
     data["train"]["epochs"] = total_epoch
     data["pretrained_s1"] = pretrained_s1
@@ -4418,7 +4427,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                                         "영어·한국어 multilingual BERT 사용 "
                                         "(새 GPT/S1 파인튜닝용)"
                                     ),
-                                    value=False,
+                                    value=True,
                                     interactive=True,
                                 )
                                 multilingual_bert_model = gr.Textbox(
@@ -4538,7 +4547,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 maximum=1.0,
                                 step=0.05,
                                 label="자동 감정 라벨 최소 신뢰도",
-                                value=0.45,
+                                value=0.35,
                                 interactive=True,
                             )
                             emotion_auto_device = gr.Dropdown(
@@ -4870,8 +4879,8 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         interactive=True,
                                     )
                                     if_dpo = gr.Checkbox(
-                                        label=i18n("是否开启DPO训练选项(实验性)"),
-                                        value=False,
+                                        label=(i18n("是否开启DPO训练选项(实验性)") + " · 기본 ON, 실제 batch 자동 1/2"),
+                                        value=True,
                                         interactive=True,
                                         show_label=True,
                                     )
