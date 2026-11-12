@@ -1569,10 +1569,6 @@ def main() -> int:
                 "feature build version mismatch: "
                 f"{manifest_version!r} != {args.version!r}"
             )
-        if manifest_identity.get("s1_sha256") != args.s1_sha256:
-            raise TrainingDataError(
-                "feature build was generated for a different S1 checkpoint"
-            )
         if manifest_identity.get("text_features") != args.text_features:
             raise TrainingDataError(
                 "feature build text-feature contract does not match S1"
