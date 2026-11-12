@@ -2549,6 +2549,11 @@ def open1Ba(
             else None
         ),
         "s2_config_signature": quick_path_signature(config_path),
+        "text_low_lr_rate": (
+            float(text_low_lr_rate)
+            if version not in v3v4set
+            else None
+        ),
         "lora_rank": (
             int(lora_rank)
             if version in v3v4set

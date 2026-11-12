@@ -566,6 +566,15 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             block = webui[start:end]
             self.assertIn("_preprocessing_process_running()", block)
 
+    def test_standard_sovits_resume_identity_tracks_text_lr_rate(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def open1Ba(")
+        end = webui.index("def close1Ba(", start)
+        block = webui[start:end]
+        self.assertIn('"text_low_lr_rate": (', block)
+        self.assertIn("if version not in v3v4set", block)
+
+
     def test_training_checks_only_real_artifacts_and_provenance(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         for function_name in ("open1Ba", "open1Bb"):
