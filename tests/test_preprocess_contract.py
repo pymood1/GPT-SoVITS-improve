@@ -9,6 +9,7 @@ from tools.preprocess_contract import (
     build_dataset_fingerprint,
     build_stage_contract,
     contract_matches,
+    quick_path_signature,
     stage_matches_dataset,
     validate_dataset_fingerprint,
     write_stage_contract,
@@ -242,6 +243,19 @@ class PreprocessContractTests(unittest.TestCase):
             self.assertEqual(before["1a"]["digest"], after["1a"]["digest"])
             self.assertEqual(before["1b"]["digest"], after["1b"]["digest"])
 
+    def test_quick_model_signature_detects_in_place_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "model"
+            model_dir.mkdir()
+            weight = model_dir / "weights.bin"
+            weight.write_bytes(b"first")
+            before = quick_path_signature(model_dir)
+            time.sleep(0.002)
+            weight.write_bytes(b"second version")
+            after = quick_path_signature(model_dir)
+            self.assertNotEqual(before, after)
+
     def test_stage_contract_detects_model_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -292,7 +306,7 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         self.assertIn("build_stage_contract", webui)
         self.assertIn("stage_contract_path", webui)
-        self.assertIn("contracts_share_dataset", webui)
+        self.assertIn("stage_matches_dataset", webui)
         self.assertIn("inp_text,\n    inp_wav_dir,", webui)
 
     def test_one_click_preprocessing_reuses_canonical_stages(self):
