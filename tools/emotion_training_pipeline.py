@@ -136,6 +136,64 @@ DEFAULT_MIN_SAMPLES_PER_EMOTION = 3
 
 
 
+def _connected_sample_groups(
+    samples: Sequence[dict],
+) -> list[list[int]]:
+    """Connect samples that share provenance/text/pair identities.
+
+    Internal controller validation must not split correlated examples across
+    train/validation. The canonical dataset already treats source_id,
+    text_group_id and pair_group_id as leakage-sensitive identities; reuse the
+    same rule here. Samples with no such metadata remain independent.
+    """
+    parent = list(range(len(samples)))
+    owner: dict[str, int] = {}
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for index, sample in enumerate(samples):
+        tokens = []
+        for field in ("source_id", "text_group_id", "pair_group_id"):
+            value = str(sample.get(field) or "").strip()
+            if value:
+                tokens.append(f"{field}:{value}")
+
+        if not tokens:
+            tokens.append(
+                "sample:"
+                + str(sample.get("name") or index)
+            )
+
+        for token in tokens:
+            previous = owner.get(token)
+            if previous is None:
+                owner[token] = index
+            else:
+                union(index, previous)
+
+    groups: dict[int, list[int]] = defaultdict(list)
+    for index in range(len(samples)):
+        groups[find(index)].append(index)
+
+    return [
+        sorted(indices)
+        for _, indices in sorted(
+            groups.items(),
+            key=lambda item: min(item[1]),
+        )
+    ]
+
+
 def split_train_validation_samples(
     samples: Sequence[dict],
     emotion_names: Sequence[str],
@@ -144,49 +202,153 @@ def split_train_validation_samples(
     seed: int,
     min_train_samples: int = 2,
 ) -> tuple[list[dict], list[dict]]:
-    """Create a deterministic per-emotion held-out split."""
+    """Create a deterministic, leakage-aware held-out split.
+
+    Samples connected by source_id, text_group_id or pair_group_id are kept in
+    the same side of the split. This prevents exact-text or same-source leakage
+    from inflating validation quality.
+    """
     if not 0.0 < val_fraction < 1.0:
         raise EmotionPipelineError("val_fraction must be in (0,1)")
     if min_train_samples < 1:
         raise EmotionPipelineError("min_train_samples must be >= 1")
 
-    by_emotion: dict[str, list[dict]] = defaultdict(list)
+    samples = [dict(sample) for sample in samples]
+    emotion_names = [
+        str(emotion).strip().lower()
+        for emotion in emotion_names
+        if str(emotion).strip()
+    ]
+    emotion_set = set(emotion_names)
+
+    total_counts = {emotion: 0 for emotion in emotion_names}
     for sample in samples:
         emotion = str(sample.get("emotion") or "").strip().lower()
-        if emotion:
-            by_emotion[emotion].append(dict(sample))
+        if emotion in total_counts:
+            total_counts[emotion] += 1
 
-    split_rng = random.Random(seed + 104729)
-    train_samples: list[dict] = []
-    val_samples: list[dict] = []
-
+    target_val = {}
     for emotion in emotion_names:
-        bucket = sorted(
-            by_emotion.get(emotion, []),
-            key=lambda sample: str(sample.get("name") or ""),
-        )
-        if len(bucket) < min_train_samples + 1:
+        count = total_counts[emotion]
+        if count < min_train_samples + 1:
             raise EmotionPipelineError(
                 f"Emotion {emotion!r} needs at least "
                 f"{min_train_samples + 1} usable samples for validation"
             )
+        requested = max(1, int(round(count * val_fraction)))
+        target_val[emotion] = min(
+            requested,
+            count - min_train_samples,
+        )
 
-        split_rng.shuffle(bucket)
-        requested_val = max(
-            1,
-            int(round(len(bucket) * val_fraction)),
+    groups = _connected_sample_groups(samples)
+    group_rows = []
+    for indices in groups:
+        counts = {emotion: 0 for emotion in emotion_names}
+        for index in indices:
+            emotion = str(
+                samples[index].get("emotion") or ""
+            ).strip().lower()
+            if emotion in counts:
+                counts[emotion] += 1
+        group_rows.append(
+            {
+                "indices": indices,
+                "counts": counts,
+            }
         )
-        val_count = min(
-            requested_val,
-            len(bucket) - min_train_samples,
-        )
-        if val_count < 1:
+
+    split_rng = random.Random(seed + 104729)
+    split_rng.shuffle(group_rows)
+
+    val_counts = {emotion: 0 for emotion in emotion_names}
+    train_counts = dict(total_counts)
+    selected_groups: list[dict] = []
+
+    while any(
+        val_counts[emotion] < target_val[emotion]
+        for emotion in emotion_names
+    ):
+        best_index = None
+        best_score = None
+
+        for index, group in enumerate(group_rows):
+            counts = group["counts"]
+            if any(
+                train_counts[emotion] - counts[emotion]
+                < min_train_samples
+                for emotion in emotion_names
+            ):
+                continue
+
+            gain = sum(
+                min(
+                    counts[emotion],
+                    max(
+                        target_val[emotion] - val_counts[emotion],
+                        0,
+                    ),
+                )
+                for emotion in emotion_names
+            )
+            if gain <= 0:
+                continue
+
+            excess = sum(
+                max(
+                    val_counts[emotion]
+                    + counts[emotion]
+                    - target_val[emotion],
+                    0,
+                )
+                for emotion in emotion_names
+            )
+            group_size = len(group["indices"])
+            # Prefer groups that satisfy the most unmet class targets while
+            # adding the least excess validation data.
+            score = (gain, -excess, -group_size)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_index = index
+
+        if best_index is None:
+            unmet = [
+                emotion
+                for emotion in emotion_names
+                if val_counts[emotion] < target_val[emotion]
+            ]
             raise EmotionPipelineError(
-                f"Emotion {emotion!r} has no room for held-out validation"
+                "Leakage-safe validation split is impossible while keeping "
+                f"{min_train_samples} train samples per class. "
+                "Correlated groups are too large for: "
+                + ", ".join(unmet)
             )
 
-        val_samples.extend(bucket[:val_count])
-        train_samples.extend(bucket[val_count:])
+        chosen = group_rows.pop(best_index)
+        selected_groups.append(chosen)
+        for emotion in emotion_names:
+            val_counts[emotion] += chosen["counts"][emotion]
+            train_counts[emotion] -= chosen["counts"][emotion]
+
+    val_indices = {
+        index
+        for group in selected_groups
+        for index in group["indices"]
+    }
+    train_samples = [
+        sample
+        for index, sample in enumerate(samples)
+        if index not in val_indices
+        and str(sample.get("emotion") or "").strip().lower()
+        in emotion_set
+    ]
+    val_samples = [
+        sample
+        for index, sample in enumerate(samples)
+        if index in val_indices
+        and str(sample.get("emotion") or "").strip().lower()
+        in emotion_set
+    ]
 
     if not train_samples or not val_samples:
         raise EmotionPipelineError("train/validation split is empty")
@@ -245,6 +407,159 @@ def stratified_kfold_indices(
         folds.append((training, validation))
 
     return folds
+
+
+def stratified_group_kfold_indices(
+    samples: Sequence[dict],
+    labels: Sequence[int],
+    *,
+    max_folds: int = 5,
+    seed: int,
+) -> list[tuple[list[int], list[int]]]:
+    """Build deterministic stratified folds without leaking correlated groups."""
+    if len(samples) != len(labels):
+        raise EmotionPipelineError("sample/label count mismatch for group k-fold")
+    if max_folds < 2:
+        raise EmotionPipelineError("max_folds must be >= 2")
+    if len(labels) < 2:
+        raise EmotionPipelineError("need at least two samples for group k-fold")
+
+    labels = [int(label) for label in labels]
+    class_ids = sorted(set(labels))
+    if len(class_ids) < 2:
+        raise EmotionPipelineError(
+            "controller OOF needs at least two classes"
+        )
+
+    groups = _connected_sample_groups(samples)
+    groups_per_class = {class_id: 0 for class_id in class_ids}
+    group_counts = []
+
+    for indices in groups:
+        counts = {class_id: 0 for class_id in class_ids}
+        present = set()
+        for index in indices:
+            label = labels[index]
+            counts[label] += 1
+            present.add(label)
+        for class_id in present:
+            groups_per_class[class_id] += 1
+        group_counts.append((indices, counts))
+
+    fold_count = min(
+        max_folds,
+        min(groups_per_class.values(), default=0),
+    )
+    if fold_count < 2:
+        raise EmotionPipelineError(
+            "controller OOF needs at least two independent leakage groups "
+            "per class"
+        )
+
+    total_by_class = {
+        class_id: sum(label == class_id for label in labels)
+        for class_id in class_ids
+    }
+
+    def assignment_score(
+        fold_counts: list[dict[int, int]],
+    ) -> float:
+        score = 0.0
+        for class_id in class_ids:
+            total = max(total_by_class[class_id], 1)
+            ratios = [
+                fold[class_id] / total
+                for fold in fold_counts
+            ]
+            mean = sum(ratios) / len(ratios)
+            score += sum(
+                (value - mean) ** 2
+                for value in ratios
+            ) / len(ratios)
+        return score
+
+    # Greedy stratified-group assignment can have tie-sensitive outcomes.
+    # Retry deterministic shuffles and keep the first complete allocation.
+    for retry in range(32):
+        split_rng = random.Random(
+            seed + 32452843 + retry * 1009
+        )
+        ordered = list(group_counts)
+        split_rng.shuffle(ordered)
+        ordered.sort(
+            key=lambda item: (
+                -max(
+                    (
+                        item[1][class_id]
+                        / max(total_by_class[class_id], 1)
+                    )
+                    for class_id in class_ids
+                ),
+                -len(item[0]),
+            )
+        )
+
+        fold_counts = [
+            {class_id: 0 for class_id in class_ids}
+            for _ in range(fold_count)
+        ]
+        fold_groups: list[list[list[int]]] = [
+            [] for _ in range(fold_count)
+        ]
+
+        for indices, counts in ordered:
+            best_fold = None
+            best_score = None
+            for fold_index in range(fold_count):
+                trial = [
+                    dict(values)
+                    for values in fold_counts
+                ]
+                for class_id in class_ids:
+                    trial[fold_index][class_id] += counts[class_id]
+
+                balance = assignment_score(trial)
+                fold_size = sum(trial[fold_index].values())
+                score = (balance, fold_size, fold_index)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_fold = fold_index
+
+            for class_id in class_ids:
+                fold_counts[best_fold][class_id] += counts[class_id]
+            fold_groups[best_fold].append(indices)
+
+        folds: list[tuple[list[int], list[int]]] = []
+        valid = True
+        all_indices = set(range(len(labels)))
+        for fold_index in range(fold_count):
+            validation = sorted(
+                index
+                for group in fold_groups[fold_index]
+                for index in group
+            )
+            validation_set = set(validation)
+            training = sorted(all_indices - validation_set)
+
+            val_labels = {labels[index] for index in validation}
+            train_labels = {labels[index] for index in training}
+            if (
+                not validation
+                or not training
+                or val_labels != set(class_ids)
+                or train_labels != set(class_ids)
+            ):
+                valid = False
+                break
+            folds.append((training, validation))
+
+        if valid:
+            return folds
+
+    raise EmotionPipelineError(
+        "Could not build leakage-safe stratified OOF folds from the current "
+        "source/text/pair groups"
+    )
 
 
 def run_mean_pool_linear_probe(

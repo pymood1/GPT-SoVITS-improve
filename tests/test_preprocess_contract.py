@@ -616,6 +616,35 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn('("1b",)', block)
         self.assertIn("1B dependency mismatch", block)
 
+    def test_emotion_controller_training_uses_leakage_safe_validation(self):
+        trainer = (
+            ROOT / "tools" / "train_emotion_controller.py"
+        ).read_text(encoding="utf-8")
+        pipeline = (
+            ROOT / "tools" / "emotion_training_pipeline.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "stratified_group_kfold_indices",
+            trainer,
+        )
+        self.assertIn(
+            "controller_eligible_samples",
+            trainer,
+        )
+        self.assertIn(
+            '("source_id", "text_group_id", "pair_group_id")',
+            pipeline,
+        )
+        self.assertIn(
+            '"oof_balanced_ce"',
+            trainer,
+        )
+        self.assertIn(
+            "or accepted_steps == training_limit",
+            trainer,
+        )
+
     def test_emotion_preprocess_cache_ignores_unrelated_git_head(self):
         script = (
             ROOT / "tools" / "run_emotion_v5_preprocess.py"

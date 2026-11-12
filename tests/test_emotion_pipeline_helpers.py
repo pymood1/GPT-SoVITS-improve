@@ -11,6 +11,7 @@ from tools.emotion_training_pipeline import (
     create_reference_map,
     detect_pair_emotions,
     split_train_validation_samples,
+    stratified_group_kfold_indices,
     stratified_kfold_indices,
     update_early_stop_state,
     latest_gpt_checkpoint_for_experiment,
@@ -443,6 +444,97 @@ class ValidationPolicyTests(unittest.TestCase):
         )
         self.assertEqual(train, train2)
         self.assertEqual(val, val2)
+
+    def test_holdout_keeps_same_text_group_on_one_side(self):
+        samples = []
+        for group_index in range(3):
+            for emotion in ("happy", "sad"):
+                samples.append(
+                    {
+                        "name": f"{emotion}_{group_index}.wav",
+                        "emotion": emotion,
+                        "text_group_id": f"text-{group_index}",
+                    }
+                )
+
+        train, val = split_train_validation_samples(
+            samples,
+            ["happy", "sad"],
+            val_fraction=0.34,
+            seed=233333,
+            min_train_samples=2,
+        )
+
+        train_groups = {
+            sample["text_group_id"] for sample in train
+        }
+        val_groups = {
+            sample["text_group_id"] for sample in val
+        }
+        self.assertFalse(train_groups & val_groups)
+        self.assertEqual(
+            {sample["emotion"] for sample in val},
+            {"happy", "sad"},
+        )
+        self.assertEqual(len(train), 4)
+        self.assertEqual(len(val), 2)
+
+    def test_controller_group_kfold_does_not_leak_text_groups(self):
+        samples = []
+        labels = []
+        for group_index in range(4):
+            for class_id, emotion in enumerate(("happy", "sad")):
+                samples.append(
+                    {
+                        "name": f"{emotion}_{group_index}.wav",
+                        "emotion": emotion,
+                        "text_group_id": f"text-{group_index}",
+                    }
+                )
+                labels.append(class_id)
+
+        folds = stratified_group_kfold_indices(
+            samples,
+            labels,
+            max_folds=3,
+            seed=233333,
+        )
+        self.assertEqual(len(folds), 3)
+
+        validation_union = []
+        for train_idx, val_idx in folds:
+            validation_union.extend(val_idx)
+            train_groups = {
+                samples[index]["text_group_id"]
+                for index in train_idx
+            }
+            val_groups = {
+                samples[index]["text_group_id"]
+                for index in val_idx
+            }
+            self.assertFalse(train_groups & val_groups)
+            self.assertEqual(
+                {labels[index] for index in val_idx},
+                {0, 1},
+            )
+            self.assertEqual(
+                {labels[index] for index in train_idx},
+                {0, 1},
+            )
+
+        self.assertEqual(
+            sorted(validation_union),
+            list(range(len(samples))),
+        )
+        self.assertEqual(
+            folds,
+            stratified_group_kfold_indices(
+                samples,
+                labels,
+                max_folds=3,
+                seed=233333,
+            ),
+        )
 
     def test_probe_kfold_is_stratified_and_deterministic(self):
         labels = (

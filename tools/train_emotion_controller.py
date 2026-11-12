@@ -60,7 +60,7 @@ from tools.emotion_training_pipeline import (  # noqa: E402
     EmotionPipelineError,
     run_mean_pool_linear_probe,
     split_train_validation_samples,
-    stratified_kfold_indices,
+    stratified_group_kfold_indices,
     update_early_stop_state,
 )
 
@@ -375,6 +375,9 @@ def build_training_samples(
                 "emotion_id": emotion_to_id[emotion],
                 "speaker_uid": speaker_uid,
                 "reference": reference_map[speaker_uid],
+                "source_id": meta.get("source_id"),
+                "text_group_id": meta.get("text_group_id"),
+                "pair_group_id": meta.get("pair_group_id"),
             }
         )
         counts[emotion] += 1
@@ -967,6 +970,7 @@ def _classification_metrics(
     prediction = logits.argmax(dim=-1)
 
     per_class_accuracy = []
+    per_class_ce = []
     auc_values = []
     probs = torch.softmax(logits, dim=-1)
 
@@ -977,6 +981,12 @@ def _classification_metrics(
                 (prediction[positive_mask] == labels[positive_mask])
                 .float()
                 .mean()
+            )
+            per_class_ce.append(
+                F.cross_entropy(
+                    logits[positive_mask],
+                    labels[positive_mask],
+                )
             )
 
         positive = probs[positive_mask, class_id]
@@ -991,6 +1001,9 @@ def _classification_metrics(
 
     return {
         "ce": float(F.cross_entropy(logits, labels).item()),
+        "balanced_ce": float(
+            torch.stack(per_class_ce).mean().item()
+        ) if per_class_ce else float("inf"),
         "accuracy": float(
             (prediction == labels).float().mean().item()
         ),
@@ -1041,7 +1054,8 @@ def run_controller_oof_cv(
     class_count = len(emotion_names)
 
     try:
-        folds = stratified_kfold_indices(
+        folds = stratified_group_kfold_indices(
+            eligible_samples,
             labels,
             max_folds=5,
             seed=seed,
@@ -1215,7 +1229,7 @@ def run_controller_oof_cv(
     random_ce = math.log(class_count)
     verdict = (
         "generalization_detected"
-        if metrics["ce"] < random_ce - 0.03
+        if metrics["balanced_ce"] < random_ce - 0.03
         else "near_chance"
     )
     return {
@@ -1225,6 +1239,7 @@ def run_controller_oof_cv(
         "training_steps_per_fold": steps,
         "random_ce": random_ce,
         "oof_ce": metrics["ce"],
+        "oof_balanced_ce": metrics["balanced_ce"],
         "oof_accuracy": metrics["accuracy"],
         "oof_macro_accuracy": metrics["macro_accuracy"],
         "oof_macro_auc": metrics["macro_auc"],
@@ -1704,26 +1719,6 @@ def main() -> int:
     )
 
     all_usable_samples = list(training_samples)
-    training_samples, validation_samples = (
-        split_train_validation_samples(
-            all_usable_samples,
-            emotion_names,
-            val_fraction=args.val_fraction,
-            seed=args.seed,
-            min_train_samples=2,
-        )
-    )
-    print(
-        f"[data] held-out validation: "
-        f"train={len(training_samples)} "
-        f"val={len(validation_samples)} "
-        f"interval={args.val_interval} "
-        f"patience={args.early_stop_patience}"
-    )
-
-    samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
-    for sample in training_samples:
-        samples_by_emotion[sample["emotion"]].append(sample)
 
     model_wrapper = Text2SemanticLightningModule(
         config,
@@ -1918,6 +1913,60 @@ def main() -> int:
                 else 0.0
             ),
         }
+
+    controller_eligible_samples = [
+        sample
+        for sample in all_usable_samples
+        if float(
+            frozen_sample_cache[
+                (sample["reference"], sample["name"])
+            ]["coverage"]
+        )
+        >= args.min_support_coverage
+    ]
+    eligible_counts: Dict[str, int] = defaultdict(int)
+    for sample in controller_eligible_samples:
+        eligible_counts[sample["emotion"]] += 1
+
+    insufficient_support = [
+        emotion
+        for emotion in emotion_names
+        if eligible_counts.get(emotion, 0)
+        < args.min_samples_per_emotion
+    ]
+    if insufficient_support:
+        raise TrainingDataError(
+            "Too few controller-trainable samples remain after top-k support "
+            "coverage filtering: "
+            + ", ".join(
+                f"{emotion}={eligible_counts.get(emotion, 0)}"
+                for emotion in insufficient_support
+            )
+            + f" (min={args.min_samples_per_emotion}, "
+            f"coverage>={args.min_support_coverage:.2f})"
+        )
+
+    training_samples, validation_samples = (
+        split_train_validation_samples(
+            controller_eligible_samples,
+            emotion_names,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+            min_train_samples=2,
+        )
+    )
+    samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
+    for sample in training_samples:
+        samples_by_emotion[sample["emotion"]].append(sample)
+
+    print(
+        f"[data] leakage-safe held-out validation: "
+        f"eligible={len(controller_eligible_samples)} "
+        f"train={len(training_samples)} "
+        f"val={len(validation_samples)} "
+        f"interval={args.val_interval} "
+        f"patience={args.early_stop_patience}"
+    )
 
     representation_probe["coverage_skipped"] = probe_coverage_skipped
     representation_probe["invalid_hidden"] = probe_invalid_hidden
@@ -2216,7 +2265,10 @@ def main() -> int:
             running_count = 0
             log_window_started = time.perf_counter()
 
-        if accepted_steps % args.val_interval == 0:
+        if (
+            accepted_steps % args.val_interval == 0
+            or accepted_steps == training_limit
+        ):
             val_metrics = evaluate_controller(
                 controller=controller,
                 model=model,
@@ -2379,7 +2431,7 @@ def main() -> int:
         f"steps_per_fold={oof_steps}"
     )
     controller_oof = run_controller_oof_cv(
-        samples=all_usable_samples,
+        samples=controller_eligible_samples,
         emotion_names=emotion_names,
         frozen_sample_cache=frozen_sample_cache,
         output_weight=output_weight,
@@ -2409,6 +2461,7 @@ def main() -> int:
             "[cv] "
             f"n={controller_oof['samples']} "
             f"OOF_CE={controller_oof['oof_ce']:.5f} "
+            f"balanced_CE={controller_oof['oof_balanced_ce']:.5f} "
             f"macro_acc={controller_oof['oof_macro_accuracy']:.2%} "
             f"macro_auc={cv_auc_text} "
             f"verdict={controller_oof['verdict']}"
@@ -2427,7 +2480,7 @@ def main() -> int:
     )
     oof_available = controller_oof.get("status") == "ok"
     controller_eval_loss = (
-        float(controller_oof["oof_ce"])
+        float(controller_oof["oof_balanced_ce"])
         if oof_available
         else final_best_loss
     )
@@ -2552,7 +2605,8 @@ def main() -> int:
         "full_beats_topk": full_beats_topk,
         "likely_bottleneck": likely_bottleneck,
         "rule": (
-            "PASS when controller OOF CE beats ln(K) by at least 0.03. "
+            "PASS when class-balanced controller OOF CE beats ln(K) by "
+            "at least 0.03. "
             "If OOF is unavailable, fall back to best held-out validation "
             "CE. Diagnostic probes identify the more likely bottleneck."
         ),
