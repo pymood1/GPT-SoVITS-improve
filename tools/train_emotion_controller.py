@@ -1928,7 +1928,13 @@ def main() -> int:
                 "verdict": "unavailable",
                 "samples": 0,
             }
-        return run_mean_pool_linear_probe(
+        started_at = time.perf_counter()
+        print(
+            f"[probe] start method={method} "
+            f"samples={len(labels)}",
+            flush=True,
+        )
+        report = run_mean_pool_linear_probe(
             torch.stack(values, dim=0),
             labels,
             emotion_names,
@@ -1939,6 +1945,13 @@ def main() -> int:
             steps=80,
             method=method,
         )
+        print(
+            f"[probe] done method={method} "
+            f"status={report.get('status')} "
+            f"elapsed={time.perf_counter() - started_at:.1f}s",
+            flush=True,
+        )
+        return report
 
     coverage_report = {}
     for emotion, values in coverage_by_emotion.items():
