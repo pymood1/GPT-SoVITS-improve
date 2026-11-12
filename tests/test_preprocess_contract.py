@@ -461,6 +461,23 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         click_end = webui.index("version_checkbox.change(", click_start)
         self.assertIn("version_checkbox,", webui[click_start:click_end])
 
+    def test_training_and_preprocessing_are_mutually_exclusive(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        self.assertIn("def _training_process_running(", webui)
+        self.assertIn("def _preprocessing_process_running(", webui)
+
+        for function_name in ("open1a", "open1b", "open1c"):
+            start = webui.index(f"def {function_name}(")
+            end = webui.index("\ndef ", start + 5)
+            block = webui[start:end]
+            self.assertIn("_training_process_running()", block)
+
+        for function_name in ("open1Ba", "open1Bb"):
+            start = webui.index(f"def {function_name}(")
+            end = webui.index("\ndef ", start + 5)
+            block = webui[start:end]
+            self.assertIn("_preprocessing_process_running()", block)
+
     def test_training_checks_only_real_artifacts_and_provenance(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         for function_name in ("open1Ba", "open1Bb"):
