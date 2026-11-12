@@ -292,6 +292,26 @@ class PreprocessContractTests(unittest.TestCase):
             self.assertTrue(reset)
             self.assertFalse(resume_dir.exists())
 
+    def test_1b_contract_reuses_compatible_standard_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            list_path, wav_dir = self._dataset(root)
+            v4 = build_stage_contract(
+                stage="1b",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v4",
+                settings={"cnhubert": "same"},
+            )
+            v5 = build_stage_contract(
+                stage="1b",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"cnhubert": "same"},
+            )
+            self.assertEqual(v4["digest"], v5["digest"])
+
     def test_1b_version_key_only_distinguishes_pro_features(self):
         self.assertEqual(
             stage_version_key("1b", "v4"),
