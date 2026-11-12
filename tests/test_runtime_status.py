@@ -1,15 +1,20 @@
 import json
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 from tools.runtime_status import (
+    STATUS_PATH_ENV,
     clear_activity,
+    merge_activities,
     publish_activity,
+    read_active_activities,
     read_activity,
     render_status_html,
     build_runtime_status_payload,
+    status_slot_path,
 )
 
 
@@ -42,6 +47,59 @@ class RuntimeStatusTests(unittest.TestCase):
                 read_activity(path=path, stale_after=60.0)["state"],
                 "idle",
             )
+
+    def test_status_path_env_and_parallel_slots(self):
+        previous_temp = os.environ.get("TEMP")
+        previous_status = os.environ.get(STATUS_PATH_ENV)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["TEMP"] = tmp
+                os.environ.pop(STATUS_PATH_ENV, None)
+
+                gpt_path = status_slot_path("gpt")
+                sovits_path = status_slot_path("sovits")
+                publish_activity(
+                    path=gpt_path,
+                    task="GPT/S1",
+                    stage="training",
+                    progress=0.50,
+                )
+                publish_activity(
+                    path=sovits_path,
+                    task="SoVITS/S2",
+                    stage="training",
+                    progress=0.25,
+                )
+
+                active = read_active_activities(stale_after=60.0)
+                self.assertEqual(len(active), 2)
+                merged = merge_activities(active)
+                self.assertEqual(merged["state"], "running")
+                self.assertIn("GPT/S1", merged["task"])
+                self.assertIn("SoVITS/S2", merged["task"])
+                self.assertAlmostEqual(merged["progress"], 0.375)
+
+                custom = Path(tmp) / "custom.json"
+                os.environ[STATUS_PATH_ENV] = str(custom)
+                publish_activity(
+                    task="custom",
+                    stage="running",
+                    progress=0.1,
+                )
+                self.assertTrue(custom.is_file())
+                self.assertEqual(
+                    read_activity(path=custom)["task"],
+                    "custom",
+                )
+        finally:
+            if previous_temp is None:
+                os.environ.pop("TEMP", None)
+            else:
+                os.environ["TEMP"] = previous_temp
+            if previous_status is None:
+                os.environ.pop(STATUS_PATH_ENV, None)
+            else:
+                os.environ[STATUS_PATH_ENV] = previous_status
 
     def test_stale_activity_degrades_to_idle(self):
         for state_name in ("running", "failed"):
