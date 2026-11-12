@@ -38,6 +38,20 @@ def _file_stat_payload(path: Path) -> dict[str, Any]:
     }
 
 
+def file_sha256(
+    path: str | os.PathLike[str],
+    chunk_size: int = 1024 * 1024,
+) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _json_digest(payload: Mapping[str, Any]) -> str:
     raw = json.dumps(
         payload,
