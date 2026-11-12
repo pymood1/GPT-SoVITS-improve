@@ -148,7 +148,7 @@ def clear_activity(
 def read_activity(
     *,
     path: Optional[Path] = None,
-    stale_after: float = 15.0,
+    stale_after: float = 45.0,
 ) -> dict[str, Any]:
     target = Path(path) if path is not None else default_status_path()
     if not target.is_file():
@@ -177,7 +177,7 @@ def read_activity(
             "reason": "invalid",
         }
 
-    if payload.get("state") == "running":
+    if payload.get("state") != "idle":
         try:
             updated_at = float(payload.get("updated_at", 0.0))
         except (TypeError, ValueError):
