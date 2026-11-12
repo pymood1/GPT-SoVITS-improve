@@ -9,6 +9,7 @@ from tools.runtime_status import (
     publish_activity,
     read_activity,
     render_status_html,
+    build_runtime_status_payload,
 )
 
 
@@ -109,11 +110,24 @@ class RuntimeStatusTests(unittest.TestCase):
             self.assertIn(marker, text, relative)
             self.assertIn("clear_activity", text, relative)
 
-    def test_webui_uses_queue_free_two_second_timer(self):
+    def test_runtime_payload_is_json(self):
+        payload = json.loads(build_runtime_status_payload())
+        self.assertIn("hardware", payload)
+        self.assertIn("activity", payload)
+        self.assertIn("cpu_percent", payload["hardware"])
+        self.assertIn("state", payload["activity"])
+
+    def test_webui_patches_static_dashboard_without_rerender(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         self.assertIn("runtime_status_monitor = gr.HTML(", webui)
+        self.assertIn('elem_id="runtime-status-monitor"', webui)
+        self.assertIn("runtime_status_payload = gr.Textbox(", webui)
         self.assertIn("runtime_status_timer = gr.Timer(value=2", webui)
         self.assertIn("runtime_status_timer.tick(", webui)
+        self.assertIn("outputs=[runtime_status_payload]", webui)
+        self.assertNotIn("outputs=[runtime_status_monitor]", webui)
+        self.assertIn("runtime_status_payload.change(", webui)
+        self.assertIn("js=runtime_status_patch_js", webui)
         self.assertIn("queue=False", webui)
 
 
