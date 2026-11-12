@@ -33,6 +33,14 @@ class PreprocessError(RuntimeError):
     pass
 
 
+def effective_half_precision(
+    *,
+    full_precision: bool,
+    cuda_available: bool,
+) -> bool:
+    return (not bool(full_precision)) and bool(cuda_available)
+
+
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -350,6 +358,13 @@ def main() -> int:
     if not s2_config.is_absolute():
         s2_config = (ROOT / s2_config).resolve()
 
+    import torch
+
+    effective_is_half = effective_half_precision(
+        full_precision=args.full_precision,
+        cuda_available=torch.cuda.is_available(),
+    )
+
     print("[fingerprint] referenced audio files")
     audio_manifest_hash, expected_names = validate_list(train_list)
     if not s2_path.is_file():
@@ -433,7 +448,7 @@ def main() -> int:
         "s2_config_sha256": s2_config_hash,
         "preprocess_code_sha256": preprocess_code_hash,
         "version": args.version,
-        "is_half": not args.full_precision,
+        "is_half": effective_is_half,
     }
     identity_bytes = json.dumps(
         identity,
@@ -531,7 +546,7 @@ def main() -> int:
             "cnhubert_base_dir": str(cnhubert_dir),
             "pretrained_s2G": str(s2_path),
             "s2config_path": str(s2_config),
-            "is_half": str(not args.full_precision),
+            "is_half": str(effective_is_half),
             "version": args.version,
         }
     )
