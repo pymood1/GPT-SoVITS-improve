@@ -210,9 +210,9 @@ def set_default():
 
 set_default()
 
-gpus = "-".join(map(str, GPU_INDEX))
+gpus = "-".join(map(str, sorted(GPU_INDEX)))
 default_gpu_numbers = infer_device.index
-_training_gpu_ids = [str(index) for index in GPU_INDEX]
+_training_gpu_ids = [str(index) for index in sorted(GPU_INDEX)]
 default_gpt_training_gpu = (
     _training_gpu_ids[0]
     if _training_gpu_ids
