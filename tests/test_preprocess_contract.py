@@ -486,7 +486,7 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             encoding="utf-8"
         )
         webui_start = webui.index("def change_gpt_weights(")
-        webui_end = webui.index("change_gpt_weights(gpt_path)", webui_start)
+        webui_end = webui.index("\nchange_gpt_weights(gpt_path)", webui_start)
         webui_switch = webui[webui_start:webui_end]
         self.assertLess(
             webui_switch.index("clear_emotion_controller()"),
