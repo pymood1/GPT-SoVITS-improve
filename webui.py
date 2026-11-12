@@ -2187,20 +2187,21 @@ def open1Ba(
         return
 
     s2_dir = Path(exp_root) / exp_name
-    if not check_for_existance(
-        [str(s2_dir)],
-        is_train=True,
-    ):
+    artifact_error = _training_artifact_error(
+        s2_dir,
+        "sovits",
+        version,
+    )
+    if artifact_error:
         yield (
-            process_info(process_name_sovits, "failed"),
+            process_info(process_name_sovits, "failed")
+            + f": {artifact_error}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             {"__type__": "update"},
             {"__type__": "update"},
         )
         return
-
-    check_details([str(s2_dir)], is_train=True)
 
     dataset_error = _validate_training_dataset_contract(
         s2_dir,
@@ -2419,20 +2420,21 @@ def open1Bb(
         return
 
     s1_dir = Path(exp_root) / exp_name
-    if not check_for_existance(
-        [str(s1_dir)],
-        is_train=True,
-    ):
+    artifact_error = _training_artifact_error(
+        s1_dir,
+        "gpt",
+        version,
+    )
+    if artifact_error:
         yield (
-            process_info(process_name_gpt, "failed"),
+            process_info(process_name_gpt, "failed")
+            + f": {artifact_error}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             {"__type__": "update"},
             {"__type__": "update"},
         )
         return
-
-    check_details([str(s1_dir)], is_train=True)
 
     dataset_error = _validate_training_dataset_contract(
         s1_dir,
@@ -3593,6 +3595,23 @@ def open1c(
         yield (
             process_info(process_name_1c, "failed")
             + f": config not found: {config_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    dependency_error = _validate_training_dataset_contract(
+        opt_dir,
+        inp_text,
+        inp_wav_dir,
+        version,
+        ("1b",),
+    )
+    if dependency_error:
+        yield (
+            process_info(process_name_1c, "failed")
+            + ": 1B dependency mismatch: "
+            + dependency_error,
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
         )
