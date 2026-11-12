@@ -32,6 +32,7 @@ jobs:
             tools/auto_emotion_sidecar.py \
             tools/emotion_dataset_builder.py \
             tools/emotion_training_pipeline.py \
+            tools/preprocess_contract.py \
             tools/run_emotion_v5_preprocess.py \
             tools/export_emotion_reference_prompts.py \
             tools/train_emotion_controller.py \
