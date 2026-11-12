@@ -52,6 +52,10 @@ from text.multilingual_bert import (  # noqa: E402
     MULTILINGUAL_BERT_LANGUAGES,
     checkpoint_multilingual_bert_config,
 )
+from tools.runtime_status import (  # noqa: E402
+    clear_activity,
+    publish_activity,
+)
 from tools.emotion_training_pipeline import (  # noqa: E402
     EmotionPipelineError,
     run_mean_pool_linear_probe,
@@ -1483,6 +1487,15 @@ def main() -> int:
             "backbone_amp=float16 controller=float32"
         )
 
+    publish_activity(
+        task="Emotion Controller 학습",
+        stage="preflight",
+        progress=0.0,
+        step=0,
+        total_steps=args.steps,
+        metric="probe와 데이터 검증 준비 중",
+    )
+
     s1_path = Path(args.s1_checkpoint).resolve()
     args.s1_sha256 = sha256_file(str(s1_path))
     checkpoint = torch.load(
@@ -2164,6 +2177,20 @@ def main() -> int:
             mean_loss = float((running_loss / divisor).item())
             mean_gap = float((running_gap / divisor).item())
 
+            publish_activity(
+                task="Emotion Controller 학습",
+                stage="training",
+                progress=(
+                    accepted_steps / training_limit
+                    if training_limit
+                    else None
+                ),
+                step=accepted_steps,
+                total_steps=training_limit,
+                loss=mean_loss,
+                metric=f"gap {mean_gap:+.4f}",
+            )
+
             print(
                 f"step={accepted_steps}/{training_limit} "
                 f"emotion={sample['emotion']} "
@@ -2334,6 +2361,19 @@ def main() -> int:
     # Keep OOF training length independent of the single held-out split.
     # Using best_val_step here would leak information from that split into CV.
     oof_steps = args.steps
+    publish_activity(
+        task="Emotion Controller 학습",
+        stage="cross-validation",
+        progress=1.0,
+        step=accepted_steps,
+        total_steps=training_limit,
+        loss=(
+            float(best_val_loss)
+            if math.isfinite(best_val_loss)
+            else None
+        ),
+        metric="5-fold OOF 검증 중",
+    )
     print(
         f"[cv] running controller OOF: folds<=5 "
         f"steps_per_fold={oof_steps}"
@@ -2588,6 +2628,7 @@ def main() -> int:
         f"| skipped_coverage={skipped_low_coverage} "
         f"| skipped_no_grad={skipped_no_gradient}"
     )
+    clear_activity(reason="emotion_controller_finished")
     return 0
 
 
@@ -2600,5 +2641,11 @@ if __name__ == "__main__":
         OSError,
         ValueError,
     ) as exc:
+        publish_activity(
+            task="Emotion Controller 학습",
+            stage="failed",
+            state="failed",
+            metric=str(exc),
+        )
         print(f"[FATAL] {exc}", file=sys.stderr)
         raise SystemExit(2)
