@@ -320,6 +320,7 @@ def build_stage_contract(
             normalized_settings[str(key)] = str(value)
 
     stage_name = str(stage)
+    normalized_version = stage_version_key(stage_name, str(version))
     if stage_name == "1a":
         dependency_kind = "text"
         dependency_digest = dataset["text_digest"]
@@ -333,7 +334,7 @@ def build_stage_contract(
     payload = {
         "contract_version": CONTRACT_VERSION,
         "stage": stage_name,
-        "version": str(version),
+        "version": normalized_version,
         "dataset": dataset,
         "dependency_kind": dependency_kind,
         "dataset_dependency_digest": dependency_digest,
@@ -343,7 +344,7 @@ def build_stage_contract(
         {
             "contract_version": CONTRACT_VERSION,
             "stage": stage_name,
-            "version": str(version),
+            "version": normalized_version,
             "dependency_kind": dependency_kind,
             "dataset_dependency_digest": dependency_digest,
             "settings": normalized_settings,
