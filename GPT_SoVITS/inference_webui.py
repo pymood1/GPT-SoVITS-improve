@@ -667,6 +667,13 @@ def change_gpt_weights(gpt_path):
     if t2s_model_cudagraph is not None:
         t2s_model_cudagraph.close()
     t2s_model_cudagraph = None
+    current_t2s_model = globals().get("t2s_model")
+    if (
+        current_t2s_model is not None
+        and getattr(current_t2s_model, "model", None) is not None
+        and hasattr(current_t2s_model.model, "clear_emotion_controller")
+    ):
+        current_t2s_model.model.clear_emotion_controller()
     emotion_controller_metadata = None
     gpt_path_global = gpt_path
     hz = 50

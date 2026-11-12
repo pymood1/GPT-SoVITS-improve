@@ -467,6 +467,33 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("raise SystemExit(2)", script)
 
 
+    def test_s1_switch_detaches_emotion_controller_before_loading(self):
+        tts = (
+            ROOT
+            / "GPT_SoVITS"
+            / "TTS_infer_pack"
+            / "TTS.py"
+        ).read_text(encoding="utf-8")
+        tts_start = tts.index("    def init_t2s_weights(")
+        tts_end = tts.index("    def init_vocoder(", tts_start)
+        tts_switch = tts[tts_start:tts_end]
+        self.assertLess(
+            tts_switch.index("clear_emotion_controller()"),
+            tts_switch.index("torch.load(weights_path"),
+        )
+
+        webui = (ROOT / "GPT_SoVITS" / "inference_webui.py").read_text(
+            encoding="utf-8"
+        )
+        webui_start = webui.index("def change_gpt_weights(")
+        webui_end = webui.index("change_gpt_weights(gpt_path)", webui_start)
+        webui_switch = webui[webui_start:webui_end]
+        self.assertLess(
+            webui_switch.index("clear_emotion_controller()"),
+            webui_switch.index("torch.load(gpt_path"),
+        )
+
+
     def test_one_click_stop_terminates_delegated_preprocess_stage(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         start = webui.index("def close1abcd(")

@@ -730,8 +730,16 @@ class TTS:
 
 
     def init_t2s_weights(self, weights_path: str):
-        # A controller is tied to one S1 hidden/readout geometry. Replacing S1
-        # implicitly detaches it; clear stale metadata at the same time.
+        # A controller is tied to one S1 hidden/readout geometry. Detach it
+        # before loading the replacement so a failed S1 switch cannot leave
+        # the old controller active while metadata says it is unloaded.
+        current_t2s = getattr(self, "t2s_model", None)
+        if (
+            current_t2s is not None
+            and getattr(current_t2s, "model", None) is not None
+            and hasattr(current_t2s.model, "clear_emotion_controller")
+        ):
+            current_t2s.model.clear_emotion_controller()
         self.emotion_controller_metadata = None
         if self.t2s_accel is not None:
             self.t2s_accel.close()
