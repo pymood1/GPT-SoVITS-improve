@@ -3179,6 +3179,17 @@ training_sequence_cancel_requested = False
 process_name_train_sequence = "GPT → SoVITS 연속 학습"
 
 
+def _single_training_gpu(value):
+    tokens = [
+        token.strip()
+        for token in re.split(r"[-,]", str(value or ""))
+        if token.strip()
+    ]
+    if len(tokens) != 1:
+        return None
+    return str(fix_gpu_number(tokens[0]))
+
+
 @_persistent_gradio_errors
 def run_gpt_then_sovits(
     batch_size_gpt,
@@ -3213,16 +3224,7 @@ def run_gpt_then_sovits(
     sovits_update = {"__type__": "update"}
     gpt_update = {"__type__": "update"}
 
-    yield (
-        process_info(process_name_gpt, "open"),
-        {"__type__": "update", "visible": False},
-        {"__type__": "update", "visible": True},
-        sovits_update,
-        gpt_update,
-    )
-
-    gpt_finished = False
-    for result in open1Bb(
+    gpt_args = (
         version,
         batch_size_gpt,
         total_epoch_gpt,
@@ -3238,14 +3240,200 @@ def run_gpt_then_sovits(
         pretrained_s2G,
         use_multilingual_bert,
         multilingual_bert_model,
-    ):
+    )
+    sovits_args = (
+        version,
+        batch_size_sovits,
+        total_epoch_sovits,
+        exp_name,
+        inp_text,
+        inp_wav_dir,
+        text_low_lr_rate,
+        if_save_latest_sovits,
+        if_save_every_weights_sovits,
+        save_every_epoch_sovits,
+        gpu_numbers_sovits,
+        pretrained_s2G,
+        pretrained_s2D,
+        if_grad_ckpt,
+        lora_rank,
+    )
+
+    gpt_gpu = _single_training_gpu(gpu_numbers_gpt)
+    sovits_gpu = _single_training_gpu(gpu_numbers_sovits)
+    run_parallel = (
+        gpt_gpu is not None
+        and sovits_gpu is not None
+        and gpt_gpu != sovits_gpu
+    )
+
+    if run_parallel:
+        yield (
+            f"병렬 학습 시작: GPT/S1=GPU {gpt_gpu}, "
+            f"SoVITS/S2=GPU {sovits_gpu}",
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            sovits_update,
+            gpt_update,
+        )
+
+        lock = threading.Lock()
+        state = {
+            "gpt": {"result": None, "error": None, "done": False},
+            "sovits": {"result": None, "error": None, "done": False},
+        }
+
+        def consume(key, generator):
+            try:
+                for result in generator:
+                    with lock:
+                        state[key]["result"] = result
+            except Exception as exc:
+                with lock:
+                    state[key]["error"] = exc
+            finally:
+                with lock:
+                    state[key]["done"] = True
+
+        threads = [
+            threading.Thread(
+                target=consume,
+                args=("gpt", open1Bb(*gpt_args)),
+                daemon=True,
+                name="gpt-training",
+            ),
+            threading.Thread(
+                target=consume,
+                args=("sovits", open1Ba(*sovits_args)),
+                daemon=True,
+                name="sovits-training",
+            ),
+        ]
+        for worker in threads:
+            worker.start()
+
+        last_message = None
+        while any(worker.is_alive() for worker in threads):
+            if training_sequence_cancel_requested:
+                close1Bb()
+                close1Ba()
+                for worker in threads:
+                    worker.join(timeout=5.0)
+                return
+
+            with lock:
+                gpt_result = state["gpt"]["result"]
+                sovits_result = state["sovits"]["result"]
+
+            gpt_status = (
+                gpt_result[0]
+                if gpt_result
+                else process_info(process_name_gpt, "open")
+            )
+            sovits_status = (
+                sovits_result[0]
+                if sovits_result
+                else process_info(process_name_sovits, "open")
+            )
+            if gpt_result and len(gpt_result) >= 5:
+                sovits_update = gpt_result[3]
+                gpt_update = gpt_result[4]
+            if sovits_result and len(sovits_result) >= 5:
+                sovits_update = sovits_result[3]
+                gpt_update = sovits_result[4]
+
+            message = (
+                f"[병렬] GPT/S1 GPU {gpt_gpu}: {gpt_status}\n"
+                f"[병렬] SoVITS/S2 GPU {sovits_gpu}: {sovits_status}"
+            )
+            if message != last_message:
+                yield (
+                    message,
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    sovits_update,
+                    gpt_update,
+                )
+                last_message = message
+            time.sleep(0.25)
+
+        for worker in threads:
+            worker.join()
+
+        with lock:
+            gpt_result = state["gpt"]["result"]
+            sovits_result = state["sovits"]["result"]
+            errors = [
+                item["error"]
+                for item in state.values()
+                if item["error"] is not None
+            ]
+
+        if errors:
+            close1Bb()
+            close1Ba()
+            raise errors[0]
+
+        if gpt_result and len(gpt_result) >= 5:
+            sovits_update = gpt_result[3]
+            gpt_update = gpt_result[4]
+        if sovits_result and len(sovits_result) >= 5:
+            sovits_update = sovits_result[3]
+            gpt_update = sovits_result[4]
+
+        gpt_finished = bool(
+            gpt_result
+            and gpt_result[0] == process_info(process_name_gpt, "finish")
+        )
+        sovits_finished = bool(
+            sovits_result
+            and sovits_result[0]
+            == process_info(process_name_sovits, "finish")
+        )
+        if not gpt_finished or not sovits_finished:
+            failed = []
+            if not gpt_finished:
+                failed.append("GPT/S1")
+            if not sovits_finished:
+                failed.append("SoVITS/S2")
+            yield (
+                process_info(process_name_train_sequence, "failed")
+                + ": "
+                + ", ".join(failed),
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                sovits_update,
+                gpt_update,
+            )
+            return
+
+        yield (
+            process_info(process_name_train_sequence, "finish")
+            + f" (병렬: GPU {gpt_gpu} + GPU {sovits_gpu})",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            sovits_update,
+            gpt_update,
+        )
+        return
+
+    yield (
+        process_info(process_name_gpt, "open"),
+        {"__type__": "update", "visible": False},
+        {"__type__": "update", "visible": True},
+        sovits_update,
+        gpt_update,
+    )
+
+    gpt_finished = False
+    for result in open1Bb(*gpt_args):
         if training_sequence_cancel_requested:
             return
 
         child_status = result[0] if result else ""
-        if len(result) >= 4:
-            sovits_update = result[2]
-            gpt_update = result[3]
+        if len(result) >= 5:
+            sovits_update = result[3]
+            gpt_update = result[4]
 
         gpt_finished = (
             child_status
@@ -3281,30 +3469,14 @@ def run_gpt_then_sovits(
     )
 
     sovits_finished = False
-    for result in open1Ba(
-        version,
-        batch_size_sovits,
-        total_epoch_sovits,
-        exp_name,
-        inp_text,
-        inp_wav_dir,
-        text_low_lr_rate,
-        if_save_latest_sovits,
-        if_save_every_weights_sovits,
-        save_every_epoch_sovits,
-        gpu_numbers_sovits,
-        pretrained_s2G,
-        pretrained_s2D,
-        if_grad_ckpt,
-        lora_rank,
-    ):
+    for result in open1Ba(*sovits_args):
         if training_sequence_cancel_requested:
             return
 
         child_status = result[0] if result else ""
-        if len(result) >= 4:
-            sovits_update = result[2]
-            gpt_update = result[3]
+        if len(result) >= 5:
+            sovits_update = result[3]
+            gpt_update = result[4]
 
         sovits_finished = (
             child_status
