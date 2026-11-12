@@ -126,6 +126,7 @@ from tools.preprocess_contract import (
     prepare_training_resume_state,
     quick_path_signature,
     stage_matches_dataset,
+    stage_version_key,
     read_stage_contract,
     stage_contract_path,
     validate_dataset_fingerprint,
