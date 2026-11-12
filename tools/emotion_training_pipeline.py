@@ -1021,6 +1021,7 @@ def _reference_candidates(
     candidates: dict[str, list[tuple[int, float, str]]] = {}
 
     controller_counts: dict[tuple[str, str], int] = {}
+    supervision_tokens: set[str] = set()
     for row in rows:
         if (
             row.get("split") != "train"
@@ -1042,12 +1043,24 @@ def _reference_candidates(
             continue
         key = (speaker_uid, emotion)
         controller_counts[key] = controller_counts.get(key, 0) + 1
+        for field in ("source_id", "text_group_id", "pair_group_id"):
+            value = str(row.get(field) or "").strip()
+            if value:
+                supervision_tokens.add(f"{field}:{value}")
 
     for row in rows:
         if row.get("split") != "train":
             continue
 
         if row.get("pair_group_id"):
+            continue
+
+        candidate_tokens = {
+            f"{field}:{value}"
+            for field in ("source_id", "text_group_id", "pair_group_id")
+            if (value := str(row.get(field) or "").strip())
+        }
+        if candidate_tokens & supervision_tokens:
             continue
 
         if not row.get("tts_usable", True):
