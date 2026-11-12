@@ -54,6 +54,43 @@ class RepresentationProbeTests(unittest.TestCase):
         )
         self.assertEqual(report["verdict"], "informative")
 
+    def test_probe_accepts_leakage_group_metadata(self):
+        torch.manual_seed(20261112)
+        features = []
+        labels = []
+        samples = []
+
+        for group_index in range(4):
+            for class_id, emotion in enumerate(("happy", "sad")):
+                center = torch.zeros(6)
+                center[class_id] = 4.0
+                features.append(
+                    center + 0.05 * torch.randn(6)
+                )
+                labels.append(class_id)
+                samples.append(
+                    {
+                        "name": f"{emotion}_{group_index}.wav",
+                        "text_group_id": f"text-{group_index}",
+                    }
+                )
+
+        report = run_mean_pool_linear_probe(
+            torch.stack(features),
+            labels,
+            ["happy", "sad"],
+            samples=samples,
+            seed=233333,
+            max_folds=3,
+            permutations=1,
+            steps=30,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertTrue(report["grouped_validation"])
+        self.assertEqual(report["folds"], 3)
+        self.assertGreater(report["oof_macro_accuracy"], 0.90)
+
     def test_probe_reports_insufficient_per_class_data(self):
         report = run_mean_pool_linear_probe(
             torch.randn(5, 8),
