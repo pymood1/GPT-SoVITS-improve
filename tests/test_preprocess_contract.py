@@ -708,6 +708,11 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "effective controller gradients were exhausted",
             trainer,
         )
+        prompt_loader = trainer[
+            trainer.index("def load_reference_prompt_cache("):
+            trainer.index("def ", trainer.index("def load_reference_prompt_cache(") + 5)
+        ]
+        self.assertIn("weights_only=True", prompt_loader)
         for invalid_setting in (
             "--preference-beta must be positive",
             "--top-k must be at least 2",
