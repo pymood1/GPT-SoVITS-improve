@@ -3196,6 +3196,25 @@ def open1b(
         return
 
     opt_dir = Path(exp_root) / exp_name
+    expected_contract = _preprocess_contract(
+        "1b",
+        inp_text,
+        inp_wav_dir,
+        version,
+        {
+            "cnhubert_base_dir": str(
+                _resolve_repo_path(ssl_pretrained_dir)
+                or ssl_pretrained_dir
+            ),
+            "sv_path": (
+                str(_resolve_repo_path(sv_path) or sv_path)
+                if "Pro" in version
+                else None
+            ),
+        },
+    )
+    _ensure_stage_contract(opt_dir, expected_contract)
+
     base_config = {
         "inp_text": inp_text,
         "inp_wav_dir": inp_wav_dir,
@@ -3204,6 +3223,7 @@ def open1b(
         "cnhubert_base_dir": ssl_pretrained_dir,
         "sv_path": sv_path,
         "is_half": str(is_half),
+        "version": str(version),
     }
     gpu_names = gpu_numbers.split("-")
     all_parts = len(gpu_names)
@@ -3345,6 +3365,11 @@ def open1b(
             {"__type__": "update", "visible": False},
         )
         return
+
+    write_stage_contract(
+        stage_contract_path(opt_dir, "1b"),
+        expected_contract,
+    )
 
     yield (
         process_info(process_name_1b, "finish"),
