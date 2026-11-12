@@ -22,6 +22,28 @@ from tools.run_emotion_v5_preprocess import (
 )
 
 
+class EmotionFeatureDependencyTests(unittest.TestCase):
+    def test_feature_build_depends_on_s1_text_contract_not_s1_weights(self):
+        root = Path(__file__).resolve().parents[1]
+        preprocess = (
+            root / "tools" / "run_emotion_v5_preprocess.py"
+        ).read_text(encoding="utf-8")
+        trainer = (
+            root / "tools" / "train_emotion_controller.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"text_features": text_features', preprocess)
+        self.assertNotIn('"s1_sha256": s1_hash', preprocess)
+        self.assertNotIn(
+            "feature build was generated for a different S1 checkpoint",
+            trainer,
+        )
+        self.assertIn(
+            "feature build text-feature contract does not match S1",
+            trainer,
+        )
+
+
 class PreprocessPrecisionTests(unittest.TestCase):
     def test_half_precision_requires_cuda_and_no_full_precision_flag(self):
         self.assertTrue(
