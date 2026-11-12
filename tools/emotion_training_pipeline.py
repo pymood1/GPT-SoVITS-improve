@@ -20,6 +20,33 @@ class EmotionPipelineError(RuntimeError):
     pass
 
 
+def controller_artifact_paths(final_output: Path) -> dict[str, Path]:
+    final_path = Path(final_output)
+    candidate = final_path.with_name(
+        f"{final_path.stem}.candidate{final_path.suffix}"
+    )
+    failed = final_path.with_name(
+        f"{final_path.stem}.failed{final_path.suffix}"
+    )
+    candidate_diagnostics = candidate.with_name(
+        f"{candidate.stem}.diagnostics.json"
+    )
+    final_diagnostics = final_path.with_name(
+        f"{final_path.stem}.diagnostics.json"
+    )
+    failed_diagnostics = failed.with_name(
+        f"{failed.stem}.diagnostics.json"
+    )
+    return {
+        "final": final_path,
+        "candidate": candidate,
+        "failed": failed,
+        "candidate_diagnostics": candidate_diagnostics,
+        "final_diagnostics": final_diagnostics,
+        "failed_diagnostics": failed_diagnostics,
+    }
+
+
 def latest_gpt_checkpoint_for_experiment(
     weight_root: Path,
     experiment_name: str,
