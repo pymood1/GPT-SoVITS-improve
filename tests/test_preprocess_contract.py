@@ -51,6 +51,30 @@ class PreprocessContractTests(unittest.TestCase):
             after = build_dataset_fingerprint(list_path, wav_dir)
             self.assertNotEqual(before["digest"], after["digest"])
 
+    def test_windows_style_list_path_uses_portable_basename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav_dir = root / "wav"
+            wav_dir.mkdir()
+            (wav_dir / "voice.wav").write_bytes(b"audio")
+            list_path = root / "training.list"
+            list_path.write_text(
+                "C:\\dataset\\voice.wav|spk|ko|hello\n",
+                encoding="utf-8",
+            )
+            fingerprint = build_dataset_fingerprint(
+                list_path,
+                wav_dir,
+            )
+            self.assertEqual(
+                validate_dataset_fingerprint(fingerprint),
+                [],
+            )
+            self.assertEqual(
+                fingerprint["rows"][0]["basename"],
+                "voice.wav",
+            )
+
     def test_fingerprint_reports_missing_audio(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
