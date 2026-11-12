@@ -260,47 +260,52 @@ def validate_complete_outputs(
         )
 
     if required_bert:
-        import torch
-
         missing_bert: list[str] = []
-        invalid_bert: list[str] = []
+        present_bert: list[tuple[str, Path]] = []
         for name in sorted(required_bert & expected):
             bert_path = output_dir / "3-bert" / f"{name}.pt"
             if not bert_path.is_file() or bert_path.stat().st_size == 0:
                 missing_bert.append(name)
-                continue
-
-            try:
-                feature = torch.load(
-                    bert_path,
-                    map_location="cpu",
-                    weights_only=True,
-                )
-            except Exception:
-                invalid_bert.append(name)
-                continue
-
-            phone_payload = text_rows.get(name, "")
-            phone_count = len(phone_payload.split("\t", 1)[0].split())
-            if (
-                not isinstance(feature, torch.Tensor)
-                or feature.ndim != 2
-                or feature.shape[0] != 1024
-                or feature.shape[-1] != phone_count
-                or not bool(torch.isfinite(feature).all())
-            ):
-                invalid_bert.append(name)
+            else:
+                present_bert.append((name, bert_path))
 
         if missing_bert:
             problems.append(
                 f"BERT missing {len(missing_bert)}: "
                 + ", ".join(missing_bert[:10])
             )
-        if invalid_bert:
-            problems.append(
-                f"BERT invalid {len(invalid_bert)}: "
-                + ", ".join(invalid_bert[:10])
-            )
+
+        if present_bert:
+            import torch
+
+            invalid_bert: list[str] = []
+            for name, bert_path in present_bert:
+                try:
+                    feature = torch.load(
+                        bert_path,
+                        map_location="cpu",
+                        weights_only=True,
+                    )
+                except Exception:
+                    invalid_bert.append(name)
+                    continue
+
+                phone_payload = text_rows.get(name, "")
+                phone_count = len(phone_payload.split("\t", 1)[0].split())
+                if (
+                    not isinstance(feature, torch.Tensor)
+                    or feature.ndim != 2
+                    or feature.shape[0] != 1024
+                    or feature.shape[-1] != phone_count
+                    or not bool(torch.isfinite(feature).all())
+                ):
+                    invalid_bert.append(name)
+
+            if invalid_bert:
+                problems.append(
+                    f"BERT invalid {len(invalid_bert)}: "
+                    + ", ".join(invalid_bert[:10])
+                )
 
     missing_hubert = sorted(
         name
