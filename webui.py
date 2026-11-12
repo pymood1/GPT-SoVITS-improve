@@ -501,8 +501,9 @@ def _clear_preprocess_stage_outputs(exp_dir, stage):
 
 
 def _stage_dataset_error(contract):
-    errors = validate_dataset_fingerprint(
-        contract.get("dataset", {})
+    errors = validate_stage_dataset(
+        str(contract.get("stage") or ""),
+        contract.get("dataset", {}),
     )
     if not errors:
         return None
