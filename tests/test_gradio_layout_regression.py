@@ -82,6 +82,7 @@ class GradioLayoutRegressionTests(unittest.TestCase):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         self.assertIn("default_gpt_training_gpu", webui)
         self.assertIn("default_sovits_training_gpu", webui)
+        self.assertIn("sorted(GPU_INDEX)", webui)
         self.assertIn(
             "value=default_gpt_training_gpu",
             webui,
@@ -98,6 +99,7 @@ class GradioLayoutRegressionTests(unittest.TestCase):
         block = webui[start:end]
         self.assertIn("len(tokens) != 1", block)
         self.assertIn("gpt_gpu != sovits_gpu", block)
+        self.assertIn("if len(tokens) != 1:", block)
         self.assertIn("threading.Thread(", block)
         self.assertIn('name="gpt-training"', block)
         self.assertIn('name="sovits-training"', block)
