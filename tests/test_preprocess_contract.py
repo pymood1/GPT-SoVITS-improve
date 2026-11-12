@@ -9,6 +9,7 @@ from tools.preprocess_contract import (
     build_dataset_fingerprint,
     build_stage_contract,
     contract_matches,
+    prepare_training_resume_state,
     quick_path_signature,
     stage_matches_dataset,
     validate_dataset_fingerprint,
@@ -255,6 +256,40 @@ class PreprocessContractTests(unittest.TestCase):
             weight.write_bytes(b"second version")
             after = quick_path_signature(model_dir)
             self.assertNotEqual(before, after)
+
+    def test_resume_state_is_preserved_only_for_same_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker_path = root / "resume.json"
+            resume_dir = root / "ckpt"
+            resume_dir.mkdir()
+            (resume_dir / "old.ckpt").write_text("old", encoding="utf-8")
+
+            reset = prepare_training_resume_state(
+                marker_path,
+                [resume_dir],
+                {"dataset": "A", "base": "one"},
+            )
+            self.assertTrue(reset)
+            self.assertFalse(resume_dir.exists())
+
+            resume_dir.mkdir()
+            (resume_dir / "same.ckpt").write_text("same", encoding="utf-8")
+            reset = prepare_training_resume_state(
+                marker_path,
+                [resume_dir],
+                {"dataset": "A", "base": "one"},
+            )
+            self.assertFalse(reset)
+            self.assertTrue((resume_dir / "same.ckpt").is_file())
+
+            reset = prepare_training_resume_state(
+                marker_path,
+                [resume_dir],
+                {"dataset": "B", "base": "one"},
+            )
+            self.assertTrue(reset)
+            self.assertFalse(resume_dir.exists())
 
     def test_stage_contract_detects_model_change(self):
         with tempfile.TemporaryDirectory() as tmp:
