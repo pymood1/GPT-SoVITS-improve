@@ -11,6 +11,156 @@ if (params.has('__theme')) {
 }
 """
 
+runtime_status_patch_js = r"""
+(payload) => {
+    let data;
+    try {
+        data = JSON.parse(payload || "{}");
+    } catch (error) {
+        return [];
+    }
+
+    const host = document.getElementById("runtime-status-monitor");
+    const root = host && host.querySelector(".status-dashboard");
+    if (!root) {
+        return [];
+    }
+
+    const h = data.hardware || {};
+    const a = data.activity || {};
+
+    const num = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const clamp = (value, min, max) => {
+        const parsed = num(value);
+        if (parsed === null) return null;
+        return Math.max(min, Math.min(max, parsed));
+    };
+    const pct = (value) => {
+        const parsed = clamp(value, 0, 100);
+        return parsed === null ? "--" : `${Math.round(parsed)}%`;
+    };
+    const gib = (used, total) => {
+        const u = num(used);
+        const t = num(total);
+        if (u === null || t === null) return "--";
+        return `${u.toFixed(1)} / ${t.toFixed(1)} GiB`;
+    };
+    const setText = (selector, value) => {
+        const element = root.querySelector(selector);
+        if (element) element.textContent = value == null ? "" : String(value);
+    };
+    const setRing = (kind, percent, primary, secondary) => {
+        const value = clamp(percent, 0, 100);
+        const ring = root.querySelector(`[data-status-ring="${kind}"]`);
+        if (ring) {
+            ring.style.setProperty("--status-value", value === null ? "0" : String(value));
+        }
+        setText(`[data-status-percent="${kind}"]`, pct(value));
+        setText(`[data-status-primary="${kind}"]`, primary);
+        setText(`[data-status-secondary="${kind}"]`, secondary);
+    };
+
+    const gpuAvailable = Boolean(h.gpu_available);
+    const gpuName = gpuAvailable ? (h.gpu_name || "CUDA GPU") : "CUDA GPU를 찾지 못했습니다";
+    const gpuMeta = [];
+    if (gpuAvailable) {
+        gpuMeta.push(`VRAM ${gib(h.vram_used_gib, h.vram_total_gib)}`);
+        const temp = num(h.gpu_temperature_c);
+        if (temp !== null) gpuMeta.push(`${Math.round(temp)}°C`);
+    }
+
+    setRing(
+        "gpu",
+        h.gpu_percent,
+        gpuName,
+        gpuMeta.length ? gpuMeta.join(" · ") : "GPU 정보 없음",
+    );
+    setRing("cpu", h.cpu_percent, "Processor", "실시간 사용률");
+    setRing(
+        "ram",
+        h.ram_percent,
+        gib(h.ram_used_gib, h.ram_total_gib),
+        "시스템 메모리",
+    );
+
+    const vram = clamp(h.vram_percent, 0, 100);
+    const vramFill = root.querySelector("[data-status-vram-fill]");
+    if (vramFill) {
+        vramFill.style.width = `${vram === null ? 0 : vram}%`;
+    }
+    setText("[data-status-vram-value]", pct(vram));
+
+    const state = String(a.state || "idle").toLowerCase();
+    const running = state === "running";
+    const failed = state === "failed";
+    const activity = root.querySelector("[data-status-activity]");
+    if (activity) {
+        activity.classList.toggle("status-activity-running", running);
+        activity.classList.toggle("status-activity-idle", !running && !failed);
+        activity.classList.toggle("status-activity-failed", failed);
+    }
+
+    setText(
+        "[data-status-badge]",
+        running ? "RUNNING" : (failed ? "FAILED" : "IDLE"),
+    );
+    setText("[data-status-task]", a.task || (failed ? "작업 실패" : "대기 중"));
+
+    let progress = clamp(a.progress, 0, 1);
+    const step = num(a.step);
+    const totalSteps = num(a.total_steps);
+    const epoch = num(a.epoch);
+    const totalEpochs = num(a.total_epochs);
+    if (progress === null && step !== null && totalSteps && totalSteps > 0) {
+        progress = clamp(step / totalSteps, 0, 1);
+    }
+    if (progress === null && epoch !== null && totalEpochs && totalEpochs > 0) {
+        progress = clamp(epoch / totalEpochs, 0, 1);
+    }
+
+    const progressPercent = Math.round((progress || 0) * 100);
+    setText("[data-status-progress-number]", `${progressPercent}%`);
+    const progressFill = root.querySelector("[data-status-progress-fill]");
+    if (progressFill) {
+        progressFill.style.width = `${progressPercent}%`;
+    }
+
+    let stepText = "";
+    if (step !== null) {
+        stepText = String(Math.trunc(step));
+        if (totalSteps !== null) {
+            stepText += ` / ${Math.trunc(totalSteps)}`;
+        }
+    } else if (epoch !== null) {
+        stepText = `Epoch ${Math.trunc(epoch)}`;
+        if (totalEpochs !== null) {
+            stepText += ` / ${Math.trunc(totalEpochs)}`;
+        }
+    } else {
+        stepText = running ? (a.stage || "running") : "작업 없음";
+    }
+    setText("[data-status-step]", stepText);
+
+    const details = [];
+    const loss = num(a.loss);
+    if (loss !== null) details.push(`loss ${loss.toFixed(4)}`);
+    if (a.metric) details.push(String(a.metric));
+    if (!details.length) {
+        details.push(
+            running
+                ? String(a.stage || "running")
+                : "학습이 시작되면 진행 정보가 자동으로 표시됩니다.",
+        );
+    }
+    setText("[data-status-details]", details.join(" · "));
+
+    return [];
+}
+"""
+
 css = """
 /* Keep app-level selectors under our own classes where possible so the
    layout survives Gradio 4.x/5.x DOM changes. */
@@ -255,6 +405,15 @@ css = """
 .status-activity-running {
     border-color: rgba(88, 230, 169, 0.26);
     box-shadow: inset 3px 0 0 rgba(88, 230, 169, 0.88);
+}
+
+.status-activity-failed {
+    border-color: rgba(255, 107, 107, 0.30);
+    box-shadow: inset 3px 0 0 rgba(255, 107, 107, 0.85);
+}
+
+.status-activity-failed .status-badge i {
+    background: #ff6b6b;
 }
 
 .status-activity-head,
