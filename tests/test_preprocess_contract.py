@@ -377,6 +377,26 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertNotIn("2-get-hubert-wav32k.py", block)
         self.assertNotIn("3-get-semantic.py", block)
 
+    def test_preprocess_and_gpt_training_receive_explicit_version(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        open1a_start = webui.index("def open1a(")
+        open1a_end = webui.index("def close1a(", open1a_start)
+        self.assertIn(
+            "def open1a(\n    version,",
+            webui[open1a_start:open1a_end],
+        )
+
+        gpt_start = webui.index("def open1Bb(")
+        gpt_end = webui.index("def close1Bb(", gpt_start)
+        self.assertIn(
+            "def open1Bb(\n    version,",
+            webui[gpt_start:gpt_end],
+        )
+
+        click_start = webui.index("button1Bb_open.click(")
+        click_end = webui.index("version_checkbox.change(", click_start)
+        self.assertIn("version_checkbox,", webui[click_start:click_end])
+
     def test_training_checks_only_real_artifacts_and_provenance(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         for function_name in ("open1Ba", "open1Bb"):
