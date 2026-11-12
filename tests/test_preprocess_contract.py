@@ -676,8 +676,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "excluded low-support controller classes",
             trainer,
         )
+        promotion_block = trainer[
+            trainer.index("training_passed = ("):
+            trainer.index("if not validated_checkpoint:", trainer.index("training_passed = ("))
+        ]
+        self.assertIn("and validated_checkpoint", promotion_block)
+        self.assertNotIn("text_confound_risk", promotion_block)
         self.assertIn(
-            "and not text_confound_risk",
+            "audio-specific emotion control needs listening tests",
             trainer,
         )
         text_probe_start = trainer.index(
