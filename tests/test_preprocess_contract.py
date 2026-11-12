@@ -139,6 +139,56 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("contracts_share_dataset", webui)
         self.assertIn("inp_text,\n    inp_wav_dir,", webui)
 
+    def test_one_click_preprocessing_reuses_canonical_stages(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def open1abc(")
+        end = webui.index("def close1abc(", start)
+        block = webui[start:end]
+        self.assertIn("open1a,", block)
+        self.assertIn("open1b,", block)
+        self.assertIn("open1c,", block)
+        self.assertNotIn("1-get-text.py", block)
+        self.assertNotIn("2-get-hubert-wav32k.py", block)
+        self.assertNotIn("3-get-semantic.py", block)
+
+    def test_training_checks_only_real_artifacts_and_provenance(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        for function_name in ("open1Ba", "open1Bb"):
+            start = webui.index(f"def {function_name}(")
+            end = webui.index("\ndef ", start + 5)
+            block = webui[start:end]
+            self.assertIn("_training_artifact_error", block)
+            self.assertIn(
+                "_validate_training_dataset_contract",
+                block,
+            )
+            self.assertNotIn("check_for_existance(", block)
+            self.assertNotIn("check_details(", block)
+
+    def test_semantic_extraction_requires_matching_hubert_stage(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def open1c(")
+        end = webui.index("def close1c(", start)
+        block = webui[start:end]
+        self.assertIn('("1b",)', block)
+        self.assertIn("1B dependency mismatch", block)
+
+    def test_emotion_reuse_checks_source_provenance(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        builder = (
+            ROOT / "tools" / "emotion_dataset_builder.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"source_provenance"', builder)
+        self.assertIn("current_fingerprint = build_dataset_fingerprint", webui)
+        self.assertIn("current_sidecar_sha", webui)
+
+    def test_sequential_training_binding_has_one_s2_input(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("button_train_sequence_open.click(")
+        end = webui.index("button_train_sequence_close.click(", start)
+        block = webui[start:end]
+        self.assertEqual(block.count("pretrained_s2G,"), 1)
+
     def test_dpo_batch_is_not_halved_twice(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         data_module = (
