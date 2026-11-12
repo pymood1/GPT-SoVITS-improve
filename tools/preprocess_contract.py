@@ -95,6 +95,9 @@ def build_dataset_fingerprint(
             continue
 
         wav_field = parts[0].strip()
+        speaker = parts[1].strip()
+        language = parts[2].strip()
+        text = parts[3].strip()
         portable_wav_field = (
             wav_field.replace("\\", "/")
             if os.name != "nt"
@@ -114,6 +117,9 @@ def build_dataset_fingerprint(
                 "line": line_number,
                 "wav_field": wav_field,
                 "basename": basename,
+                "speaker": speaker,
+                "language": language,
+                "text": text,
                 "audio": _file_stat_payload(wav_path),
             }
         )
@@ -135,6 +141,37 @@ def build_dataset_fingerprint(
             if count > 1
         ),
     }
+    text_identity = [
+        {
+            "basename": row["basename"],
+            "language": row["language"],
+            "text": row["text"],
+        }
+        for row in sorted(rows, key=lambda item: item["basename"])
+    ]
+    audio_identity = [
+        {
+            "basename": row["basename"],
+            "exists": bool(row["audio"].get("exists")),
+            "size": row["audio"].get("size"),
+            "mtime_ns": row["audio"].get("mtime_ns"),
+        }
+        for row in sorted(rows, key=lambda item: item["basename"])
+    ]
+    payload["text_digest"] = _json_digest(
+        {
+            "rows": text_identity,
+            "invalid_lines": invalid_lines,
+            "duplicate_basenames": payload["duplicate_basenames"],
+        }
+    )
+    payload["audio_digest"] = _json_digest(
+        {
+            "rows": audio_identity,
+            "invalid_lines": invalid_lines,
+            "duplicate_basenames": payload["duplicate_basenames"],
+        }
+    )
     payload["digest"] = _json_digest(payload)
     return payload
 
@@ -197,15 +234,54 @@ def build_stage_contract(
         else:
             normalized_settings[str(key)] = str(value)
 
+    stage_name = str(stage)
+    if stage_name == "1a":
+        dependency_kind = "text"
+        dependency_digest = dataset["text_digest"]
+    elif stage_name in {"1b", "1c"}:
+        dependency_kind = "audio"
+        dependency_digest = dataset["audio_digest"]
+    else:
+        dependency_kind = "full"
+        dependency_digest = dataset["digest"]
+
     payload = {
         "contract_version": CONTRACT_VERSION,
-        "stage": str(stage),
+        "stage": stage_name,
         "version": str(version),
         "dataset": dataset,
+        "dependency_kind": dependency_kind,
+        "dataset_dependency_digest": dependency_digest,
         "settings": normalized_settings,
     }
-    payload["digest"] = _json_digest(payload)
+    payload["digest"] = _json_digest(
+        {
+            "contract_version": CONTRACT_VERSION,
+            "stage": stage_name,
+            "version": str(version),
+            "dependency_kind": dependency_kind,
+            "dataset_dependency_digest": dependency_digest,
+            "settings": normalized_settings,
+        }
+    )
     return payload
+
+
+def stage_matches_dataset(
+    contract: Mapping[str, Any],
+    dataset: Mapping[str, Any],
+) -> bool:
+    kind = str(contract.get("dependency_kind") or "full")
+    if kind == "text":
+        current = dataset.get("text_digest")
+    elif kind == "audio":
+        current = dataset.get("audio_digest")
+    else:
+        current = dataset.get("digest")
+    return bool(
+        current
+        and str(contract.get("dataset_dependency_digest") or "") == str(current)
+    )
 
 
 def read_stage_contract(path: str | os.PathLike[str]) -> dict[str, Any] | None:
