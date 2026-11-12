@@ -2,8 +2,16 @@ import warnings
 
 warnings.filterwarnings("ignore")
 import os
+import sys
+from pathlib import Path
 
 import utils
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.runtime_status import clear_activity, publish_activity
 
 hps = utils.get_hparams(stage=2)
 os.environ["CUDA_VISIBLE_DEVICES"] = hps.train.gpu_numbers.replace("-", ",")
@@ -74,6 +82,7 @@ def main():
 
 def run(rank, n_gpus, hps):
     use_ddp = torch.cuda.is_available() and n_gpus > 1
+    succeeded = False
     try:
         if use_ddp:
             dist.init_process_group(
@@ -83,7 +92,19 @@ def run(rank, n_gpus, hps):
                 rank=rank,
             )
         _run(rank, n_gpus, hps, use_ddp)
+        succeeded = True
+    except BaseException:
+        if rank == 0:
+            publish_activity(
+                task="SoVITS 학습",
+                stage="failed",
+                state="failed",
+                metric="학습 프로세스가 오류 또는 중지로 종료되었습니다.",
+            )
+        raise
     finally:
+        if rank == 0 and succeeded:
+            clear_activity(reason="sovits_finished")
         if use_ddp and dist.is_initialized():
             dist.destroy_process_group()
 
@@ -290,6 +311,19 @@ def _run(rank, n_gpus, hps, use_ddp):
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
     print("start training from epoch %s" % epoch_str)
+    if rank == 0:
+        total_steps = int(hps.train.epochs) * len(train_loader)
+        publish_activity(
+            task="SoVITS 학습",
+            stage="starting",
+            progress=min(global_step / total_steps, 1.0)
+            if total_steps
+            else None,
+            step=global_step,
+            total_steps=total_steps,
+            epoch=epoch_str,
+            total_epochs=int(hps.train.epochs),
+        )
     for epoch in range(epoch_str, hps.train.epochs + 1):
         if rank == 0:
             train_and_evaluate(
@@ -457,6 +491,29 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         scaler.update()
 
         if rank == 0:
+            status_interval = max(1, len(train_loader) // 100)
+            if (
+                batch_idx % status_interval == 0
+                or batch_idx + 1 == len(train_loader)
+            ):
+                total_steps = int(hps.train.epochs) * len(train_loader)
+                completed_step = global_step + 1
+                publish_activity(
+                    task="SoVITS 학습",
+                    stage="training",
+                    progress=min(completed_step / total_steps, 1.0)
+                    if total_steps
+                    else None,
+                    step=completed_step,
+                    total_steps=total_steps,
+                    epoch=epoch,
+                    total_epochs=int(hps.train.epochs),
+                    loss=float(loss_gen_all.detach().float().item()),
+                    metric=(
+                        f"mel {float(loss_mel.detach().float().item()):.4f}"
+                    ),
+                )
+
             if global_step % hps.train.log_interval == 0:
                 lr = optim_g.param_groups[0]["lr"]
                 losses = [loss_disc, loss_gen, loss_fm, loss_mel, kl_ssl, loss_kl]
