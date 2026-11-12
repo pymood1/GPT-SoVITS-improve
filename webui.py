@@ -129,6 +129,7 @@ from tools.preprocess_contract import (
     read_stage_contract,
     stage_contract_path,
     validate_dataset_fingerprint,
+    validate_stage_dataset,
     write_stage_contract,
 )
 
