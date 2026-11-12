@@ -38,6 +38,39 @@ def _file_stat_payload(path: Path) -> dict[str, Any]:
     }
 
 
+def prepare_training_resume_state(
+    marker_path: str | os.PathLike[str],
+    resume_paths: list[str | os.PathLike[str]],
+    identity: Mapping[str, Any],
+) -> bool:
+    """Keep optimizer/full checkpoints only when their training identity matches."""
+
+    marker = Path(marker_path)
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "identity": dict(identity),
+    }
+    payload["digest"] = _json_digest(payload)
+
+    current = read_stage_contract(marker)
+    if current and current.get("digest") == payload["digest"]:
+        return False
+
+    for value in resume_paths:
+        path = Path(value)
+        if not path.exists():
+            continue
+        if path.is_dir():
+            import shutil
+
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    write_stage_contract(marker, payload)
+    return True
+
+
 def quick_path_signature(
     path: str | os.PathLike[str],
 ) -> str:
