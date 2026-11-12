@@ -456,7 +456,7 @@ def _preprocess_contract(
         stage=stage,
         list_path=_clean_user_path(inp_text),
         wav_root=_clean_user_path(inp_wav_dir) or None,
-        version=str(version_name),
+        version=stage_version_key(stage, version_name),
         settings=settings or {},
     )
 
@@ -547,10 +547,14 @@ def _validate_training_dataset_contract(
                 f"{stage} 전처리 provenance가 없습니다. "
                 "현재 데이터로 전처리를 다시 실행하세요."
             )
-        if str(contract.get("version")) != str(version_name):
+        expected_stage_version = stage_version_key(
+            stage,
+            version_name,
+        )
+        if str(contract.get("version")) != str(expected_stage_version):
             return (
-                f"{stage} 전처리 버전({contract.get('version')})과 "
-                f"현재 학습 버전({version_name})이 다릅니다."
+                f"{stage} 전처리 모드({contract.get('version')})와 "
+                f"현재 요구 모드({expected_stage_version})가 다릅니다."
             )
         if not stage_matches_dataset(
             contract,
