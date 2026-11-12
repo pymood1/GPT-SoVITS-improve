@@ -12,6 +12,7 @@ from tools.preprocess_contract import (
     prepare_training_resume_state,
     quick_path_signature,
     stage_matches_dataset,
+    stage_version_key,
     validate_dataset_fingerprint,
     write_stage_contract,
 )
@@ -290,6 +291,18 @@ class PreprocessContractTests(unittest.TestCase):
             )
             self.assertTrue(reset)
             self.assertFalse(resume_dir.exists())
+
+    def test_1b_version_key_only_distinguishes_pro_features(self):
+        self.assertEqual(
+            stage_version_key("1b", "v4"),
+            stage_version_key("1b", "v5dev"),
+        )
+        self.assertNotEqual(
+            stage_version_key("1b", "v5dev"),
+            stage_version_key("1b", "v2Pro"),
+        )
+        self.assertEqual(stage_version_key("1a", "v4"), "v4")
+        self.assertEqual(stage_version_key("1c", "v5dev"), "v5dev")
 
     def test_stage_contract_detects_model_change(self):
         with tempfile.TemporaryDirectory() as tmp:
