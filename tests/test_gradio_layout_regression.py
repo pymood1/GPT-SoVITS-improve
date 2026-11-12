@@ -78,6 +78,32 @@ class GradioLayoutRegressionTests(unittest.TestCase):
             webui,
         )
 
+    def test_parallel_training_uses_disjoint_single_gpus(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def _single_training_gpu(")
+        end = webui.index("\ndef stop_gpt_then_sovits()", start)
+        block = webui[start:end]
+        self.assertIn("len(tokens) != 1", block)
+        self.assertIn("gpt_gpu != sovits_gpu", block)
+        self.assertIn("threading.Thread(", block)
+        self.assertIn('name="gpt-training"', block)
+        self.assertIn('name="sovits-training"', block)
+        self.assertIn("time.sleep(0.25)", block)
+        self.assertIn("result[3]", block)
+        self.assertIn("result[4]", block)
+        self.assertNotIn("sovits_update = result[2]", block)
+
+    def test_training_children_use_independent_status_slots(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        self.assertIn(
+            'child_env[STATUS_PATH_ENV] = str(status_slot_path("gpt"))',
+            webui,
+        )
+        self.assertIn(
+            'child_env[STATUS_PATH_ENV] = str(status_slot_path("sovits"))',
+            webui,
+        )
+
     def test_header_is_responsive(self):
         assets = (ROOT / "tools" / "assets.py").read_text(
             encoding="utf-8"
