@@ -3176,7 +3176,7 @@ def close1Bb():
 
 
 training_sequence_cancel_requested = False
-process_name_train_sequence = "GPT → SoVITS 연속 학습"
+process_name_train_sequence = "GPT + SoVITS 자동 학습"
 
 
 def _single_training_gpu(value):
@@ -5835,8 +5835,13 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
     
 
                     with gr.Accordion(
-                        label="1Bc-" + i18n("GPT → SoVITS 연속 학습")
+                        label="1Bc-" + i18n("GPT + SoVITS 자동 학습")
                     ):
+                        gr.Markdown(
+                            "서로 다른 단일 GPU가 지정되면 GPT/S1과 "
+                            "SoVITS/S2를 병렬 학습하고, 그 외에는 "
+                            "기존처럼 순차 학습합니다."
+                        )
                         with gr.Column():
                             with gr.Row():
                                 button_train_sequence_open = gr.Button(
