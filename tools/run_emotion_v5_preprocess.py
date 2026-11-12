@@ -402,7 +402,6 @@ def main() -> int:
                 s1_payload["config"]
             )
         )
-        s1_hash = sha256_file(s1_path)
         del s1_payload
     else:
         use_multilingual_bert = False
@@ -441,7 +440,6 @@ def main() -> int:
         "train_list_sha256": list_hash,
         "audio_manifest_sha256": audio_manifest_hash,
         "s2_sha256": s2_hash,
-        "s1_sha256": s1_hash,
         "text_features": text_features,
         "bert_sha256": bert_hash,
         "cnhubert_sha256": cnhubert_hash,
