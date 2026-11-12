@@ -43,21 +43,26 @@ class RuntimeStatusTests(unittest.TestCase):
             )
 
     def test_stale_activity_degrades_to_idle(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "runtime_status.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "state": "running",
-                        "task": "old task",
-                        "updated_at": time.time() - 120,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            state = read_activity(path=path, stale_after=15.0)
-            self.assertEqual(state["state"], "idle")
-            self.assertEqual(state["reason"], "stale")
+        for state_name in ("running", "failed"):
+            with self.subTest(state=state_name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "runtime_status.json"
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "state": state_name,
+                                "task": "old task",
+                                "updated_at": time.time() - 120,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    state = read_activity(
+                        path=path,
+                        stale_after=15.0,
+                    )
+                    self.assertEqual(state["state"], "idle")
+                    self.assertEqual(state["reason"], "stale")
 
     def test_render_escapes_text_and_shows_progress(self):
         hardware = {
