@@ -717,6 +717,9 @@ jobs:
             -s tests \
             -p test_emotion_pipeline_helpers.py \
             -v
+      - name: Test Gradio responsive layout
+        run: |
+          python -m unittest tests/test_gradio_layout_regression.py -v
 
 
   shell_syntax:
