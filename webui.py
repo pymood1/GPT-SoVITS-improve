@@ -112,6 +112,7 @@ from tools.emotion_training_pipeline import (
     write_v5_tts_config,
 )
 from tools.my_utils import check_details, check_for_existance
+from tools.runtime_status import build_runtime_status_html
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -4009,6 +4010,19 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             + i18n("如不认可该条款, 则不能使用或引用软件包内任何代码和文件. 详见根目录LICENSE.")
         ),
         elem_classes="markdown",
+    )
+
+    runtime_status_monitor = gr.HTML(
+        value=build_runtime_status_html(),
+        elem_classes="status-monitor-root",
+        container=False,
+    )
+    runtime_status_timer = gr.Timer(value=2, active=True)
+    runtime_status_timer.tick(
+        fn=build_runtime_status_html,
+        inputs=[],
+        outputs=[runtime_status_monitor],
+        queue=False,
     )
 
     with gr.Tabs(selected="tts"):
