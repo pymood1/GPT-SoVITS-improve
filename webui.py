@@ -104,6 +104,7 @@ from config import (
 from tools import my_utils
 from tools.emotion_training_pipeline import (
     EmotionPipelineError,
+    controller_artifact_paths,
     create_reference_map,
     detect_pair_emotions,
     format_dataset_summary,
@@ -1397,8 +1398,26 @@ def run_emotion_training_pipeline(
             parents=True,
             exist_ok=True,
         )
+        controller_artifacts = controller_artifact_paths(
+            controller_output
+        )
+        candidate_output = controller_artifacts["candidate"]
+        candidate_diagnostics = controller_artifacts[
+            "candidate_diagnostics"
+        ]
 
-        controller_before = _file_signature(controller_output)
+        for stale_path in (
+            candidate_output,
+            candidate_diagnostics,
+        ):
+            try:
+                if stale_path.exists():
+                    stale_path.unlink()
+            except OSError as exc:
+                raise EmotionPipelineError(
+                    "이전 candidate 파일을 정리하지 못했습니다: "
+                    f"{stale_path}: {exc}"
+                ) from exc
 
         train_cmd = [
             python_exec,
@@ -1417,7 +1436,7 @@ def run_emotion_training_pipeline(
             "--reference-prompt-cache",
             str(reference_prompt_path),
             "--output",
-            str(controller_output),
+            str(candidate_output),
             "--emotions",
             ",".join(parsed_emotions),
             "--steps",
@@ -1436,34 +1455,97 @@ def run_emotion_training_pipeline(
         ):
             yield status
 
-        controller_after = _file_signature(controller_output)
-        if controller_after is None:
+        if not candidate_output.is_file():
             raise EmotionPipelineError(
-                "학습 프로세스는 종료됐지만 controller 파일이 없습니다: "
-                f"{controller_output}"
+                "학습 프로세스는 종료됐지만 candidate controller가 없습니다: "
+                f"{candidate_output}"
             )
-        if (
-            controller_before is not None
-            and controller_after == controller_before
-        ):
+        if not candidate_diagnostics.is_file():
             raise EmotionPipelineError(
-                "controller subprocess가 성공 종료됐지만 "
-                "출력 체크포인트가 갱신되지 않았습니다."
+                "학습 프로세스는 종료됐지만 controller 진단 파일이 없습니다: "
+                f"{candidate_diagnostics}"
             )
 
-        latest_emotion_controller_path = str(controller_output)
-        os.environ["emotion_controller_path"] = (
-            latest_emotion_controller_path
+        try:
+            diagnostics = json.loads(
+                candidate_diagnostics.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise EmotionPipelineError(
+                "controller 진단 파일을 읽지 못했습니다: "
+                f"{candidate_diagnostics}: {exc}"
+            ) from exc
+
+        diagnosis = diagnostics.get("training_diagnosis")
+        if not isinstance(diagnosis, dict):
+            raise EmotionPipelineError(
+                "controller 진단에 training_diagnosis가 없습니다."
+            )
+
+        passed = diagnosis.get("passed")
+        if not isinstance(passed, bool):
+            raise EmotionPipelineError(
+                "controller 진단의 passed 값이 유효한 bool이 아닙니다."
+            )
+
+        result_reason = str(
+            diagnosis.get("result_reason")
+            or "진단 사유 없음"
         )
+
+        if passed:
+            os.replace(
+                candidate_output,
+                controller_artifacts["final"],
+            )
+            os.replace(
+                candidate_diagnostics,
+                controller_artifacts["final_diagnostics"],
+            )
+            latest_emotion_controller_path = str(controller_output)
+            os.environ["emotion_controller_path"] = (
+                latest_emotion_controller_path
+            )
+
+            yield _emotion_status(
+                "감정 제어 학습 완료 - PASS",
+                log_lines,
+                (
+                    f"**Controller:** `{controller_output}`\n\n"
+                    f"**검증:** {result_reason}\n\n"
+                    "PASS한 controller만 추론 기본 경로로 승격했습니다."
+                ),
+            )
+            return
+
+        failed_output = controller_artifacts["failed"]
+        failed_diagnostics = controller_artifacts[
+            "failed_diagnostics"
+        ]
+        for stale_path in (failed_output, failed_diagnostics):
+            try:
+                if stale_path.exists():
+                    stale_path.unlink()
+            except OSError as exc:
+                raise EmotionPipelineError(
+                    "이전 FAIL 산출물을 정리하지 못했습니다: "
+                    f"{stale_path}: {exc}"
+                ) from exc
+
+        os.replace(candidate_output, failed_output)
+        os.replace(candidate_diagnostics, failed_diagnostics)
 
         yield _emotion_status(
-            "감정 제어 학습 완료",
+            "감정 제어 학습 완료 - 검증 FAIL",
             log_lines,
             (
-                f"**Controller:** `{controller_output}`\n\n"
-                "이 파일을 1C-추론의 감정 컨트롤러에서 불러오면 됩니다."
+                "검증 FAIL controller는 추론 기본값으로 승격하지 않았습니다.\n\n"
+                f"**Failed candidate:** `{failed_output}`\n\n"
+                f"**진단:** {result_reason}\n\n"
+                "기존 PASS controller가 있다면 그대로 유지됩니다."
             ),
         )
+        return
 
     except EmotionTaskCancelled:
         p_emotion_training = None
