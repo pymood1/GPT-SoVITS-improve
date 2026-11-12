@@ -365,8 +365,29 @@ def build_training_samples(
             raise TrainingDataError(
                 f"No fixed reference for speaker {speaker_uid!r}"
             )
-        if name == reference_map[speaker_uid]:
+        reference_name = reference_map[speaker_uid]
+        if name == reference_name:
             continue
+
+        reference_meta = store.require_item(reference_name)
+        shared_reference_groups = []
+        for field in ("source_id", "text_group_id", "pair_group_id"):
+            target_value = str(meta.get(field) or "").strip()
+            reference_value = str(reference_meta.get(field) or "").strip()
+            if (
+                target_value
+                and reference_value
+                and target_value == reference_value
+            ):
+                shared_reference_groups.append(
+                    f"{field}={target_value}"
+                )
+        if shared_reference_groups:
+            raise TrainingDataError(
+                f"Reference {reference_name!r} shares leakage-sensitive "
+                f"metadata with controller target {name!r}: "
+                + ", ".join(shared_reference_groups)
+            )
 
         samples.append(
             {
@@ -374,7 +395,7 @@ def build_training_samples(
                 "emotion": emotion,
                 "emotion_id": emotion_to_id[emotion],
                 "speaker_uid": speaker_uid,
-                "reference": reference_map[speaker_uid],
+                "reference": reference_name,
                 "source_id": meta.get("source_id"),
                 "text_group_id": meta.get("text_group_id"),
                 "pair_group_id": meta.get("pair_group_id"),
