@@ -14,6 +14,7 @@ from tools.preprocess_contract import (
     stage_matches_dataset,
     stage_version_key,
     validate_dataset_fingerprint,
+    validate_stage_dataset,
     write_stage_contract,
 )
 
@@ -77,6 +78,30 @@ class PreprocessContractTests(unittest.TestCase):
             self.assertEqual(
                 fingerprint["rows"][0]["basename"],
                 "voice.wav",
+            )
+
+    def test_1a_validation_does_not_require_audio_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            list_path, wav_dir = self._dataset(root)
+            (wav_dir / "a.wav").unlink()
+            (wav_dir / "b.wav").unlink()
+            fingerprint = build_dataset_fingerprint(
+                list_path,
+                wav_dir,
+            )
+            self.assertEqual(
+                validate_stage_dataset("1a", fingerprint),
+                [],
+            )
+            self.assertTrue(
+                any(
+                    "missing audio" in error
+                    for error in validate_stage_dataset(
+                        "1b",
+                        fingerprint,
+                    )
+                )
             )
 
     def test_fingerprint_reports_missing_audio(self):
