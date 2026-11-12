@@ -9,6 +9,7 @@ from tools.preprocess_contract import (
     build_dataset_fingerprint,
     build_stage_contract,
     contract_matches,
+    stage_matches_dataset,
     validate_dataset_fingerprint,
     write_stage_contract,
 )
@@ -109,6 +110,137 @@ class PreprocessContractTests(unittest.TestCase):
             self.assertTrue(
                 any("duplicate basename" in error for error in errors)
             )
+
+    def test_text_change_invalidates_1a_but_not_audio_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            list_path, wav_dir = self._dataset(root)
+            before_1a = build_stage_contract(
+                stage="1a",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"bert": "same"},
+            )
+            before_1b = build_stage_contract(
+                stage="1b",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"cnhubert": "same"},
+            )
+            before_1c = build_stage_contract(
+                stage="1c",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"s2": "same", "upstream_1b": "same"},
+            )
+
+            list_path.write_text(
+                "a.wav|different-speaker|ko|changed text\n"
+                "b.wav|spk|en|world\n",
+                encoding="utf-8",
+            )
+
+            after_1a = build_stage_contract(
+                stage="1a",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"bert": "same"},
+            )
+            after_1b = build_stage_contract(
+                stage="1b",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"cnhubert": "same"},
+            )
+            after_1c = build_stage_contract(
+                stage="1c",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"s2": "same", "upstream_1b": "same"},
+            )
+
+            self.assertNotEqual(before_1a["digest"], after_1a["digest"])
+            self.assertEqual(before_1b["digest"], after_1b["digest"])
+            self.assertEqual(before_1c["digest"], after_1c["digest"])
+
+    def test_audio_change_invalidates_audio_stages_but_not_1a(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            list_path, wav_dir = self._dataset(root)
+            before_1a = build_stage_contract(
+                stage="1a",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"bert": "same"},
+            )
+            before_1b = build_stage_contract(
+                stage="1b",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"cnhubert": "same"},
+            )
+            time.sleep(0.002)
+            (wav_dir / "a.wav").write_bytes(b"changed audio bytes")
+            current = build_dataset_fingerprint(list_path, wav_dir)
+            after_1a = build_stage_contract(
+                stage="1a",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"bert": "same"},
+            )
+            after_1b = build_stage_contract(
+                stage="1b",
+                list_path=list_path,
+                wav_root=wav_dir,
+                version="v5dev",
+                settings={"cnhubert": "same"},
+            )
+
+            self.assertEqual(before_1a["digest"], after_1a["digest"])
+            self.assertNotEqual(before_1b["digest"], after_1b["digest"])
+            self.assertTrue(stage_matches_dataset(after_1b, current))
+            self.assertFalse(stage_matches_dataset(before_1b, current))
+
+    def test_speaker_only_change_does_not_invalidate_preprocessing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            list_path, wav_dir = self._dataset(root)
+            before = {
+                stage: build_stage_contract(
+                    stage=stage,
+                    list_path=list_path,
+                    wav_root=wav_dir,
+                    version="v5dev",
+                    settings={},
+                )
+                for stage in ("1a", "1b")
+            }
+            list_path.write_text(
+                "a.wav|new-speaker|ko|hello\n"
+                "b.wav|another-speaker|en|world\n",
+                encoding="utf-8",
+            )
+            after = {
+                stage: build_stage_contract(
+                    stage=stage,
+                    list_path=list_path,
+                    wav_root=wav_dir,
+                    version="v5dev",
+                    settings={},
+                )
+                for stage in ("1a", "1b")
+            }
+            self.assertEqual(before["1a"]["digest"], after["1a"]["digest"])
+            self.assertEqual(before["1b"]["digest"], after["1b"]["digest"])
 
     def test_stage_contract_detects_model_change(self):
         with tempfile.TemporaryDirectory() as tmp:
