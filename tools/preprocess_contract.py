@@ -38,6 +38,50 @@ def _file_stat_payload(path: Path) -> dict[str, Any]:
     }
 
 
+def quick_path_signature(
+    path: str | os.PathLike[str],
+) -> str:
+    """Fast path signature using names, sizes, and mtimes.
+
+    This intentionally avoids hashing multi-GB model contents on every UI
+    action while still detecting ordinary in-place model replacements.
+    """
+
+    target = Path(path).expanduser().resolve()
+    if not target.exists():
+        return "missing"
+
+    if target.is_file():
+        stat = target.stat()
+        payload = {
+            "kind": "file",
+            "name": target.name,
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+        return _json_digest(payload)
+
+    entries = []
+    for item in sorted(
+        (entry for entry in target.rglob("*") if entry.is_file()),
+        key=lambda entry: entry.relative_to(target).as_posix(),
+    ):
+        stat = item.stat()
+        entries.append(
+            {
+                "path": item.relative_to(target).as_posix(),
+                "size": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        )
+    return _json_digest(
+        {
+            "kind": "directory",
+            "entries": entries,
+        }
+    )
+
+
 def file_sha256(
     path: str | os.PathLike[str],
     chunk_size: int = 1024 * 1024,
