@@ -121,8 +121,8 @@ from tools.preprocess_contract import (
     build_dataset_fingerprint,
     build_stage_contract,
     contract_matches,
-    contracts_share_dataset,
     file_sha256,
+    stage_matches_dataset,
     read_stage_contract,
     stage_contract_path,
     validate_dataset_fingerprint,
@@ -550,21 +550,16 @@ def _validate_training_dataset_contract(
                 f"{stage} 전처리 버전({contract.get('version')})과 "
                 f"현재 학습 버전({version_name})이 다릅니다."
             )
-        if (
-            contract.get("dataset", {}).get("digest")
-            != current.get("dataset", {}).get("digest")
+        if not stage_matches_dataset(
+            contract,
+            current.get("dataset", {}),
         ):
             return (
-                f"{stage} 전처리 데이터셋과 현재 .list/WAV가 다릅니다. "
-                "전처리를 다시 실행하세요."
+                f"{stage} 전처리 입력과 현재 데이터셋의 해당 의존성이 "
+                "다릅니다. 필요한 단계만 다시 전처리하세요."
             )
         contracts.append(contract)
 
-    if not contracts_share_dataset(*contracts):
-        return (
-            "전처리 단계들이 서로 다른 데이터셋에서 생성되었습니다. "
-            "a → b → c 전처리를 다시 실행하세요."
-        )
     return None
 
 
@@ -3782,6 +3777,18 @@ def open1c(
         )
         return
 
+    upstream_1b = read_stage_contract(
+        stage_contract_path(opt_dir, "1b")
+    )
+    if upstream_1b is None:
+        yield (
+            process_info(process_name_1c, "failed")
+            + ": 1B provenance disappeared before 1C started",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
     expected_contract = _preprocess_contract(
         "1c",
         inp_text,
@@ -3791,6 +3798,7 @@ def open1c(
             "pretrained_s2G": str(s2_path),
             "pretrained_s2G_signature": str(_file_signature(s2_path)),
             "s2config_path": str(config_path),
+            "upstream_1b_digest": str(upstream_1b.get("digest") or ""),
         },
     )
     _ensure_stage_contract(opt_dir, expected_contract)
