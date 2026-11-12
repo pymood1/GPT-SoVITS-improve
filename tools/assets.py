@@ -162,6 +162,12 @@ runtime_status_patch_js = r"""
 """
 
 css = """
+@property --status-value {
+    syntax: "<number>";
+    inherits: false;
+    initial-value: 0;
+}
+
 /* Keep app-level selectors under our own classes where possible so the
    layout survives Gradio 4.x/5.x DOM changes. */
 .markdown {
@@ -306,7 +312,9 @@ css = """
             rgba(127, 127, 127, 0.15) 0
         );
     box-shadow: 0 0 24px color-mix(in srgb, var(--status-accent) 18%, transparent);
-    transition: background 350ms ease;
+    transition:
+        --status-value 650ms cubic-bezier(.22, .8, .3, 1),
+        box-shadow 350ms ease;
 }
 
 .status-card-cpu .status-ring {
@@ -392,7 +400,7 @@ css = """
     border-radius: inherit;
     background: linear-gradient(90deg, #58e6a9, #40d2ff);
     box-shadow: 0 0 14px rgba(64, 210, 255, 0.28);
-    transition: width 420ms ease;
+    transition: width 650ms cubic-bezier(.22, .8, .3, 1);
 }
 
 .status-activity {
@@ -479,7 +487,7 @@ css = """
     border-radius: inherit;
     background: linear-gradient(90deg, #7c6cff, #40d2ff, #58e6a9);
     box-shadow: 0 0 18px rgba(64, 210, 255, 0.24);
-    transition: width 450ms cubic-bezier(.2, .8, .2, 1);
+    transition: width 650ms cubic-bezier(.22, .8, .3, 1);
 }
 
 .status-progress-fill::after {
