@@ -2417,8 +2417,13 @@ def open1Ba(
             else None
         ),
     }
+    resume_marker_name = (
+        f"training_resume_s2_{version}_lora_{int(lora_rank)}.json"
+        if version in v3v4set
+        else f"training_resume_s2_{version}.json"
+    )
     resume_reset = prepare_training_resume_state(
-        s2_dir / f"training_resume_s2_{version}.json",
+        s2_dir / resume_marker_name,
         [resume_dir],
         resume_identity,
     )
