@@ -122,6 +122,7 @@ from tools.preprocess_contract import (
     build_stage_contract,
     contract_matches,
     file_sha256,
+    prepare_training_resume_state,
     quick_path_signature,
     stage_matches_dataset,
     read_stage_contract,
@@ -2343,6 +2344,90 @@ def open1Ba(
         )
         return
 
+    pretrained_s2g_path = _resolve_repo_path(pretrained_s2G)
+    if pretrained_s2g_path is None or not pretrained_s2g_path.is_file():
+        yield (
+            process_info(process_name_sovits, "failed")
+            + f": pretrained S2G not found: {pretrained_s2g_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+    pretrained_s2G = str(pretrained_s2g_path)
+
+    pretrained_s2d_path = None
+    if pretrained_s2D:
+        pretrained_s2d_path = _resolve_repo_path(pretrained_s2D)
+        if (
+            version not in v3v4set
+            and (
+                pretrained_s2d_path is None
+                or not pretrained_s2d_path.is_file()
+            )
+        ):
+            yield (
+                process_info(process_name_sovits, "failed")
+                + f": pretrained S2D not found: {pretrained_s2d_path}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+        if pretrained_s2d_path is not None:
+            pretrained_s2D = str(pretrained_s2d_path)
+
+    contract_1a = read_stage_contract(
+        stage_contract_path(s2_dir, "1a")
+    )
+    contract_1b = read_stage_contract(
+        stage_contract_path(s2_dir, "1b")
+    )
+    if version in v3v4set:
+        resume_dir = (
+            s2_dir / f"logs_s2_{version}_lora_{int(lora_rank)}"
+        )
+    else:
+        resume_dir = s2_dir / f"logs_s2_{version}"
+
+    resume_identity = {
+        "version": str(version),
+        "preprocess_1a": str((contract_1a or {}).get("digest") or ""),
+        "preprocess_1b": str((contract_1b or {}).get("digest") or ""),
+        "pretrained_s2g": str(pretrained_s2g_path),
+        "pretrained_s2g_signature": quick_path_signature(
+            pretrained_s2g_path
+        ),
+        "pretrained_s2d": (
+            str(pretrained_s2d_path)
+            if pretrained_s2d_path is not None
+            else None
+        ),
+        "pretrained_s2d_signature": (
+            quick_path_signature(pretrained_s2d_path)
+            if pretrained_s2d_path is not None
+            else None
+        ),
+        "s2_config_signature": quick_path_signature(config_path),
+        "lora_rank": (
+            int(lora_rank)
+            if version in v3v4set
+            else None
+        ),
+    }
+    resume_reset = prepare_training_resume_state(
+        s2_dir / f"training_resume_s2_{version}.json",
+        [resume_dir],
+        resume_identity,
+    )
+    if resume_reset:
+        print(
+            "[SoVITS resume] incompatible previous full checkpoint state "
+            "was cleared; exported SoVITS_weights are untouched"
+        )
+
     try:
         data = json.loads(
             config_path.read_text(encoding="utf-8")
@@ -2646,6 +2731,47 @@ def open1Bb(
             {"__type__": "update"},
         )
         return
+
+    pretrained_s1_path = _resolve_repo_path(pretrained_s1)
+    if pretrained_s1_path is None or not pretrained_s1_path.is_file():
+        yield (
+            process_info(process_name_gpt, "failed")
+            + f": pretrained S1 not found: {pretrained_s1_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+    pretrained_s1 = str(pretrained_s1_path)
+
+    contract_1a = read_stage_contract(
+        stage_contract_path(s1_dir, "1a")
+    )
+    contract_1c = read_stage_contract(
+        stage_contract_path(s1_dir, "1c")
+    )
+    resume_identity = {
+        "version": str(version),
+        "preprocess_1a": str((contract_1a or {}).get("digest") or ""),
+        "preprocess_1c": str((contract_1c or {}).get("digest") or ""),
+        "pretrained_s1": str(pretrained_s1_path),
+        "pretrained_s1_signature": quick_path_signature(
+            pretrained_s1_path
+        ),
+        "s1_config_signature": quick_path_signature(config_path),
+        "if_dpo": bool(if_dpo),
+    }
+    resume_reset = prepare_training_resume_state(
+        s1_dir / f"training_resume_s1_{version}.json",
+        [s1_dir / f"logs_s1_{version}" / "ckpt"],
+        resume_identity,
+    )
+    if resume_reset:
+        print(
+            "[GPT resume] incompatible previous full checkpoint state "
+            "was cleared; exported GPT_weights are untouched"
+        )
 
     try:
         data = yaml.load(
