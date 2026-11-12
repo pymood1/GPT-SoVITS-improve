@@ -293,6 +293,14 @@ def validate_dataset_fingerprint(
     return errors
 
 
+def stage_version_key(stage: str, version: str) -> str:
+    stage_name = str(stage)
+    version_name = str(version)
+    if stage_name == "1b":
+        return "pro-sv" if "Pro" in version_name else "standard"
+    return version_name
+
+
 def build_stage_contract(
     *,
     stage: str,
