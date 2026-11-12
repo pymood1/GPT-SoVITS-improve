@@ -1233,10 +1233,12 @@ def run_controller_oof_cv(
             torch.cuda.empty_cache()
 
     complete = torch.isfinite(oof_logits).all(dim=1)
-    if not bool(complete.any()):
+    if not bool(complete.all()):
         return {
-            "status": "no_oof_predictions",
+            "status": "incomplete_oof_predictions",
             "samples": len(eligible_samples),
+            "completed": int(complete.sum().item()),
+            "missing": int((~complete).sum().item()),
             "verdict": "unavailable",
         }
 
@@ -1333,7 +1335,10 @@ def save_checkpoint(
                     "training_diagnosis",
                     None,
                 ),
-                "training_mode": "balanced_emotion_multiclass_v3_val",
+                "training_mode": "balanced_emotion_multiclass_v4_grouped_val",
+                "validation_grouping": (
+                    "connected(source_id,text_group_id,pair_group_id)"
+                ),
                 "version": args.version,
                 "text_features": args.text_features,
                 "neutral_is_base": True,
@@ -2568,18 +2573,29 @@ def main() -> int:
     else:
         likely_bottleneck = "inconclusive"
 
+    validated_checkpoint = (
+        best_controller_state is not None
+        and math.isfinite(final_best_loss)
+    )
     training_passed = (
         controller_signal == "generalization_detected"
+        and validated_checkpoint
     )
-    result_reason = (
-        f"{controller_eval_source} CE beat the random ln(K) baseline "
-        "by at least 0.03"
-        if training_passed
-        else (
-            f"{controller_eval_source} CE stayed near the random ln(K) "
-            f"baseline; likely_bottleneck={likely_bottleneck}"
+    if not validated_checkpoint:
+        result_reason = (
+            "No finite best held-out validation checkpoint was produced; "
+            "controller promotion is blocked."
         )
-    )
+    elif training_passed:
+        result_reason = (
+            f"{controller_eval_source} class-balanced CE beat the random "
+            "ln(K) baseline by at least 0.03"
+        )
+    else:
+        result_reason = (
+            f"{controller_eval_source} class-balanced CE stayed near the "
+            f"random ln(K) baseline; likely_bottleneck={likely_bottleneck}"
+        )
 
     training_sampling_by_emotion = {}
     for emotion in emotion_names:
@@ -2618,6 +2634,7 @@ def main() -> int:
         ),
         "controller_oof": controller_oof,
         "controller_signal": controller_signal,
+        "validated_checkpoint": validated_checkpoint,
         "probe_verdict": probe_verdict,
         "g_full_verdict": g_full_verdict,
         "g_topk_verdict": g_topk_verdict,
