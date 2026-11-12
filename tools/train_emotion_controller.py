@@ -1127,10 +1127,19 @@ def run_controller_oof_cv(
 
         accepted = 0
         attempts = 0
+        accepted_by_class = {
+            class_id: 0 for class_id in range(class_count)
+        }
         max_attempts = max(steps * 10, 100)
         while accepted < steps and attempts < max_attempts:
             attempts += 1
-            class_id = fold_rng.randrange(class_count)
+            min_accepted = min(accepted_by_class.values())
+            least_trained_classes = [
+                class_id
+                for class_id in range(class_count)
+                if accepted_by_class[class_id] == min_accepted
+            ]
+            class_id = fold_rng.choice(least_trained_classes)
             candidates = train_by_emotion.get(class_id) or []
             if not candidates:
                 continue
@@ -1188,6 +1197,7 @@ def run_controller_oof_cv(
                 continue
             fold_optimizer.step()
             accepted += 1
+            accepted_by_class[class_id] += 1
 
         if accepted < steps:
             return {
@@ -2121,7 +2131,13 @@ def main() -> int:
 
     while accepted_steps < training_limit and attempts < max_attempts:
         attempts += 1
-        sampled_emotion = rng.choice(emotion_names)
+        min_accepted = min(accepted_by_emotion.values())
+        least_trained_emotions = [
+            emotion
+            for emotion in emotion_names
+            if accepted_by_emotion[emotion] == min_accepted
+        ]
+        sampled_emotion = rng.choice(least_trained_emotions)
         attempts_by_emotion[sampled_emotion] += 1
         sample = rng.choice(samples_by_emotion[sampled_emotion])
         cache_key = (sample["reference"], sample["name"])
