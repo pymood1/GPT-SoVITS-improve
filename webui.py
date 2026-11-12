@@ -848,12 +848,36 @@ def _stream_emotion_command(
 
     p_emotion_training = process
 
+    last_ui_update = 0.0
+    pending_ui_update = False
     if process.stdout is not None:
         for line in process.stdout:
             clean_line = line.rstrip()
             log_lines.append(clean_line)
             print(f"[Emotion] {clean_line}", flush=True)
-            yield _emotion_status(stage, log_lines)
+            pending_ui_update = True
+
+            now = time.monotonic()
+            important_line = any(
+                marker in clean_line
+                for marker in (
+                    "[ERROR]",
+                    "Traceback",
+                    "[device]",
+                    "[data]",
+                    "[probe]",
+                    "[train]",
+                    "[val]",
+                    "[OK]",
+                )
+            )
+            if important_line or now - last_ui_update >= 0.25:
+                yield _emotion_status(stage, log_lines)
+                last_ui_update = now
+                pending_ui_update = False
+
+    if pending_ui_update:
+        yield _emotion_status(stage, log_lines)
 
     return_code = process.wait()
     cancelled = emotion_task_cancel_requested
