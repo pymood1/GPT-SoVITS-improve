@@ -1786,21 +1786,6 @@ def main() -> int:
     ).eval()
     model.requires_grad_(False)
 
-    controller = LowRankEmotionPreference(
-        hidden_dim=model.model_dim,
-        num_emotions=len(emotion_names),
-        rank=args.rank,
-        max_log_odds_shift=args.max_log_odds_shift,
-        prefix_log_ratio_budget=args.prefix_log_ratio_budget,
-    ).to(device=device, dtype=torch.float32)
-    controller.train()
-
-    optimizer = torch.optim.AdamW(
-        controller.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-
     output_weight = (
         model.ar_predict_layer.weight.detach().float()
     )
@@ -2088,6 +2073,28 @@ def main() -> int:
     samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
     for sample in training_samples:
         samples_by_emotion[sample["emotion"]].append(sample)
+
+    # Instantiate the trainable controller only after support filtering has
+    # finalized the class set and emotion IDs.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(args.seed)
+        controller = LowRankEmotionPreference(
+            hidden_dim=model.model_dim,
+            num_emotions=len(emotion_names),
+            rank=args.rank,
+            max_log_odds_shift=args.max_log_odds_shift,
+            prefix_log_ratio_budget=args.prefix_log_ratio_budget,
+        )
+    controller = controller.to(
+        device=device,
+        dtype=torch.float32,
+    )
+    controller.train()
+    optimizer = torch.optim.AdamW(
+        controller.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
 
     print(
         f"[data] leakage-safe held-out validation: "
