@@ -350,6 +350,24 @@ def process_info(process_name="", indicator=""):
 
 
 
+def _training_process_running():
+    for process in (
+        globals().get("p_train_GPT"),
+        globals().get("p_train_SoVITS"),
+    ):
+        if process is not None and process.poll() is None:
+            return True
+    return False
+
+
+def _preprocessing_process_running():
+    for process_list_name in ("ps1a", "ps1b", "ps1c"):
+        for process in globals().get(process_list_name, []) or []:
+            if process is not None and process.poll() is None:
+                return True
+    return False
+
+
 class EmotionTaskCancelled(EmotionPipelineError):
     pass
 
@@ -2378,6 +2396,17 @@ def open1Ba(
     global p_train_SoVITS
     global sovits_train_cancel_requested
 
+    if _preprocessing_process_running():
+        yield (
+            process_info(process_name_sovits, "failed")
+            + ": 전처리 중에는 같은 실험 폴더에서 학습을 시작할 수 없습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
     if p_train_SoVITS is not None:
         yield (
             process_info(process_name_sovits, "occupy"),
@@ -2700,6 +2729,17 @@ def open1Bb(
 ):
     global p_train_GPT
     global gpt_train_cancel_requested
+
+    if _preprocessing_process_running():
+        yield (
+            process_info(process_name_gpt, "failed")
+            + ": 전처리 중에는 같은 실험 폴더에서 학습을 시작할 수 없습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
 
     if p_train_GPT is not None:
         yield (
@@ -3429,6 +3469,15 @@ def open1a(
 
     preprocess_1a_cancel_requested = False
 
+    if _training_process_running():
+        yield (
+            process_info(process_name_1a, "failed")
+            + ": 학습 중에는 공유 전처리 파일을 변경할 수 없습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
 
@@ -3668,6 +3717,15 @@ def open1b(
     global preprocess_1b_cancel_requested
 
     preprocess_1b_cancel_requested = False
+
+    if _training_process_running():
+        yield (
+            process_info(process_name_1b, "failed")
+            + ": 학습 중에는 공유 전처리 파일을 변경할 수 없습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
 
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
@@ -3985,6 +4043,15 @@ def open1c(
     global preprocess_1c_cancel_requested
 
     preprocess_1c_cancel_requested = False
+
+    if _training_process_running():
+        yield (
+            process_info(process_name_1c, "failed")
+            + ": 학습 중에는 공유 전처리 파일을 변경할 수 없습니다.",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
 
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
