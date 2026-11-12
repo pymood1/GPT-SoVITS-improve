@@ -14,6 +14,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from tools.preprocess_contract import (
+    build_dataset_fingerprint,
+    file_sha256,
+)
+
 
 LANGUAGE_ALIASES = {
     "ZH": "zh", "zh": "zh",
@@ -211,9 +216,12 @@ def build_dataset(args: argparse.Namespace) -> None:
     list_path = Path(args.list).expanduser().resolve()
     output_dir = Path(args.output).expanduser().resolve()
     wav_root = Path(args.wav_root).expanduser().resolve() if args.wav_root else None
-    sidecar = load_sidecar(
-        Path(args.sidecar).expanduser().resolve() if args.sidecar else None
+    sidecar_path = (
+        Path(args.sidecar).expanduser().resolve()
+        if args.sidecar
+        else None
     )
+    sidecar = load_sidecar(sidecar_path)
 
     if not list_path.is_file():
         raise DatasetError(f".list file not found: {list_path}")
@@ -440,8 +448,22 @@ def build_dataset(args: argparse.Namespace) -> None:
                 + b"\n"
             )
 
+    source_fingerprint = build_dataset_fingerprint(
+        list_path,
+        wav_root,
+    )
     report = {
         "dataset_id": args.dataset_id,
+        "source_provenance": {
+            "dataset_digest": source_fingerprint["digest"],
+            "list_sha256": source_fingerprint["list_sha256"],
+            "wav_root": source_fingerprint.get("wav_root", ""),
+            "sidecar_sha256": (
+                file_sha256(sidecar_path)
+                if sidecar_path is not None and sidecar_path.is_file()
+                else None
+            ),
+        },
         "dataset_version": args.dataset_version,
         "samples": len(records),
         "splits": dict(Counter(item["split"] for item in records)),
