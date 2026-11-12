@@ -4416,8 +4416,7 @@ def close1abcd():
 
     preprocess_1abcd_cancel_requested = True
 
-    if ps1abc:
-        close1abc()
+    close1abc()
 
     if (
         p_emotion_training is not None
