@@ -652,6 +652,26 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "and validated_checkpoint",
             trainer,
         )
+        self.assertIn(
+            "steerable = int(non_eos_support.sum().item()) > 1",
+            trainer,
+        )
+        self.assertIn(
+            "total_grad_norm_value",
+            trainer,
+        )
+        self.assertIn(
+            "or total_grad_norm_value <= 1e-12",
+            trainer,
+        )
+
+        emotion_control = (
+            ROOT / "GPT_SoVITS" / "AR" / "models" / "emotion_control.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "non_eos_support.sum(dim=-1) > 1",
+            emotion_control,
+        )
 
     def test_emotion_preprocess_cache_ignores_unrelated_git_head(self):
         script = (
