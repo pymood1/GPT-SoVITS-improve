@@ -727,6 +727,9 @@ jobs:
       - name: Test runtime status monitor
         run: |
           python -m unittest tests/test_runtime_status.py -v
+      - name: Test preprocessing provenance contracts
+        run: |
+          python -m unittest tests/test_preprocess_contract.py -v
 
 
   shell_syntax:
