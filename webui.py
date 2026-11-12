@@ -1071,7 +1071,8 @@ def run_auto_emotion_sidecar(
         )
 
 
-@_persistent_gradio_errors\ndef run_emotion_training_pipeline(
+@_persistent_gradio_errors
+def run_emotion_training_pipeline(
     source_list,
     wav_root,
     sidecar_path,
@@ -3159,7 +3160,8 @@ training_sequence_cancel_requested = False
 process_name_train_sequence = "GPT → SoVITS 연속 학습"
 
 
-@_persistent_gradio_errors\ndef run_gpt_then_sovits(
+@_persistent_gradio_errors
+def run_gpt_then_sovits(
     batch_size_gpt,
     total_epoch_gpt,
     exp_name,
@@ -4539,7 +4541,8 @@ preprocess_1abcd_cancel_requested = False
 process_name_1abcd = "전처리 a → b → c → d"
 
 
-@_persistent_gradio_errors\ndef open1abcd(
+@_persistent_gradio_errors
+def open1abcd(
     version,
     inp_text,
     inp_wav_dir,
