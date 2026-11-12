@@ -175,6 +175,14 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertIn("cpu_percent", payload["hardware"])
         self.assertIn("state", payload["activity"])
 
+    def test_emotion_probe_progress_is_published(self):
+        script = (
+            ROOT / "tools" / "train_emotion_controller.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('stage="probe-cache"', script)
+        self.assertIn('stage="diagnostic-probe"', script)
+        self.assertIn("probe_counter / 4.0", script)
+
     def test_runtime_gauges_use_smooth_interpolation(self):
         assets = (ROOT / "tools" / "assets.py").read_text(
             encoding="utf-8"
