@@ -4332,8 +4332,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 inp_text = gr.Textbox(
                                     label=i18n("*文本标注文件"),
-                                    value="",
-                                    placeholder="/content/drive/MyDrive/data/train.list",
+                                    value="/content/drive/MyDrive/audio_input/training.list",
+                                    placeholder="/content/drive/MyDrive/audio_input/training.list",
                                     interactive=True,
                                     scale=10,
                                 )
