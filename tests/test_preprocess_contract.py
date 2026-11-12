@@ -3,6 +3,8 @@ import time
 import unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 from tools.preprocess_contract import (
     build_dataset_fingerprint,
     build_stage_contract,
@@ -91,6 +93,24 @@ class PreprocessContractTests(unittest.TestCase):
                 settings={"multilingual_bert": False},
             )
             self.assertFalse(contract_matches(marker, changed))
+
+
+class WebUiDatasetContractIntegrationTests(unittest.TestCase):
+    def test_training_validates_current_dataset_contracts(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        self.assertIn("build_stage_contract", webui)
+        self.assertIn("stage_contract_path", webui)
+        self.assertIn("contracts_share_dataset", webui)
+        self.assertIn("inp_text,\n    inp_wav_dir,", webui)
+
+    def test_dpo_batch_is_not_halved_twice(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        data_module = (
+            ROOT / "GPT_SoVITS" / "AR" / "data" / "data_module.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('self.config["train"].get("if_dpo", False)', data_module)
+        self.assertNotIn("[GPT/DPO]", webui)
+        self.assertNotIn("original_batch_size = batch_size", webui)
 
 
 if __name__ == "__main__":
