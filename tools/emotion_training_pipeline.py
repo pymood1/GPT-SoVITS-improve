@@ -20,6 +20,39 @@ class EmotionPipelineError(RuntimeError):
     pass
 
 
+def latest_gpt_checkpoint_for_experiment(
+    weight_root: Path,
+    experiment_name: str,
+) -> Path | None:
+    """Return the highest-epoch half-weight checkpoint for one experiment."""
+    root = Path(weight_root)
+    name = str(experiment_name or "").strip()
+    if not name or not root.is_dir():
+        return None
+
+    prefix = f"{name}-e"
+    candidates = []
+    for path in root.glob(f"{name}-e*.ckpt"):
+        stem = path.stem
+        if not stem.startswith(prefix):
+            continue
+        suffix = stem[len(prefix):]
+        if not suffix.isdigit():
+            continue
+        candidates.append((int(suffix), path))
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: (
+            item[0],
+            item[1].stat().st_mtime_ns,
+        )
+    )
+    return candidates[-1][1]
+
+
 def read_jsonl(path: Path) -> list[dict]:
     rows: list[dict] = []
 
