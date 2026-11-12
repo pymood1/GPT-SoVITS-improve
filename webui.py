@@ -210,6 +210,17 @@ set_default()
 
 gpus = "-".join(map(str, GPU_INDEX))
 default_gpu_numbers = infer_device.index
+_training_gpu_ids = [str(index) for index in GPU_INDEX]
+default_gpt_training_gpu = (
+    _training_gpu_ids[0]
+    if _training_gpu_ids
+    else str(default_gpu_numbers)
+)
+default_sovits_training_gpu = (
+    _training_gpu_ids[1]
+    if len(_training_gpu_ids) > 1
+    else default_gpt_training_gpu
+)
 
 
 def fix_gpu_number(input):  # 将越界的number强制改到界内
@@ -5559,7 +5570,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 with gr.Row():
                                     gpu_numbers1Ba = gr.Textbox(
                                         label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                        value="%s" % (gpus),
+                                        value=default_sovits_training_gpu,
                                         interactive=True,
                                     )
                         with gr.Column():
@@ -5624,7 +5635,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 with gr.Row():
                                     gpu_numbers1Bb = gr.Textbox(
                                         label=i18n("GPU卡号以-分割，每个卡号一个进程"),
-                                        value="%s" % (gpus),
+                                        value=default_gpt_training_gpu,
                                         interactive=True,
                                     )
                         with gr.Column():
