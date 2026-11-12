@@ -680,9 +680,17 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "and not text_confound_risk",
             trainer,
         )
+        support_filter_pos = trainer.index(
+            "emotion_names = [",
+            trainer.index("eligible_counts"),
+        )
+        main_controller_pos = trainer.index(
+            "controller = LowRankEmotionPreference(",
+            support_filter_pos,
+        )
         self.assertLess(
-            trainer.index("emotion_names = [", trainer.index("eligible_counts")),
-            trainer.index("controller = LowRankEmotionPreference("),
+            support_filter_pos,
+            main_controller_pos,
         )
 
         emotion_control = (
