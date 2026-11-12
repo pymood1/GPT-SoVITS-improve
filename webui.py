@@ -5297,7 +5297,6 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         save_every_epoch1Bb,
                         gpu_numbers1Bb,
                         pretrained_s1,
-                        pretrained_s2G,
                         use_multilingual_bert,
                         multilingual_bert_model,
                         version_checkbox,
