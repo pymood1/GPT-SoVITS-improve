@@ -564,6 +564,27 @@ def _validate_training_dataset_contract(
                 f"{stage} 전처리 입력과 현재 데이터셋의 해당 의존성이 "
                 "다릅니다. 필요한 단계만 다시 전처리하세요."
             )
+
+        if stage == "1c":
+            upstream_1b = read_stage_contract(
+                stage_contract_path(exp_dir, "1b")
+            )
+            expected_upstream = str(
+                contract.get("settings", {}).get(
+                    "upstream_1b_digest"
+                )
+                or ""
+            )
+            current_upstream = str(
+                (upstream_1b or {}).get("digest")
+                or ""
+            )
+            if not expected_upstream or expected_upstream != current_upstream:
+                return (
+                    "1C semantic token이 현재 1B HuBERT 전처리와 "
+                    "연결되어 있지 않습니다. 1C를 다시 실행하세요."
+                )
+
         contracts.append(contract)
 
     return None
