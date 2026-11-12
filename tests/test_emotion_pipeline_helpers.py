@@ -683,6 +683,52 @@ class ValidationPolicyTests(unittest.TestCase):
             ),
         )
 
+    def test_group_kfold_falls_back_to_feasible_two_folds(self):
+        # There are three independent groups per class, but no way to
+        # allocate every class into all three folds. Two folds are viable.
+        group_emotions = [
+            ("happy", "sad", "angry"),
+            ("happy", "sad"),
+            ("happy", "angry"),
+            ("sad", "angry"),
+        ]
+        emotions = ("happy", "sad", "angry")
+        samples = []
+        labels = []
+        for group_index, present in enumerate(group_emotions):
+            for emotion in present:
+                samples.append(
+                    {
+                        "name": f"group{group_index}_{emotion}.wav",
+                        "text_group_id": f"group-{group_index}",
+                    }
+                )
+                labels.append(emotions.index(emotion))
+
+        folds = stratified_group_kfold_indices(
+            samples,
+            labels,
+            max_folds=5,
+            seed=233333,
+        )
+        self.assertEqual(len(folds), 2)
+        all_val = []
+        for train_idx, val_idx in folds:
+            all_val.extend(val_idx)
+            self.assertEqual(
+                {labels[i] for i in train_idx},
+                {0, 1, 2},
+            )
+            self.assertEqual(
+                {labels[i] for i in val_idx},
+                {0, 1, 2},
+            )
+            self.assertFalse(
+                {samples[i]["text_group_id"] for i in train_idx}
+                & {samples[i]["text_group_id"] for i in val_idx}
+            )
+        self.assertEqual(sorted(all_val), list(range(len(samples))))
+
     def test_probe_kfold_is_stratified_and_deterministic(self):
         labels = (
             [0] * 8
