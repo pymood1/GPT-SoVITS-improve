@@ -720,6 +720,9 @@ jobs:
       - name: Test Gradio responsive layout
         run: |
           python -m unittest tests/test_gradio_layout_regression.py -v
+      - name: Test runtime status monitor
+        run: |
+          python -m unittest tests/test_runtime_status.py -v
 
 
   shell_syntax:
