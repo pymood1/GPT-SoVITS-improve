@@ -579,9 +579,21 @@ def _training_artifact_error(exp_dir, mode, version_name):
             return False
         return allow_empty or any(path.iterdir())
 
+    def text_names(path):
+        names = set()
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    names.add(line.split("\t", 1)[0])
+        return names
+
     text_path = exp_dir / "2-name2text.txt"
     if not file_ok(text_path):
         return f"텍스트 전처리 산출물이 없거나 비었습니다: {text_path}"
+    names_text = text_names(text_path)
+    if not names_text:
+        return f"텍스트 학습 샘플이 없습니다: {text_path}"
 
     if mode == "gpt":
         bert_dir = exp_dir / "3-bert"
@@ -590,8 +602,26 @@ def _training_artifact_error(exp_dir, mode, version_name):
             return f"BERT feature 디렉터리가 없습니다: {bert_dir}"
         if not file_ok(semantic_path):
             return f"semantic token 파일이 없거나 비었습니다: {semantic_path}"
-        if _nonempty_line_count(semantic_path) <= 1:
+
+        names_semantic = set()
+        with semantic_path.open("r", encoding="utf-8") as handle:
+            for index, line in enumerate(handle):
+                if index == 0:
+                    continue
+                line = line.strip()
+                if line:
+                    names_semantic.add(line.split("\t", 1)[0])
+
+        if not names_semantic:
             return f"semantic token 데이터가 비었습니다: {semantic_path}"
+        unknown = sorted(names_semantic - names_text)
+        if unknown:
+            return (
+                "semantic token에 1A text가 없는 샘플이 있습니다: "
+                + ", ".join(unknown[:10])
+            )
+        if len(names_semantic & names_text) < 2:
+            return "GPT/S1 학습에 사용할 일치 샘플이 2개 미만입니다."
         return None
 
     if mode == "sovits":
@@ -601,10 +631,45 @@ def _training_artifact_error(exp_dir, mode, version_name):
             return f"HuBERT feature가 없거나 비었습니다: {hubert_dir}"
         if not dir_ok(wav_dir):
             return f"32kHz 학습 음성이 없거나 비었습니다: {wav_dir}"
+
+        names_hubert = {
+            path.stem
+            for path in hubert_dir.iterdir()
+            if path.is_file() and path.suffix == ".pt"
+        }
+        names_wav = {
+            path.name
+            for path in wav_dir.iterdir()
+            if path.is_file()
+        }
+        if names_hubert != names_wav:
+            only_hubert = sorted(names_hubert - names_wav)
+            only_wav = sorted(names_wav - names_hubert)
+            return (
+                "1B HuBERT/wav32k 샘플 집합이 다릅니다. "
+                f"HuBERT-only={only_hubert[:5]}, "
+                f"wav-only={only_wav[:5]}"
+            )
+
+        usable = names_text & names_hubert & names_wav
+        if len(usable) < 2:
+            return "SoVITS 학습에 사용할 일치 샘플이 2개 미만입니다."
+
         if "Pro" in str(version_name):
             sv_dir = exp_dir / "7-sv"
             if not dir_ok(sv_dir):
                 return f"speaker feature가 없거나 비었습니다: {sv_dir}"
+            names_sv = {
+                path.stem
+                for path in sv_dir.iterdir()
+                if path.is_file() and path.suffix == ".pt"
+            }
+            missing_sv = sorted(usable - names_sv)
+            if missing_sv:
+                return (
+                    "speaker feature가 없는 학습 샘플이 있습니다: "
+                    + ", ".join(missing_sv[:10])
+                )
         return None
 
     return f"알 수 없는 학습 모드: {mode}"
