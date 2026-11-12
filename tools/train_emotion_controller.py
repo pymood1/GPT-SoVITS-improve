@@ -1501,6 +1501,25 @@ def main() -> int:
         )
     if args.temperature <= 0:
         raise TrainingDataError("--temperature must be positive")
+    if args.preference_beta <= 0:
+        raise TrainingDataError(
+            "--preference-beta must be positive; a non-positive value "
+            "reverses or eliminates the inference preference"
+        )
+    if args.top_k < 2:
+        raise TrainingDataError(
+            "--top-k must be at least 2 for controller training"
+        )
+    if not 0.0 < args.top_p <= 1.0:
+        raise TrainingDataError("--top-p must be in (0,1]")
+    if args.max_log_odds_shift <= 0:
+        raise TrainingDataError(
+            "--max-log-odds-shift must be positive for learning"
+        )
+    if args.lr <= 0:
+        raise TrainingDataError("--lr must be positive")
+    if args.log_every <= 0:
+        raise TrainingDataError("--log-every must be positive")
     if args.min_samples_per_emotion < 3:
         raise TrainingDataError(
             "--min-samples-per-emotion must be >= 3 when validation is enabled"
