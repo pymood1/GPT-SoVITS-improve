@@ -24,7 +24,7 @@ def latest_gpt_checkpoint_for_experiment(
     weight_root: Path,
     experiment_name: str,
 ) -> Path | None:
-    """Return the highest-epoch half-weight checkpoint for one experiment."""
+    """Return the most recently written half-weight checkpoint for one experiment."""
     root = Path(weight_root)
     name = str(experiment_name or "").strip()
     if not name or not root.is_dir():
@@ -46,8 +46,8 @@ def latest_gpt_checkpoint_for_experiment(
 
     candidates.sort(
         key=lambda item: (
-            item[0],
             item[1].stat().st_mtime_ns,
+            item[0],
         )
     )
     return candidates[-1][1]
