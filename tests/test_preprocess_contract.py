@@ -357,6 +357,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("stage_matches_dataset", webui)
         self.assertIn("inp_text,\n    inp_wav_dir,", webui)
 
+    def test_one_click_stop_terminates_delegated_preprocess_stage(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def close1abcd(")
+        end = webui.index("def switch_version(", start)
+        block = webui[start:end]
+        self.assertIn("close1abc()", block)
+        self.assertNotIn("if ps1abc:", block)
+
     def test_one_click_preprocessing_reuses_canonical_stages(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         start = webui.index("def open1abc(")
