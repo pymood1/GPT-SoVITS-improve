@@ -118,9 +118,11 @@ from tools.runtime_status import (
     build_runtime_status_payload,
 )
 from tools.preprocess_contract import (
+    build_dataset_fingerprint,
     build_stage_contract,
     contract_matches,
     contracts_share_dataset,
+    file_sha256,
     read_stage_contract,
     stage_contract_path,
     validate_dataset_fingerprint,
@@ -1061,6 +1063,20 @@ def run_emotion_training_pipeline(
         else:
             gpu_number = "0"
 
+        source_list = _clean_user_path(source_list)
+        sidecar_path = _clean_user_path(sidecar_path)
+        wav_root = _clean_user_path(wav_root)
+
+        if not source_list:
+            raise EmotionPipelineError(
+                "원본 GPT-SoVITS .list 파일 경로를 입력하세요."
+            )
+
+        if not sidecar_path:
+            raise EmotionPipelineError(
+                "감정 controller 학습에는 sidecar JSONL이 필요합니다."
+            )
+
         dataset_ready = (
             metadata_path.is_file()
             and train_list.is_file()
@@ -1068,6 +1084,33 @@ def run_emotion_training_pipeline(
         )
 
         if reuse_dataset and dataset_ready:
+            report = json.loads(
+                (dataset_dir / "report.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            provenance = report.get("source_provenance") or {}
+            current_fingerprint = build_dataset_fingerprint(
+                source_list,
+                wav_root or None,
+            )
+            current_sidecar = Path(sidecar_path).expanduser().resolve()
+            current_sidecar_sha = (
+                file_sha256(current_sidecar)
+                if current_sidecar.is_file()
+                else None
+            )
+            if (
+                provenance.get("dataset_digest")
+                != current_fingerprint.get("digest")
+                or provenance.get("sidecar_sha256")
+                != current_sidecar_sha
+            ):
+                raise EmotionPipelineError(
+                    "기존 canonical dataset의 원본 .list/WAV/sidecar가 "
+                    "현재 입력과 다릅니다. 재사용을 끄고 다시 생성하세요."
+                )
+
             log_lines.append(
                 f"[reuse] canonical dataset: {dataset_dir}"
             )
@@ -1076,19 +1119,6 @@ def run_emotion_training_pipeline(
                 log_lines,
             )
         else:
-            source_list = _clean_user_path(source_list)
-            sidecar_path = _clean_user_path(sidecar_path)
-            wav_root = _clean_user_path(wav_root)
-
-            if not source_list:
-                raise EmotionPipelineError(
-                    "원본 GPT-SoVITS .list 파일 경로를 입력하세요."
-                )
-
-            if not sidecar_path:
-                raise EmotionPipelineError(
-                    "감정 controller 학습에는 sidecar JSONL이 필요합니다."
-                )
 
             if dataset_dir.exists() and any(dataset_dir.iterdir()):
                 raise EmotionPipelineError(
