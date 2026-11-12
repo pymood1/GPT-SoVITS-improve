@@ -116,8 +116,10 @@ from tools.emotion_training_pipeline import (
 )
 from tools.my_utils import check_details, check_for_existance
 from tools.runtime_status import (
+    STATUS_PATH_ENV,
     build_runtime_status_html,
     build_runtime_status_payload,
+    status_slot_path,
 )
 from tools.preprocess_contract import (
     build_dataset_fingerprint,
@@ -2730,11 +2732,14 @@ def open1Ba(
     ]
     print("[SoVITS train]", " ".join(repr(x) for x in cmd))
     sovits_train_cancel_requested = False
+    child_env = os.environ.copy()
+    child_env[STATUS_PATH_ENV] = str(status_slot_path("sovits"))
 
     try:
         process = Popen(
             cmd,
             cwd=now_dir,
+            env=child_env,
         )
         p_train_SoVITS = process
     except OSError as exc:
@@ -3075,6 +3080,7 @@ def open1Bb(
     child_env["_CUDA_VISIBLE_DEVICES"] = str(
         fix_gpu_numbers(gpu_numbers.replace("-", ","))
     )
+    child_env[STATUS_PATH_ENV] = str(status_slot_path("gpt"))
     child_env["hz"] = "25hz"
 
     tmp_config_path = Path(tmp) / "tmp_s1.yaml"
