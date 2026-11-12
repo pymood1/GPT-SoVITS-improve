@@ -250,15 +250,17 @@ def main(args):
     try:
         trainer.fit(model, data_module, **fit_kwargs)
     except BaseException:
-        publish_activity(
-            task="GPT / S1 학습",
-            stage="failed",
-            state="failed",
-            metric="학습 프로세스가 오류 또는 중지로 종료되었습니다.",
-        )
+        if os.environ.get("LOCAL_RANK", "0") == "0":
+            publish_activity(
+                task="GPT / S1 학습",
+                stage="failed",
+                state="failed",
+                metric="학습 프로세스가 오류 또는 중지로 종료되었습니다.",
+            )
         raise
     else:
-        clear_activity(reason="gpt_finished")
+        if os.environ.get("LOCAL_RANK", "0") == "0":
+            clear_activity(reason="gpt_finished")
 
 
 # srun --gpus-per-node=1 --ntasks-per-node=1 python train.py --path-to-configuration configurations/default.yaml
