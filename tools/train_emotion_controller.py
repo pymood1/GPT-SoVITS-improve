@@ -2175,10 +2175,12 @@ def main() -> int:
                 f"verdict={report['verdict']}"
             )
         else:
+            reason = str(report.get("error") or "").strip()
             print(
                 f"[probe:{probe_name}][WARNING] "
                 f"status={report.get('status')} "
                 f"n={report.get('samples', 0)}"
+                + (f" reason={reason}" if reason else "")
             )
 
     print(
