@@ -452,6 +452,21 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("stage_matches_dataset", webui)
         self.assertIn("inp_text,\n    inp_wav_dir,", webui)
 
+    def test_hubert_nan_retry_uses_a_snapshot(self):
+        script = (
+            ROOT
+            / "GPT_SoVITS"
+            / "prepare_datasets"
+            / "2-get-hubert-wav32k.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("retry_items = list(nan_fails)", script)
+        self.assertIn("nan_fails.clear()", script)
+        self.assertIn("for wav in retry_items:", script)
+        self.assertNotIn("for wav in nan_fails:", script)
+        self.assertIn("raise SystemExit(2)", script)
+
+
     def test_one_click_stop_terminates_delegated_preprocess_stage(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         start = webui.index("def close1abcd(")

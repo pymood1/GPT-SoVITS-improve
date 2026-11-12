@@ -73,6 +73,7 @@ else:
     model = model.to(device)
 
 nan_fails = []
+failures = []
 
 
 def name2go(wav_name, wav_path):
@@ -121,14 +122,36 @@ for line in lines[int(i_part) :: int(all_parts)]:
             wav_path = wav_name
             wav_name = os.path.basename(wav_name)
         name2go(wav_name, wav_path)
-    except:
-        print(line, traceback.format_exc())
+    except Exception:
+        tb = traceback.format_exc()
+        failures.append((line, tb))
+        print(line, tb, file=sys.stderr)
 
 if len(nan_fails) > 0 and is_half == True:
+    # Iterate over a snapshot. name2go() appends persistent NaNs back to
+    # nan_fails; iterating that same list would retry forever.
+    retry_items = list(nan_fails)
+    nan_fails.clear()
     is_half = False
     model = model.float()
-    for wav in nan_fails:
+    for wav in retry_items:
         try:
             name2go(wav[0], wav[1])
-        except:
-            print(wav_name, traceback.format_exc())
+        except Exception:
+            tb = traceback.format_exc()
+            failures.append((wav[0], tb))
+            print(wav[0], tb, file=sys.stderr)
+
+if nan_fails:
+    print(
+        f"[WARN] filtered {len(nan_fails)} item(s) with persistent NaN "
+        "CNHuBERT features after full-precision retry",
+        file=sys.stderr,
+    )
+
+if failures:
+    print(
+        f"[FATAL] HuBERT preprocessing failed for {len(failures)} item(s)",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
