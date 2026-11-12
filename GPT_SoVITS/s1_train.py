@@ -4,9 +4,11 @@ import os
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 import argparse
-import logging
-import platform
 import inspect
+import logging
+import math
+import platform
+import sys
 from pathlib import Path
 
 import torch
@@ -14,7 +16,7 @@ from AR.data.data_module import Text2SemanticDataModule
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from AR.utils.io import load_yaml_config
 from pytorch_lightning import Trainer, seed_everything
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger  # WandbLogger
 from pytorch_lightning.strategies import DDPStrategy
 
@@ -25,6 +27,95 @@ from collections import OrderedDict
 
 from AR.utils import get_newest_ckpt
 from process_ckpt import my_save
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.runtime_status import clear_activity, publish_activity
+
+
+class RuntimeStatusCallback(Callback):
+    def __init__(self, total_epochs):
+        super().__init__()
+        self.total_epochs = int(total_epochs)
+
+    @staticmethod
+    def _metric_value(value):
+        if value is None:
+            return None
+        try:
+            if hasattr(value, "detach"):
+                value = value.detach()
+            if hasattr(value, "float"):
+                value = value.float()
+            if hasattr(value, "item"):
+                value = value.item()
+            return float(value)
+        except (TypeError, ValueError, RuntimeError):
+            return None
+
+    def _publish(self, trainer, batch_idx=0):
+        if not trainer.is_global_zero:
+            return
+
+        total_steps = None
+        try:
+            estimated = float(trainer.estimated_stepping_batches)
+            if math.isfinite(estimated) and estimated > 0:
+                total_steps = int(estimated)
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+        step = int(trainer.global_step)
+        progress = (
+            min(step / total_steps, 1.0)
+            if total_steps
+            else None
+        )
+        loss = self._metric_value(
+            trainer.callback_metrics.get("total_loss")
+        )
+        accuracy = self._metric_value(
+            trainer.callback_metrics.get("top_3_acc")
+        )
+        metric = (
+            f"top-3 acc {accuracy:.2%}"
+            if accuracy is not None
+            else None
+        )
+        publish_activity(
+            task="GPT / S1 학습",
+            stage="training",
+            progress=progress,
+            step=step,
+            total_steps=total_steps,
+            epoch=int(trainer.current_epoch) + 1,
+            total_epochs=self.total_epochs,
+            loss=loss,
+            metric=metric,
+        )
+
+    def on_train_start(self, trainer, pl_module):
+        self._publish(trainer)
+
+    def on_train_batch_end(
+        self,
+        trainer,
+        pl_module,
+        outputs,
+        batch,
+        batch_idx,
+    ):
+        try:
+            total_batches = int(trainer.num_training_batches)
+        except (TypeError, ValueError, OverflowError):
+            total_batches = 0
+        interval = max(1, total_batches // 100) if total_batches else 5
+        if batch_idx % interval == 0 or (
+            total_batches and batch_idx + 1 >= total_batches
+        ):
+            self._publish(trainer, batch_idx=batch_idx)
 
 
 class my_model_ckpt(ModelCheckpoint):
@@ -124,7 +215,10 @@ def main(args):
         precision=config["train"]["precision"],
         logger=logger,
         num_sanity_val_steps=0,
-        callbacks=[ckpt_callback],
+        callbacks=[
+            ckpt_callback,
+            RuntimeStatusCallback(config["train"]["epochs"]),
+        ],
         use_distributed_sampler=False,  # 非常简单的修改，但解决了采用自定义的 bucket_sampler 下训练步数不一致的问题！
     )
 
@@ -153,7 +247,18 @@ def main(args):
     # with Lightning versions whose Trainer.fit() predates this argument.
     if "weights_only" in inspect.signature(trainer.fit).parameters:
         fit_kwargs["weights_only"] = False
-    trainer.fit(model, data_module, **fit_kwargs)
+    try:
+        trainer.fit(model, data_module, **fit_kwargs)
+    except BaseException:
+        publish_activity(
+            task="GPT / S1 학습",
+            stage="failed",
+            state="failed",
+            metric="학습 프로세스가 오류 또는 중지로 종료되었습니다.",
+        )
+        raise
+    else:
+        clear_activity(reason="gpt_finished")
 
 
 # srun --gpus-per-node=1 --ntasks-per-node=1 python train.py --path-to-configuration configurations/default.yaml
