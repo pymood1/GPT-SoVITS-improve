@@ -680,6 +680,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "and not text_confound_risk",
             trainer,
         )
+        self.assertIn(
+            "effective controller gradients were exhausted",
+            trainer,
+        )
+        self.assertIn(
+            "if best_controller_state is None:",
+            trainer,
+        )
         support_filter_pos = trainer.index(
             "emotion_names = [",
             trainer.index("eligible_counts"),
