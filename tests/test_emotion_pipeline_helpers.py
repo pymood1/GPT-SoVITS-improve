@@ -268,16 +268,24 @@ class GptCheckpointSelectionTests(unittest.TestCase):
     def test_latest_checkpoint_is_selected_for_exact_experiment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "demo-e5.ckpt").write_bytes(b"x")
-            (root / "demo-e15.ckpt").write_bytes(b"x")
+            old_high = root / "demo-e15.ckpt"
+            old_high.write_bytes(b"old")
+            newer_low = root / "demo-e5.ckpt"
+            newer_low.write_bytes(b"new")
             (root / "demo-other-e99.ckpt").write_bytes(b"x")
+
+            old_ns = old_high.stat().st_mtime_ns
+            newer_ns = max(newer_low.stat().st_mtime_ns, old_ns + 1_000_000)
+            import os
+            os.utime(old_high, ns=(old_ns, old_ns))
+            os.utime(newer_low, ns=(newer_ns, newer_ns))
 
             selected = latest_gpt_checkpoint_for_experiment(
                 root,
                 "demo",
             )
 
-            self.assertEqual(selected, root / "demo-e15.ckpt")
+            self.assertEqual(selected, newer_low)
 
     def test_missing_experiment_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
