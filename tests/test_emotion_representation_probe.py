@@ -140,6 +140,28 @@ class RepresentationProbeTests(unittest.TestCase):
             math.isfinite(report["oof_macro_accuracy"])
         )
 
+    def test_grouped_probe_preserves_unavailable_reason(self):
+        report = run_mean_pool_linear_probe(
+            torch.randn(4, 8),
+            [0, 0, 1, 1],
+            ["happy", "sad"],
+            samples=[
+                {
+                    "name": f"sample_{index}.wav",
+                    "text_group_id": "shared-text",
+                }
+                for index in range(4)
+            ],
+            seed=233333,
+            max_folds=5,
+            permutations=1,
+            steps=2,
+        )
+
+        self.assertEqual(report["status"], "insufficient_data")
+        self.assertEqual(report["verdict"], "unavailable")
+        self.assertIn("independent leakage groups", report["error"])
+
     def test_probe_reports_insufficient_per_class_data(self):
         report = run_mean_pool_linear_probe(
             torch.randn(5, 8),
