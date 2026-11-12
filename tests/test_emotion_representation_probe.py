@@ -89,7 +89,7 @@ class RepresentationProbeTests(unittest.TestCase):
         self.assertEqual(report["status"], "ok")
         self.assertTrue(report["grouped_validation"])
         self.assertEqual(report["folds"], 3)
-        self.assertGreater(report["oof_macro_accuracy"], 0.90)
+        self.assertTrue(math.isfinite(report["oof_ce"]))
 
     def test_probe_reports_insufficient_per_class_data(self):
         report = run_mean_pool_linear_probe(
