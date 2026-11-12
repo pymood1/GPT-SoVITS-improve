@@ -64,6 +64,9 @@ def build_dataset_fingerprint(
 
     list_bytes = list_path.read_bytes()
     rows = []
+    invalid_lines = []
+    basename_counts: dict[str, int] = {}
+
     for line_number, raw_line in enumerate(
         list_bytes.decode("utf-8-sig").splitlines(),
         1,
@@ -72,17 +75,26 @@ def build_dataset_fingerprint(
         if not line:
             continue
 
-        wav_field = line.split("|", 1)[0].strip()
+        parts = line.split("|", 3)
+        if len(parts) != 4 or any(not part.strip() for part in parts):
+            invalid_lines.append(line_number)
+            continue
+
+        wav_field = parts[0].strip()
         wav_path = Path(wav_field).expanduser()
         if wav_root_path is not None:
             wav_path = wav_root_path / wav_path.name
         elif not wav_path.is_absolute():
             wav_path = (list_path.parent / wav_path).resolve()
 
+        basename = wav_path.name
+        basename_counts[basename] = basename_counts.get(basename, 0) + 1
+
         rows.append(
             {
                 "line": line_number,
                 "wav_field": wav_field,
+                "basename": basename,
                 "audio": _file_stat_payload(wav_path),
             }
         )
@@ -97,9 +109,55 @@ def build_dataset_fingerprint(
             else ""
         ),
         "rows": rows,
+        "invalid_lines": invalid_lines,
+        "duplicate_basenames": sorted(
+            name
+            for name, count in basename_counts.items()
+            if count > 1
+        ),
     }
     payload["digest"] = _json_digest(payload)
     return payload
+
+
+def validate_dataset_fingerprint(
+    fingerprint: Mapping[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+
+    invalid_lines = list(fingerprint.get("invalid_lines") or [])
+    if invalid_lines:
+        errors.append(
+            "invalid .list line(s): "
+            + ", ".join(str(value) for value in invalid_lines[:20])
+        )
+
+    missing = [
+        row
+        for row in fingerprint.get("rows", [])
+        if not bool(row.get("audio", {}).get("exists"))
+    ]
+    if missing:
+        errors.append(
+            "missing audio file(s): "
+            + ", ".join(
+                str(row.get("wav_field") or row.get("line"))
+                for row in missing[:20]
+            )
+        )
+
+    duplicates = list(fingerprint.get("duplicate_basenames") or [])
+    if duplicates:
+        errors.append(
+            "duplicate basename(s) are unsafe because preprocessing keys "
+            "features by basename: "
+            + ", ".join(str(value) for value in duplicates[:20])
+        )
+
+    if not fingerprint.get("rows"):
+        errors.append("dataset has no valid .list rows")
+
+    return errors
 
 
 def build_stage_contract(
