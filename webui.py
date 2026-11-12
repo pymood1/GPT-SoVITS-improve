@@ -552,6 +552,49 @@ def _validate_training_dataset_contract(
     return None
 
 
+def _training_artifact_error(exp_dir, mode, version_name):
+    exp_dir = Path(exp_dir)
+
+    def file_ok(path):
+        return path.is_file() and path.stat().st_size > 0
+
+    def dir_ok(path, allow_empty=False):
+        if not path.is_dir():
+            return False
+        return allow_empty or any(path.iterdir())
+
+    text_path = exp_dir / "2-name2text.txt"
+    if not file_ok(text_path):
+        return f"텍스트 전처리 산출물이 없거나 비었습니다: {text_path}"
+
+    if mode == "gpt":
+        bert_dir = exp_dir / "3-bert"
+        semantic_path = exp_dir / "6-name2semantic.tsv"
+        if not dir_ok(bert_dir, allow_empty=True):
+            return f"BERT feature 디렉터리가 없습니다: {bert_dir}"
+        if not file_ok(semantic_path):
+            return f"semantic token 파일이 없거나 비었습니다: {semantic_path}"
+        if _nonempty_line_count(semantic_path) <= 1:
+            return f"semantic token 데이터가 비었습니다: {semantic_path}"
+        return None
+
+    if mode == "sovits":
+        hubert_dir = exp_dir / "4-cnhubert"
+        wav_dir = exp_dir / "5-wav32k"
+        if not dir_ok(hubert_dir):
+            return f"HuBERT feature가 없거나 비었습니다: {hubert_dir}"
+        if not dir_ok(wav_dir):
+            return f"32kHz 학습 음성이 없거나 비었습니다: {wav_dir}"
+        if "Pro" in str(version_name):
+            sv_dir = exp_dir / "7-sv"
+            if not dir_ok(sv_dir):
+                return f"speaker feature가 없거나 비었습니다: {sv_dir}"
+        return None
+
+    return f"알 수 없는 학습 모드: {mode}"
+
+
+
 def _emotion_dataset_slug(dataset_id):
     value = str(dataset_id or "").strip() or "emotion_dataset_01"
     return (
