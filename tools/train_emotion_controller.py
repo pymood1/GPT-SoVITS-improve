@@ -1177,9 +1177,12 @@ def run_controller_oof_cv(
                 fold_controller.parameters(),
                 max_norm=1.0,
             )
+            fold_grad_norm_value = float(
+                fold_grad_norm.detach().item()
+            )
             if (
-                not bool(torch.isfinite(fold_grad_norm).item())
-                or float(fold_grad_norm.item()) <= 1e-12
+                not math.isfinite(fold_grad_norm_value)
+                or fold_grad_norm_value <= 1e-12
             ):
                 fold_optimizer.zero_grad(set_to_none=True)
                 continue
@@ -2230,9 +2233,13 @@ def main() -> int:
             controller.parameters(),
             max_norm=1.0,
         )
-        grad_is_finite = bool(torch.isfinite(total_grad_norm).item())
-        grad_is_nonzero = float(total_grad_norm.item()) > 1e-12
-        if not grad_is_finite or not grad_is_nonzero:
+        total_grad_norm_value = float(
+            total_grad_norm.detach().item()
+        )
+        if (
+            not math.isfinite(total_grad_norm_value)
+            or total_grad_norm_value <= 1e-12
+        ):
             optimizer.zero_grad(set_to_none=True)
             skipped_no_gradient += 1
             no_grad_skips_by_emotion[sampled_emotion] += 1
