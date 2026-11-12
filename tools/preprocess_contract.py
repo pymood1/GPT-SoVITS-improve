@@ -297,6 +297,8 @@ def stage_version_key(stage: str, version: str) -> str:
     stage_name = str(stage)
     version_name = str(version)
     if stage_name == "1b":
+        if version_name in {"standard", "pro-sv"}:
+            return version_name
         return "pro-sv" if "Pro" in version_name else "standard"
     return version_name
 
