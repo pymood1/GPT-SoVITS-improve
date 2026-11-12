@@ -60,17 +60,40 @@ def sha256_tree(path: Path) -> str:
     return digest.hexdigest()
 
 
-def git_head() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-        ).strip()
-    except Exception as exc:
-        raise PreprocessError(
-            "GPT-SoVITS checkout must be a git repository"
-        ) from exc
+def preprocessing_code_digest() -> str:
+    """Hash only code that can change preprocessing outputs.
+
+    UI/CSS/docs commits must not force an expensive feature rebuild.
+    """
+
+    targets = [
+        ROOT / "tools" / "run_emotion_v5_preprocess.py",
+        ROOT / "tools" / "my_utils.py",
+        ROOT / "GPT_SoVITS" / "prepare_datasets" / "1-get-text.py",
+        ROOT / "GPT_SoVITS" / "prepare_datasets" / "2-get-hubert-wav32k.py",
+        ROOT / "GPT_SoVITS" / "prepare_datasets" / "3-get-semantic.py",
+        ROOT / "GPT_SoVITS" / "feature_extractor" / "cnhubert.py",
+        ROOT / "GPT_SoVITS" / "module" / "models.py",
+        ROOT / "GPT_SoVITS" / "process_ckpt.py",
+        ROOT / "GPT_SoVITS" / "utils.py",
+        ROOT / "GPT_SoVITS" / "text",
+    ]
+    digest = hashlib.sha256()
+    for target in targets:
+        if not target.exists():
+            raise PreprocessError(
+                f"preprocessing code dependency not found: {target}"
+            )
+        relative = target.relative_to(ROOT).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        if target.is_dir():
+            digest.update(sha256_tree(target).encode("ascii"))
+        else:
+            digest.update(sha256_file(target).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
 
 
 def validate_list(path: Path) -> tuple[str, list[str]]:
@@ -395,7 +418,8 @@ def main() -> int:
     bert_hash = sha256_tree(bert_dir)
     print("[fingerprint] CNHuBERT directory")
     cnhubert_hash = sha256_tree(cnhubert_dir)
-    code_commit = git_head()
+    print("[fingerprint] preprocessing code")
+    preprocess_code_hash = preprocessing_code_digest()
     s2_config_hash = sha256_file(s2_config)
 
     identity = {
@@ -407,7 +431,7 @@ def main() -> int:
         "bert_sha256": bert_hash,
         "cnhubert_sha256": cnhubert_hash,
         "s2_config_sha256": s2_config_hash,
-        "git_commit": code_commit,
+        "preprocess_code_sha256": preprocess_code_hash,
         "version": args.version,
         "is_half": not args.full_precision,
     }
