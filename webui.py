@@ -927,6 +927,7 @@ def stop_emotion_training():
     return "### 감정 작업 중지됨"
 
 
+@_persistent_gradio_errors
 def run_auto_emotion_sidecar(
     source_list,
     wav_root,
@@ -2473,6 +2474,7 @@ p_train_SoVITS = None
 process_name_sovits = i18n("SoVITS训练")
 
 
+@_persistent_gradio_errors
 def open1Ba(
     version,
     batch_size,
@@ -2815,6 +2817,7 @@ p_train_GPT = None
 process_name_gpt = i18n("GPT训练")
 
 
+@_persistent_gradio_errors
 def open1Bb(
     version,
     batch_size,
@@ -3739,6 +3742,7 @@ preprocess_1a_cancel_requested = False
 process_name_1a = i18n("文本分词与特征提取")
 
 
+@_persistent_gradio_errors
 def open1a(
     version,
     inp_text,
@@ -3990,6 +3994,7 @@ preprocess_1b_cancel_requested = False
 process_name_1b = i18n("语音自监督特征提取")
 
 
+@_persistent_gradio_errors
 def open1b(
     version,
     inp_text,
@@ -4316,6 +4321,7 @@ preprocess_1c_cancel_requested = False
 process_name_1c = i18n("语义Token提取")
 
 
+@_persistent_gradio_errors
 def open1c(
     version,
     inp_text,
@@ -4608,6 +4614,7 @@ preprocess_1abc_cancel_requested = False
 process_name_1abc = i18n("训练集格式化一键三连")
 
 
+@_persistent_gradio_errors
 def open1abc(
     version,
     inp_text,
