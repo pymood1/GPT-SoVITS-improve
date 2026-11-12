@@ -644,6 +644,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "or accepted_steps == training_limit",
             trainer,
         )
+        self.assertIn(
+            '"status": "incomplete_oof_predictions"',
+            trainer,
+        )
+        self.assertIn(
+            "and validated_checkpoint",
+            trainer,
+        )
 
     def test_emotion_preprocess_cache_ignores_unrelated_git_head(self):
         script = (
