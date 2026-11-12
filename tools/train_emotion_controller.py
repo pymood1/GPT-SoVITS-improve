@@ -1823,8 +1823,10 @@ def main() -> int:
     g_full_features: List[torch.Tensor] = []
     text_features: List[torch.Tensor] = []
     all_probe_labels: List[int] = []
+    all_probe_samples: List[dict] = []
     g_topk_features: List[torch.Tensor] = []
     topk_probe_labels: List[int] = []
+    topk_probe_samples: List[dict] = []
     probe_coverage_skipped = 0
     probe_invalid_hidden = 0
     coverage_by_emotion = {
@@ -1888,10 +1890,12 @@ def main() -> int:
             )
         )
         all_probe_labels.append(label)
+        all_probe_samples.append(sample)
 
         if coverage >= args.min_support_coverage:
             g_topk_features.append(g_topk)
             topk_probe_labels.append(label)
+            topk_probe_samples.append(sample)
 
         if (
             probe_index == len(all_usable_samples)
@@ -1907,6 +1911,7 @@ def main() -> int:
     def _run_probe(
         values: List[torch.Tensor],
         labels: List[int],
+        samples: List[dict],
         method: str,
     ) -> dict:
         if not values:
@@ -1920,6 +1925,7 @@ def main() -> int:
             torch.stack(values, dim=0),
             labels,
             emotion_names,
+            samples=samples,
             seed=args.seed,
             max_folds=5,
             permutations=3,
@@ -1930,22 +1936,26 @@ def main() -> int:
     representation_probe = _run_probe(
         h_features,
         all_probe_labels,
-        "s1_hidden_mean_linear_oof_v2",
+        all_probe_samples,
+        "s1_hidden_mean_linear_grouped_oof_v3",
     )
     g_full_probe = _run_probe(
         g_full_features,
         all_probe_labels,
-        "semantic_residual_full_softmax_oof_v1",
+        all_probe_samples,
+        "semantic_residual_full_softmax_grouped_oof_v2",
     )
     g_topk_probe = _run_probe(
         g_topk_features,
         topk_probe_labels,
-        "semantic_residual_topk_supported_oof_v1",
+        topk_probe_samples,
+        "semantic_residual_topk_supported_grouped_oof_v2",
     )
     text_probe = _run_probe(
         text_features,
         all_probe_labels,
-        "transcript_hashed_char_ngram_oof_v1",
+        all_probe_samples,
+        "transcript_hashed_char_ngram_grouped_oof_v2",
     )
 
     coverage_report = {}
