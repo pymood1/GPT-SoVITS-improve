@@ -3288,6 +3288,12 @@ def run_gpt_then_sovits(
                 for result in generator:
                     with lock:
                         state[key]["result"] = result
+                    if training_sequence_cancel_requested:
+                        if key == "gpt":
+                            close1Bb()
+                        else:
+                            close1Ba()
+                        break
             except Exception as exc:
                 with lock:
                     state[key]["error"] = exc
