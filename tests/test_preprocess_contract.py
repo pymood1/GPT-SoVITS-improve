@@ -708,6 +708,15 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "effective controller gradients were exhausted",
             trainer,
         )
+        for invalid_setting in (
+            "--preference-beta must be positive",
+            "--top-k must be at least 2",
+            "--top-p must be in (0,1]",
+            "--max-log-odds-shift must be positive",
+            "--lr must be positive",
+            "--log-every must be positive",
+        ):
+            self.assertIn(invalid_setting, trainer)
         self.assertIn(
             "if best_controller_state is None:",
             trainer,
