@@ -2599,6 +2599,7 @@ process_name_gpt = i18n("GPT训练")
 
 
 def open1Bb(
+    version,
     batch_size,
     total_epoch,
     exp_name,
@@ -2992,6 +2993,7 @@ def run_gpt_then_sovits(
 
     gpt_finished = False
     for result in open1Bb(
+        version,
         batch_size_gpt,
         total_epoch_gpt,
         exp_name,
@@ -3330,6 +3332,7 @@ process_name_1a = i18n("文本分词与特征提取")
 
 
 def open1a(
+    version,
     inp_text,
     inp_wav_dir,
     exp_name,
@@ -4170,6 +4173,7 @@ def open1abc(
             process_name_1a,
             open1a,
             (
+                version,
                 inp_text,
                 inp_wav_dir,
                 exp_name,
@@ -5156,6 +5160,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                 button1a_open.click(
                     open1a,
                     [
+                        version_checkbox,
                         inp_text,
                         inp_wav_dir,
                         exp_name,
@@ -5654,6 +5659,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                 button1Bb_open.click(
                     open1Bb,
                     [
+                        version_checkbox,
                         batch_size1Bb,
                         total_epoch1Bb,
                         exp_name,
