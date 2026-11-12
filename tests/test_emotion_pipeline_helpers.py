@@ -304,6 +304,27 @@ class ControllerArtifactPromotionTests(unittest.TestCase):
         )
 
 
+class ControllerPromotionIntegrationTests(unittest.TestCase):
+    def test_webui_promotes_only_passed_candidate(self):
+        webui = (
+            Path(__file__).resolve().parents[1] / "webui.py"
+        ).read_text(encoding="utf-8")
+        start = webui.index("def run_emotion_training_pipeline(")
+        end = webui.index("process_name_subfix", start)
+        block = webui[start:end]
+        self.assertIn("controller_artifact_paths(", block)
+        self.assertIn('diagnosis.get("passed")', block)
+        self.assertIn(
+            'os.replace(\n                candidate_output,\n'
+            '                controller_artifacts["final"],',
+            block,
+        )
+        self.assertIn('controller_artifacts["failed"]', block)
+        pass_pos = block.index("latest_emotion_controller_path =")
+        fail_pos = block.index('failed_output = controller_artifacts["failed"]')
+        self.assertLess(pass_pos, fail_pos)
+
+
 class GptCheckpointSelectionTests(unittest.TestCase):
     def test_latest_checkpoint_is_selected_for_exact_experiment(self):
         with tempfile.TemporaryDirectory() as tmp:
