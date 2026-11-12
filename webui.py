@@ -3650,345 +3650,110 @@ def open1abc(
     ssl_pretrained_dir,
     pretrained_s2G_path,
 ):
-    global ps1abc
+    """Run the canonical 1A -> 1B -> 1C implementations in order."""
     global preprocess_1abc_cancel_requested
 
     preprocess_1abc_cancel_requested = False
-
-    inp_text = my_utils.clean_path(inp_text)
-    inp_wav_dir = my_utils.clean_path(inp_wav_dir)
-    if not check_for_existance(
-        [inp_text, inp_wav_dir],
-        is_dataset_processing=True,
-    ):
-        yield (
-            process_info(process_name_1abc, "failed"),
-            {"__type__": "update", "visible": True},
-            {"__type__": "update", "visible": False},
-        )
-        return
-
-    check_details(
-        [inp_text, inp_wav_dir],
-        is_dataset_processing=True,
-    )
-    exp_name = exp_name.rstrip(" ")
-    if ps1abc == []:
-        opt_dir = "%s/%s" % (exp_root, exp_name)
-        try:
-            #############################1a
-            path_text = "%s/2-name2text.txt" % opt_dir
-            text_feature_config = _text_feature_config(
+    stages = [
+        (
+            "1A",
+            process_name_1a,
+            open1a,
+            (
+                inp_text,
+                inp_wav_dir,
+                exp_name,
+                gpu_numbers1a,
+                bert_pretrained_dir,
                 use_multilingual_bert,
                 multilingual_bert_model,
-            )
-            if not _text_preprocess_cache_valid(
-                path_text,
+            ),
+        ),
+        (
+            "1B",
+            process_name_1b,
+            open1b,
+            (
+                version,
                 inp_text,
-                text_feature_config,
-            ):
-                config = {
-                    "inp_text": inp_text,
-                    "inp_wav_dir": inp_wav_dir,
-                    "exp_name": exp_name,
-                    "opt_dir": opt_dir,
-                    "bert_pretrained_dir": bert_pretrained_dir,
-                    "use_multilingual_bert": str(
-                        bool(use_multilingual_bert)
-                    ),
-                    "multilingual_bert_model": str(
-                        multilingual_bert_model
-                    ),
-                    "is_half": str(is_half),
-                }
-                gpu_names = gpu_numbers1a.split("-")
-                all_parts = len(gpu_names)
-                for i_part in range(all_parts):
-                    config.update(
-                        {
-                            "i_part": str(i_part),
-                            "all_parts": str(all_parts),
-                            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                        }
-                    )
-                    child_env = os.environ.copy()
-                    child_env.update(config)
-                    cmd = [
-                        python_exec,
-                        "-s",
-                        "GPT_SoVITS/prepare_datasets/1-get-text.py",
-                    ]
-                    print(
-                        "[1Aabc-1A]",
-                        " ".join(repr(item) for item in cmd),
-                    )
-                    p = Popen(
-                        cmd,
-                        cwd=now_dir,
-                        env=child_env,
-                    )
-                    ps1abc.append(p)
+                inp_wav_dir,
+                exp_name,
+                gpu_numbers1Ba,
+                ssl_pretrained_dir,
+            ),
+        ),
+        (
+            "1C",
+            process_name_1c,
+            open1c,
+            (
+                version,
+                inp_text,
+                inp_wav_dir,
+                exp_name,
+                gpu_numbers1c,
+                pretrained_s2G_path,
+            ),
+        ),
+    ]
 
-                stage_processes = list(ps1abc)
-                yield (
-                    i18n("进度") + ": 1A-Doing",
-                    {"__type__": "update", "visible": False},
-                    {"__type__": "update", "visible": True},
-                )
-                return_codes = [
-                    p.wait() for p in stage_processes
-                ]
-                if preprocess_1abc_cancel_requested:
-                    ps1abc = []
-                    preprocess_1abc_cancel_requested = False
-                    return
-                if any(code != 0 for code in return_codes):
-                    raise RuntimeError(
-                        "preprocessing subprocess failed: "
-                        + str(return_codes)
-                    )
+    completed = []
+    for label, process_name, runner, args in stages:
+        if preprocess_1abc_cancel_requested:
+            return
 
-                opt = []
-                for i_part in range(all_parts):  # txt_path="%s/2-name2text-%s.txt"%(opt_dir,i_part)
-                    txt_path = "%s/2-name2text-%s.txt" % (opt_dir, i_part)
-                    with open(txt_path, "r", encoding="utf8") as f:
-                        opt += f.read().strip("\n").split("\n")
-                    os.remove(txt_path)
-                expected_rows = _nonempty_line_count(inp_text)
-                if len(opt) != expected_rows:
-                    raise RuntimeError(
-                        "1A text output count mismatch: "
-                        f"expected {expected_rows}, got {len(opt)}"
-                    )
-                with open(path_text, "w", encoding="utf8") as f:
-                    f.write("\n".join(opt) + "\n")
-                _write_text_feature_config(
-                    path_text,
-                    use_multilingual_bert,
-                    multilingual_bert_model,
-                )
-                assert len("".join(opt)) > 0, process_info(process_name_1a, "failed")
-            yield (
-                i18n("进度") + ": 1A-Done",
-                {"__type__": "update", "visible": False},
-                {"__type__": "update", "visible": True},
-            )
-            ps1abc = []
-            #############################1b
-            config = {
-                "inp_text": inp_text,
-                "inp_wav_dir": inp_wav_dir,
-                "exp_name": exp_name,
-                "opt_dir": opt_dir,
-                "cnhubert_base_dir": ssl_pretrained_dir,
-                "sv_path": sv_path,
-            }
-            gpu_names = gpu_numbers1Ba.split("-")
-            all_parts = len(gpu_names)
-            for i_part in range(all_parts):
-                config.update(
-                    {
-                        "i_part": str(i_part),
-                        "all_parts": str(all_parts),
-                        "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                    }
-                )
-                child_env = os.environ.copy()
-                child_env.update(config)
-                cmd = [
-                    python_exec,
-                    "-s",
-                    "GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py",
-                ]
-                print(
-                    "[1Aabc-1B]",
-                    " ".join(repr(item) for item in cmd),
-                )
-                p = Popen(
-                    cmd,
-                    cwd=now_dir,
-                    env=child_env,
-                )
-                ps1abc.append(p)
-
-            stage_processes = list(ps1abc)
-            yield (
-                i18n("进度") + ": 1A-Done, 1B-Doing",
-                {"__type__": "update", "visible": False},
-                {"__type__": "update", "visible": True},
-            )
-            return_codes = [
-                p.wait() for p in stage_processes
-            ]
+        stage_finished = False
+        for result in runner(*args):
             if preprocess_1abc_cancel_requested:
-                ps1abc = []
-                preprocess_1abc_cancel_requested = False
+                close1abc()
                 return
-            if any(code != 0 for code in return_codes):
-                raise RuntimeError(
-                    "preprocessing subprocess failed: "
-                    + str(return_codes)
-                )
-            ps1abc = []
-            if "Pro" in version:
-                for i_part in range(all_parts):
-                    config.update(
-                        {
-                            "i_part": str(i_part),
-                            "all_parts": str(all_parts),
-                            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                        }
-                    )
-                    child_env = os.environ.copy()
-                    child_env.update(config)
-                    cmd = [
-                        python_exec,
-                        "-s",
-                        "GPT_SoVITS/prepare_datasets/2-get-sv.py",
-                    ]
-                    print(
-                        "[1Aabc-SV]",
-                        " ".join(repr(item) for item in cmd),
-                    )
-                    p = Popen(
-                        cmd,
-                        cwd=now_dir,
-                        env=child_env,
-                    )
-                    ps1abc.append(p)
 
-                stage_processes = list(ps1abc)
-                return_codes = [
-                    p.wait() for p in stage_processes
-                ]
-                if preprocess_1abc_cancel_requested:
-                    ps1abc = []
-                    preprocess_1abc_cancel_requested = False
-                    return
-                if any(code != 0 for code in return_codes):
-                    raise RuntimeError(
-                        "preprocessing subprocess failed: "
-                        + str(return_codes)
-                    )
-                ps1abc = []
+            child_status = result[0] if result else ""
+            stage_finished = (
+                child_status == process_info(process_name, "finish")
+            )
+            prefix = ", ".join(
+                f"{item}-Done" for item in completed
+            )
+            progress = f"{label}-Doing"
+            if prefix:
+                progress = f"{prefix}, {progress}"
+
             yield (
-                i18n("进度") + ": 1A-Done, 1B-Done",
+                i18n("进度") + f": {progress}\n\n{child_status}",
                 {"__type__": "update", "visible": False},
                 {"__type__": "update", "visible": True},
             )
-            #############################1c
-            path_semantic = "%s/6-name2semantic.tsv" % opt_dir
-            if os.path.exists(path_semantic) == False or (
-                os.path.exists(path_semantic) == True and os.path.getsize(path_semantic) < 31
-            ):
-                config_file = (
-                    "GPT_SoVITS/configs/s2.json"
-                    if version not in {"v2Pro", "v2ProPlus"}
-                    else f"GPT_SoVITS/configs/s2{version}.json"
-                )
-                config = {
-                    "inp_text": inp_text,
-                    "exp_name": exp_name,
-                    "opt_dir": opt_dir,
-                    "pretrained_s2G": pretrained_s2G_path,
-                    "s2config_path": config_file,
-                }
-                gpu_names = gpu_numbers1c.split("-")
-                all_parts = len(gpu_names)
-                for i_part in range(all_parts):
-                    config.update(
-                        {
-                            "i_part": str(i_part),
-                            "all_parts": str(all_parts),
-                            "_CUDA_VISIBLE_DEVICES": str(fix_gpu_number(gpu_names[i_part])),
-                        }
-                    )
-                    child_env = os.environ.copy()
-                    child_env.update(config)
-                    cmd = [
-                        python_exec,
-                        "-s",
-                        "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
-                    ]
-                    print(
-                        "[1Aabc-1C]",
-                        " ".join(repr(item) for item in cmd),
-                    )
-                    p = Popen(
-                        cmd,
-                        cwd=now_dir,
-                        env=child_env,
-                    )
-                    ps1abc.append(p)
 
-                stage_processes = list(ps1abc)
-                yield (
-                    i18n("进度") + ": 1A-Done, 1B-Done, 1C-Doing",
-                    {"__type__": "update", "visible": False},
-                    {"__type__": "update", "visible": True},
-                )
-                return_codes = [
-                    p.wait() for p in stage_processes
-                ]
-                if preprocess_1abc_cancel_requested:
-                    ps1abc = []
-                    preprocess_1abc_cancel_requested = False
-                    return
-                if any(code != 0 for code in return_codes):
-                    raise RuntimeError(
-                        "preprocessing subprocess failed: "
-                        + str(return_codes)
-                    )
-
-                opt = ["item_name\tsemantic_audio"]
-                for i_part in range(all_parts):
-                    semantic_path = "%s/6-name2semantic-%s.tsv" % (opt_dir, i_part)
-                    with open(semantic_path, "r", encoding="utf8") as f:
-                        opt += f.read().strip("\n").split("\n")
-                    os.remove(semantic_path)
-                with open(path_semantic, "w", encoding="utf8") as f:
-                    f.write("\n".join(opt) + "\n")
-                yield (
-                    i18n("进度") + ": 1A-Done, 1B-Done, 1C-Done",
-                    {"__type__": "update", "visible": False},
-                    {"__type__": "update", "visible": True},
-                )
-            ps1abc = []
+        if not stage_finished:
             yield (
-                process_info(process_name_1abc, "finish"),
+                process_info(process_name_1abc, "failed")
+                + f": {label} did not complete successfully",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
             )
-        except:
-            traceback.print_exc()
-            close1abc()
-            yield (
-                process_info(process_name_1abc, "failed"),
-                {"__type__": "update", "visible": True},
-                {"__type__": "update", "visible": False},
-            )
-    else:
-        yield (
-            process_info(process_name_1abc, "occupy"),
-            {"__type__": "update", "visible": False},
-            {"__type__": "update", "visible": True},
-        )
+            return
+        completed.append(label)
+
+    yield (
+        process_info(process_name_1abc, "finish"),
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
 
 
 def close1abc():
-    global ps1abc
     global preprocess_1abc_cancel_requested
 
     preprocess_1abc_cancel_requested = True
 
-    if ps1abc != []:
-        for p1abc in ps1abc:
-            try:
-                if p1abc.poll() is None:
-                    kill_process(p1abc.pid, process_name_1abc)
-            except Exception:
-                traceback.print_exc()
-        ps1abc = []
+    if ps1a:
+        close1a()
+    if ps1b:
+        close1b()
+    if ps1c:
+        close1c()
+
     return (
         process_info(process_name_1abc, "closed"),
         {"__type__": "update", "visible": True},
