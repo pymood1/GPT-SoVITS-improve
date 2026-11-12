@@ -770,11 +770,12 @@ def run_mean_pool_linear_probe(
                 max_folds=max_folds,
                 seed=seed,
             )
-    except EmotionPipelineError:
+    except EmotionPipelineError as exc:
         report.update(
             {
                 "status": "insufficient_data",
                 "verdict": "unavailable",
+                "error": str(exc),
             }
         )
         return report
