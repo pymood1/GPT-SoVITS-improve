@@ -122,6 +122,7 @@ from tools.preprocess_contract import (
     build_stage_contract,
     contract_matches,
     file_sha256,
+    quick_path_signature,
     stage_matches_dataset,
     read_stage_contract,
     stage_contract_path,
@@ -3226,6 +3227,10 @@ def open1a(
                 _resolve_repo_path(bert_pretrained_dir)
                 or bert_pretrained_dir
             ),
+            "bert_pretrained_signature": quick_path_signature(
+                _resolve_repo_path(bert_pretrained_dir)
+                or bert_pretrained_dir
+            ),
             "use_multilingual_bert": bool(use_multilingual_bert),
             "multilingual_bert_model": str(multilingual_bert_model),
         },
@@ -3455,8 +3460,19 @@ def open1b(
                 _resolve_repo_path(ssl_pretrained_dir)
                 or ssl_pretrained_dir
             ),
+            "cnhubert_signature": quick_path_signature(
+                _resolve_repo_path(ssl_pretrained_dir)
+                or ssl_pretrained_dir
+            ),
             "sv_path": (
                 str(_resolve_repo_path(sv_path) or sv_path)
+                if "Pro" in version
+                else None
+            ),
+            "sv_signature": (
+                quick_path_signature(
+                    _resolve_repo_path(sv_path) or sv_path
+                )
                 if "Pro" in version
                 else None
             ),
@@ -3798,6 +3814,7 @@ def open1c(
             "pretrained_s2G": str(s2_path),
             "pretrained_s2G_signature": str(_file_signature(s2_path)),
             "s2config_path": str(config_path),
+            "s2config_signature": quick_path_signature(config_path),
             "upstream_1b_digest": str(upstream_1b.get("digest") or ""),
         },
     )
