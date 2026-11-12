@@ -427,6 +427,40 @@ jobs:
           print("pydantic=", pydantic.__version__)
           PY
 
+  ui_stack_smoke_313:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Gradio 4.x WebUI stack
+        run: |
+          python -m pip install -q uv
+          uv pip install --system             "gradio==4.44.1"             "fastapi[standard]>=0.115.2,<0.116"             "pydantic<=2.10.6"
+      - name: Verify persistent error API
+        run: |
+          python - <<'PY'
+          import inspect
+          import gradio as gr
+
+          error_sig = inspect.signature(gr.Error)
+          launch_sig = inspect.signature(gr.Blocks.launch)
+
+          assert "duration" in error_sig.parameters
+          assert "show_error" in launch_sig.parameters
+
+          persistent = gr.Error("persistent", duration=None)
+          assert persistent is not None
+
+          with gr.Blocks() as app:
+              gr.Textbox(label="Gradio 4.44.1 smoke")
+          assert app.get_config_file()
+
+          print("PY313_GRADIO_4441_PERSISTENT_ERROR_OK")
+          PY
+
+
   ui_stack_smoke_314:
     runs-on: ubuntu-latest
     steps:
