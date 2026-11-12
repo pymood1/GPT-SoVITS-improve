@@ -91,6 +91,55 @@ class RepresentationProbeTests(unittest.TestCase):
         self.assertEqual(report["folds"], 3)
         self.assertTrue(math.isfinite(report["oof_ce"]))
 
+
+    def test_probe_handles_observed_four_class_distribution(self):
+        torch.manual_seed(20261113)
+        counts = [38, 13, 7, 35]
+        emotion_names = [
+            "happy",
+            "angry",
+            "disgusted",
+            "surprised",
+        ]
+        features = []
+        labels = []
+        samples = []
+
+        sample_index = 0
+        for class_id, count in enumerate(counts):
+            center = torch.zeros(8)
+            center[class_id] = 2.0
+            for _ in range(count):
+                features.append(
+                    center + 0.10 * torch.randn(8)
+                )
+                labels.append(class_id)
+                samples.append(
+                    {
+                        "name": f"sample_{sample_index}.wav",
+                        "source_id": f"source_{sample_index}",
+                    }
+                )
+                sample_index += 1
+
+        report = run_mean_pool_linear_probe(
+            torch.stack(features),
+            labels,
+            emotion_names,
+            samples=samples,
+            seed=233333,
+            max_folds=5,
+            permutations=1,
+            steps=2,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertGreaterEqual(report["folds"], 2)
+        self.assertTrue(math.isfinite(report["oof_ce"]))
+        self.assertTrue(
+            math.isfinite(report["oof_macro_accuracy"])
+        )
+
     def test_probe_reports_insufficient_per_class_data(self):
         report = run_mean_pool_linear_probe(
             torch.randn(5, 8),
