@@ -372,12 +372,12 @@ def _ring_card(
     ring_value = numeric if numeric is not None else 0.0
     percent_text = _format_percent(numeric)
     return (
-        f'<section class="status-card status-card-{kind}">'
-        f'<div class="status-ring" style="--status-value:{ring_value:.1f}">'
-        f'<div class="status-ring-inner"><strong>{percent_text}</strong>'
+        f'<section class="status-card status-card-{kind}" data-status-card="{kind}">'
+        f'<div class="status-ring" data-status-ring="{kind}" style="--status-value:{ring_value:.1f}">'
+        f'<div class="status-ring-inner"><strong data-status-percent="{kind}">{percent_text}</strong>'
         f'<span>{html.escape(title)}</span></div></div>'
-        f'<div class="status-card-copy"><strong>{html.escape(primary)}</strong>'
-        f'<span>{html.escape(secondary)}</span></div>'
+        f'<div class="status-card-copy"><strong data-status-primary="{kind}">{html.escape(primary)}</strong>'
+        f'<span data-status-secondary="{kind}">{html.escape(secondary)}</span></div>'
         "</section>"
     )
 
@@ -502,18 +502,18 @@ def render_status_html(
     activity_class = "running" if running else "idle"
 
     activity_card = (
-        f'<section class="status-activity status-activity-{activity_class}">'
+        f'<section class="status-activity status-activity-{activity_class}" data-status-activity>'
         '<div class="status-activity-head">'
-        f'<div><span class="status-badge"><i></i>{badge}</span>'
-        f'<h3>{task}</h3></div>'
-        f'<strong class="status-progress-number">{progress_percent}%</strong>'
+        f'<div><span class="status-badge"><i></i><b data-status-badge>{badge}</b></span>'
+        f'<h3 data-status-task>{task}</h3></div>'
+        f'<strong class="status-progress-number" data-status-progress-number>{progress_percent}%</strong>'
         "</div>"
         '<div class="status-progress-track">'
-        f'<div class="status-progress-fill" style="width:{progress_percent}%"></div>'
+        f'<div class="status-progress-fill" data-status-progress-fill style="width:{progress_percent}%"></div>'
         "</div>"
         '<div class="status-activity-meta">'
-        f'<strong>{html.escape(step_text)}</strong>'
-        f'<span>{" · ".join(details)}</span>'
+        f'<strong data-status-step>{html.escape(step_text)}</strong>'
+        f'<span data-status-details>{" · ".join(details)}</span>'
         "</div>"
         "</section>"
     )
@@ -524,9 +524,9 @@ def render_status_html(
         '<div class="status-vram-strip">'
         '<span>VRAM</span>'
         '<div class="status-vram-track">'
-        f'<div class="status-vram-fill" style="width:{vram_bar:.1f}%"></div>'
+        f'<div class="status-vram-fill" data-status-vram-fill style="width:{vram_bar:.1f}%"></div>'
         "</div>"
-        f'<strong>{_format_percent(vram_percent)}</strong>'
+        f'<strong data-status-vram-value>{_format_percent(vram_percent)}</strong>'
         "</div>"
     )
 
@@ -541,7 +541,7 @@ def render_status_html(
     )
 
 
-def build_runtime_status_html() -> str:
+def _runtime_status_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         hardware = collect_hardware_snapshot()
     except Exception:
@@ -555,4 +555,22 @@ def build_runtime_status_html() -> str:
             "stage": "idle",
             "reason": "monitor_error",
         }
+    return hardware, activity
+
+
+def build_runtime_status_html() -> str:
+    hardware, activity = _runtime_status_snapshot()
     return render_status_html(hardware, activity)
+
+
+def build_runtime_status_payload() -> str:
+    """Return compact JSON for the browser-side in-place dashboard patcher."""
+    hardware, activity = _runtime_status_snapshot()
+    return json.dumps(
+        {
+            "hardware": hardware,
+            "activity": activity,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
