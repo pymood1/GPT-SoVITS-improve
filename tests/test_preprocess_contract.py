@@ -664,6 +664,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             "or total_grad_norm_value <= 1e-12",
             trainer,
         )
+        self.assertIn(
+            "least_trained_emotions",
+            trainer,
+        )
+        self.assertIn(
+            "accepted_by_class",
+            trainer,
+        )
 
         emotion_control = (
             ROOT / "GPT_SoVITS" / "AR" / "models" / "emotion_control.py"
