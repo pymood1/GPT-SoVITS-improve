@@ -16,8 +16,31 @@ from tools.emotion_training_pipeline import (
 )
 from tools.run_emotion_v5_preprocess import (
     PreprocessError,
+    effective_half_precision,
     validate_complete_outputs,
 )
+
+
+class PreprocessPrecisionTests(unittest.TestCase):
+    def test_half_precision_requires_cuda_and_no_full_precision_flag(self):
+        self.assertTrue(
+            effective_half_precision(
+                full_precision=False,
+                cuda_available=True,
+            )
+        )
+        self.assertFalse(
+            effective_half_precision(
+                full_precision=False,
+                cuda_available=False,
+            )
+        )
+        self.assertFalse(
+            effective_half_precision(
+                full_precision=True,
+                cuda_available=True,
+            )
+        )
 
 
 class PreprocessCompletenessTests(unittest.TestCase):
