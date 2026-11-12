@@ -4015,7 +4015,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
     runtime_status_monitor = gr.HTML(
         value=build_runtime_status_html(),
         elem_classes="status-monitor-root",
-        container=False,
     )
     runtime_status_timer = gr.Timer(value=2, active=True)
     runtime_status_timer.tick(
