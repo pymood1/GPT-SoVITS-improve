@@ -312,6 +312,10 @@ class PreprocessContractTests(unittest.TestCase):
             )
             self.assertEqual(v4["digest"], v5["digest"])
 
+    def test_1b_version_key_is_idempotent(self):
+        self.assertEqual(stage_version_key("1b", "standard"), "standard")
+        self.assertEqual(stage_version_key("1b", "pro-sv"), "pro-sv")
+
     def test_1b_version_key_only_distinguishes_pro_features(self):
         self.assertEqual(
             stage_version_key("1b", "v4"),
