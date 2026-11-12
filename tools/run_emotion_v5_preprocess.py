@@ -148,6 +148,36 @@ def validate_list(path: Path) -> tuple[str, list[str]]:
     return audio_digest.hexdigest(), sorted(basenames)
 
 
+def expected_bert_names(
+    path: Path,
+    *,
+    use_multilingual_bert: bool,
+) -> set[str]:
+    """Return list basenames that official 1A must emit BERT for."""
+
+    required_languages = {"zh"}
+    if use_multilingual_bert:
+        required_languages.update({"en", "ko"})
+
+    result: set[str] = set()
+    with path.open("r", encoding="utf-8-sig") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            parts = line.split("|", 3)
+            if len(parts) != 4:
+                continue
+            language = parts[2].strip().lower()
+            if language not in required_languages:
+                continue
+            portable = parts[0].strip()
+            if os.name != "nt":
+                portable = portable.replace("\\", "/")
+            result.add(Path(portable).name)
+    return result
+
+
 def _read_named_rows(
     path: Path,
     *,
@@ -189,6 +219,8 @@ def _read_named_rows(
 def validate_complete_outputs(
     output_dir: Path,
     expected_names: Iterable[str],
+    *,
+    required_bert_names: Iterable[str] = (),
 ) -> None:
     expected = set(expected_names)
     if not expected:
@@ -217,6 +249,57 @@ def validate_complete_outputs(
             problems.append(
                 f"{label} has unexpected {len(extra)}: "
                 + ", ".join(extra[:10])
+            )
+
+    required_bert = set(required_bert_names)
+    unknown_bert_items = sorted(required_bert - expected)
+    if unknown_bert_items:
+        problems.append(
+            "BERT requirements contain unknown items: "
+            + ", ".join(unknown_bert_items[:10])
+        )
+
+    if required_bert:
+        import torch
+
+        missing_bert: list[str] = []
+        invalid_bert: list[str] = []
+        for name in sorted(required_bert & expected):
+            bert_path = output_dir / "3-bert" / f"{name}.pt"
+            if not bert_path.is_file() or bert_path.stat().st_size == 0:
+                missing_bert.append(name)
+                continue
+
+            try:
+                feature = torch.load(
+                    bert_path,
+                    map_location="cpu",
+                    weights_only=True,
+                )
+            except Exception:
+                invalid_bert.append(name)
+                continue
+
+            phone_payload = text_rows.get(name, "")
+            phone_count = len(phone_payload.split("\t", 1)[0].split())
+            if (
+                not isinstance(feature, torch.Tensor)
+                or feature.ndim != 2
+                or feature.shape[0] != 1024
+                or feature.shape[-1] != phone_count
+                or not bool(torch.isfinite(feature).all())
+            ):
+                invalid_bert.append(name)
+
+        if missing_bert:
+            problems.append(
+                f"BERT missing {len(missing_bert)}: "
+                + ", ".join(missing_bert[:10])
+            )
+        if invalid_bert:
+            problems.append(
+                f"BERT invalid {len(invalid_bert)}: "
+                + ", ".join(invalid_bert[:10])
             )
 
     missing_hubert = sorted(
@@ -423,6 +506,10 @@ def main() -> int:
             else None
         ),
     }
+    required_bert = expected_bert_names(
+        train_list,
+        use_multilingual_bert=use_multilingual_bert,
+    )
 
     print("[fingerprint] train.list")
     list_hash = sha256_file(train_list)
@@ -490,6 +577,7 @@ def main() -> int:
                         validate_complete_outputs(
                             output_dir,
                             expected_names,
+                            required_bert_names=required_bert,
                         )
                     except PreprocessError as exc:
                         recover_reason = str(exc)
@@ -566,6 +654,7 @@ def main() -> int:
         validate_complete_outputs(
             output_dir,
             expected_names,
+            required_bert_names=required_bert,
         )
 
         manifest = {

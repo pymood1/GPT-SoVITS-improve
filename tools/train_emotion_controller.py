@@ -142,16 +142,20 @@ def load_bert(
     language: str,
     required_bert_languages: set[str],
 ) -> torch.Tensor:
+    normalized_language = str(language).strip().lower()
+    if normalized_language not in required_bert_languages:
+        # The active S1 contract expects an all-zero BERT slot here.
+        # Ignore stray files from older feature builds instead of silently
+        # changing the frozen backbone input.
+        return torch.zeros(1024, phone_len, dtype=torch.float32)
+
     path = feature_dir / "3-bert" / f"{item_name}.pt"
     if not path.exists():
-        normalized_language = str(language).strip().lower()
-        if normalized_language in required_bert_languages:
-            raise TrainingDataError(
-                f"BERT feature missing for {item_name} "
-                f"(language={normalized_language}): {path}"
-            )
-        return torch.zeros(1024, phone_len, dtype=torch.float32)
-    value = torch.load(path, map_location="cpu")
+        raise TrainingDataError(
+            f"BERT feature missing for {item_name} "
+            f"(language={normalized_language}): {path}"
+        )
+    value = torch.load(path, map_location="cpu", weights_only=True)
     if value.ndim != 2 or value.shape[0] != 1024:
         raise TrainingDataError(
             f"Unexpected BERT shape for {item_name}: {tuple(value.shape)}"

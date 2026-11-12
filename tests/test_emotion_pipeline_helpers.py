@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import torch
+
 from tools.auto_emotion_sidecar import assign_speaker_relative_labels
 from tools.emotion_dataset_builder import parse_list_line, sidecar_for
 from tools.emotion_training_pipeline import (
@@ -100,6 +102,38 @@ class PreprocessCompletenessTests(unittest.TestCase):
             (root / "4-cnhubert" / "b.wav.pt").unlink()
             with self.assertRaises(PreprocessError):
                 validate_complete_outputs(root, names)
+
+
+    def test_required_bert_feature_is_validated_before_cache_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            names = self._make_complete_build(root)
+            bert_dir = root / "3-bert"
+            bert_dir.mkdir()
+            bert_path = bert_dir / "a.wav.pt"
+            torch.save(torch.zeros(1024, 2), bert_path)
+
+            validate_complete_outputs(
+                root,
+                names,
+                required_bert_names={"a.wav"},
+            )
+
+            torch.save(torch.zeros(768, 2), bert_path)
+            with self.assertRaises(PreprocessError):
+                validate_complete_outputs(
+                    root,
+                    names,
+                    required_bert_names={"a.wav"},
+                )
+
+            bert_path.unlink()
+            with self.assertRaises(PreprocessError):
+                validate_complete_outputs(
+                    root,
+                    names,
+                    required_bert_names={"a.wav"},
+                )
 
 
 

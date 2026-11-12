@@ -455,6 +455,7 @@ def build_dataset(args: argparse.Namespace) -> None:
     source_fingerprint = build_dataset_fingerprint(
         list_path,
         wav_root,
+        prefer_list_relative_audio=True,
     )
     report = {
         "dataset_id": args.dataset_id,

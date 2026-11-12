@@ -142,8 +142,15 @@ def _json_digest(payload: Mapping[str, Any]) -> str:
 def build_dataset_fingerprint(
     list_path: str | os.PathLike[str],
     wav_root: str | os.PathLike[str] | None = None,
+    *,
+    prefer_list_relative_audio: bool = False,
 ) -> dict[str, Any]:
-    """Fingerprint .list content plus referenced audio file identities."""
+    """Fingerprint .list content plus referenced audio file identities.
+
+    The default wav_root behavior matches official GPT-SoVITS preprocessing:
+    resolve by basename. Canonical emotion ingest can opt into its actual
+    relative-path-first resolver.
+    """
 
     list_path = Path(list_path).expanduser().resolve()
     if not list_path.is_file():
@@ -182,7 +189,22 @@ def build_dataset_fingerprint(
         )
         wav_path = Path(portable_wav_field).expanduser()
         if wav_root_path is not None:
-            wav_path = wav_root_path / wav_path.name
+            if prefer_list_relative_audio:
+                rooted_path = wav_root_path / wav_path
+                basename_path = wav_root_path / wav_path.name
+                list_relative_path = list_path.parent / wav_path
+                if wav_path.is_absolute() and wav_path.exists():
+                    wav_path = wav_path.resolve()
+                elif rooted_path.exists():
+                    wav_path = rooted_path.resolve()
+                elif basename_path.exists():
+                    wav_path = basename_path.resolve()
+                elif list_relative_path.exists():
+                    wav_path = list_relative_path.resolve()
+                else:
+                    wav_path = rooted_path.resolve()
+            else:
+                wav_path = wav_root_path / wav_path.name
         elif not wav_path.is_absolute():
             wav_path = (list_path.parent / wav_path).resolve()
 
@@ -218,6 +240,9 @@ def build_dataset_fingerprint(
             if count > 1
         ),
     }
+    if prefer_list_relative_audio:
+        payload["wav_resolution"] = "list_relative_then_basename"
+
     text_identity = [
         {
             "basename": row["basename"],

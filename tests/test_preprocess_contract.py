@@ -80,6 +80,52 @@ class PreprocessContractTests(unittest.TestCase):
                 "voice.wav",
             )
 
+    def test_canonical_fingerprint_tracks_relative_audio_under_wav_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav_dir = root / "wav"
+            nested_dir = wav_dir / "nested"
+            nested_dir.mkdir(parents=True)
+            (wav_dir / "voice.wav").write_bytes(b"basename-copy")
+            nested_audio = nested_dir / "voice.wav"
+            nested_audio.write_bytes(b"canonical-audio")
+
+            list_path = root / "training.list"
+            list_path.write_text(
+                "nested/voice.wav|spk|ko|hello\n",
+                encoding="utf-8",
+            )
+
+            ordinary = build_dataset_fingerprint(
+                list_path,
+                wav_dir,
+            )
+            canonical_before = build_dataset_fingerprint(
+                list_path,
+                wav_dir,
+                prefer_list_relative_audio=True,
+            )
+            self.assertEqual(
+                Path(ordinary["rows"][0]["audio"]["path"]),
+                (wav_dir / "voice.wav").resolve(),
+            )
+            self.assertEqual(
+                Path(canonical_before["rows"][0]["audio"]["path"]),
+                nested_audio.resolve(),
+            )
+
+            nested_audio.write_bytes(b"canonical-audio-changed")
+            canonical_after = build_dataset_fingerprint(
+                list_path,
+                wav_dir,
+                prefer_list_relative_audio=True,
+            )
+            self.assertNotEqual(
+                canonical_before["digest"],
+                canonical_after["digest"],
+            )
+
+
     def test_1a_validation_does_not_require_audio_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

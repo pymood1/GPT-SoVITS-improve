@@ -1200,6 +1200,7 @@ def run_emotion_training_pipeline(
             current_fingerprint = build_dataset_fingerprint(
                 source_list,
                 wav_root or None,
+                prefer_list_relative_audio=True,
             )
             current_sidecar = Path(sidecar_path).expanduser().resolve()
             current_sidecar_sha = (
