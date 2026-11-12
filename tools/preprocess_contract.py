@@ -303,6 +303,20 @@ def stage_version_key(stage: str, version: str) -> str:
     return version_name
 
 
+def validate_stage_dataset(
+    stage: str,
+    fingerprint: Mapping[str, Any],
+) -> list[str]:
+    errors = validate_dataset_fingerprint(fingerprint)
+    if str(stage) == "1a":
+        errors = [
+            error
+            for error in errors
+            if not error.startswith("missing audio file(s):")
+        ]
+    return errors
+
+
 def build_stage_contract(
     *,
     stage: str,
