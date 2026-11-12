@@ -3376,19 +3376,26 @@ def open1a(
         return
 
     opt_dir = Path(exp_root) / exp_name
+    bert_model_path = _resolve_repo_path(bert_pretrained_dir)
+    if bert_model_path is None or not bert_model_path.is_dir():
+        yield (
+            process_info(process_name_1a, "failed")
+            + f": BERT model directory not found: {bert_model_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+    bert_pretrained_dir = str(bert_model_path)
+
     expected_contract = _preprocess_contract(
         "1a",
         inp_text,
         inp_wav_dir,
         version,
         {
-            "bert_pretrained_dir": str(
-                _resolve_repo_path(bert_pretrained_dir)
-                or bert_pretrained_dir
-            ),
+            "bert_pretrained_dir": str(bert_model_path),
             "bert_pretrained_signature": quick_path_signature(
-                _resolve_repo_path(bert_pretrained_dir)
-                or bert_pretrained_dir
+                bert_model_path
             ),
             "use_multilingual_bert": bool(use_multilingual_bert),
             "multilingual_bert_model": str(multilingual_bert_model),
@@ -3609,30 +3616,47 @@ def open1b(
         return
 
     opt_dir = Path(exp_root) / exp_name
+    cnhubert_model_path = _resolve_repo_path(ssl_pretrained_dir)
+    if cnhubert_model_path is None or not cnhubert_model_path.is_dir():
+        yield (
+            process_info(process_name_1b, "failed")
+            + f": CNHuBERT model directory not found: {cnhubert_model_path}",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+    ssl_pretrained_dir = str(cnhubert_model_path)
+
+    sv_model_path = None
+    if "Pro" in version:
+        sv_model_path = _resolve_repo_path(sv_path)
+        if sv_model_path is None or not sv_model_path.is_file():
+            yield (
+                process_info(process_name_1b, "failed")
+                + f": speaker model not found: {sv_model_path}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
+
     expected_contract = _preprocess_contract(
         "1b",
         inp_text,
         inp_wav_dir,
         version,
         {
-            "cnhubert_base_dir": str(
-                _resolve_repo_path(ssl_pretrained_dir)
-                or ssl_pretrained_dir
-            ),
+            "cnhubert_base_dir": str(cnhubert_model_path),
             "cnhubert_signature": quick_path_signature(
-                _resolve_repo_path(ssl_pretrained_dir)
-                or ssl_pretrained_dir
+                cnhubert_model_path
             ),
             "sv_path": (
-                str(_resolve_repo_path(sv_path) or sv_path)
-                if "Pro" in version
+                str(sv_model_path)
+                if sv_model_path is not None
                 else None
             ),
             "sv_signature": (
-                quick_path_signature(
-                    _resolve_repo_path(sv_path) or sv_path
-                )
-                if "Pro" in version
+                quick_path_signature(sv_model_path)
+                if sv_model_path is not None
                 else None
             ),
         },
