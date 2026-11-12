@@ -95,7 +95,12 @@ def build_dataset_fingerprint(
             continue
 
         wav_field = parts[0].strip()
-        wav_path = Path(wav_field).expanduser()
+        portable_wav_field = (
+            wav_field.replace("\\", "/")
+            if os.name != "nt"
+            else wav_field
+        )
+        wav_path = Path(portable_wav_field).expanduser()
         if wav_root_path is not None:
             wav_path = wav_root_path / wav_path.name
         elif not wav_path.is_absolute():
