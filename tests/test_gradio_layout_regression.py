@@ -65,6 +65,19 @@ class GradioLayoutRegressionTests(unittest.TestCase):
         self.assertIn("pending_ui_update", block)
         self.assertIn('"[probe]"', block)
 
+    def test_multi_gpu_training_defaults_are_split(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        self.assertIn("default_gpt_training_gpu", webui)
+        self.assertIn("default_sovits_training_gpu", webui)
+        self.assertIn(
+            "value=default_gpt_training_gpu",
+            webui,
+        )
+        self.assertIn(
+            "value=default_sovits_training_gpu",
+            webui,
+        )
+
     def test_header_is_responsive(self):
         assets = (ROOT / "tools" / "assets.py").read_text(
             encoding="utf-8"
