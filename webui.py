@@ -3336,6 +3336,13 @@ def open1a(
                 opt += handle.read().strip("\n").split("\n")
             txt_path.unlink()
 
+        expected_rows = _nonempty_line_count(inp_text)
+        if len(opt) != expected_rows:
+            raise RuntimeError(
+                "1A output count mismatch: "
+                f"expected {expected_rows}, got {len(opt)}"
+            )
+
         path_text = Path(opt_dir) / "2-name2text.txt"
         path_text.parent.mkdir(parents=True, exist_ok=True)
         path_text.write_text(
@@ -3624,6 +3631,33 @@ def open1b(
         )
         return
 
+    names_hubert = {
+        path.stem
+        for path in hubert_dir.iterdir()
+        if path.is_file() and path.suffix == ".pt"
+    }
+    names_wav = {
+        path.name
+        for path in wav32k_dir.iterdir()
+        if path.is_file()
+    }
+    if names_hubert != names_wav:
+        yield (
+            process_info(process_name_1b, "failed")
+            + ": HuBERT/wav32k sample sets differ",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+    if len(names_hubert) < 2:
+        yield (
+            process_info(process_name_1b, "failed")
+            + ": fewer than 2 usable audio samples remain",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
     write_stage_contract(
         stage_contract_path(opt_dir, "1b"),
         expected_contract,
@@ -3868,6 +3902,26 @@ def open1c(
         yield (
             process_info(process_name_1c, "failed")
             + ": semantic output is empty",
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+        )
+        return
+
+    semantic_names = {
+        line.split("\t", 1)[0]
+        for line in opt[1:]
+        if line.strip()
+    }
+    hubert_dir = opt_dir / "4-cnhubert"
+    hubert_names = {
+        path.stem
+        for path in hubert_dir.iterdir()
+        if path.is_file() and path.suffix == ".pt"
+    }
+    if semantic_names != hubert_names:
+        yield (
+            process_info(process_name_1c, "failed")
+            + ": semantic/HuBERT sample sets differ",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
         )
