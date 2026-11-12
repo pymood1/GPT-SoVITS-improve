@@ -383,6 +383,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             self.assertNotIn("check_for_existance(", block)
             self.assertNotIn("check_details(", block)
 
+    def test_gpt_training_rejects_stale_1c_upstream(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+        start = webui.index("def _validate_training_dataset_contract(")
+        end = webui.index("def _training_artifact_error(", start)
+        block = webui[start:end]
+        self.assertIn("upstream_1b_digest", block)
+        self.assertIn('stage == "1c"', block)
+
     def test_semantic_extraction_requires_matching_hubert_stage(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
         start = webui.index("def open1c(")
