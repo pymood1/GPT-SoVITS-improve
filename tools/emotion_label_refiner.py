@@ -192,6 +192,19 @@ def load_sidecar(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def normalize_review_confidence(value: Any) -> str:
+    normalized = normalize_label(value)
+    aliases = {
+        "high": {"high", "h", "높음", "높다", "3"},
+        "medium": {"medium", "mid", "m", "중간", "보통", "2"},
+        "low": {"low", "l", "낮음", "낮다", "1"},
+    }
+    for canonical, values in aliases.items():
+        if normalized in values:
+            return canonical
+    return normalized
+
+
 def seed_label_for_row(row: dict[str, Any]) -> str:
     override = normalize_label(row.get("_seed_label_override"))
     if override:
@@ -224,7 +237,7 @@ def apply_human_review_seeds(
         human_label = normalize_label(
             review.get("human_emotion")
         )
-        confidence = normalize_label(
+        confidence = normalize_review_confidence(
             review.get("human_confidence")
         )
         row["emotion_human_label"] = human_label or None
@@ -2136,9 +2149,9 @@ def main() -> int:
             model_name=args.model,
         )
         human_seed_confidences = {
-            normalize_label(value)
+            normalize_review_confidence(value)
             for value in args.human_seed_confidences.split(",")
-            if normalize_label(value)
+            if normalize_review_confidence(value)
         }
         if not human_seed_confidences:
             raise CriticError(
