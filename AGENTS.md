@@ -1,5 +1,14 @@
 # GPT-SoVITS-improve contributor instructions
 
+## Active research continuation
+
+For the current S1 reference-retention and Emotion Controller research, read
+`CODEX_ACTIVE_RESEARCH_HANDOFF.md` **before** the older handoff/history files.
+It records the latest Full FT vs V+Out evidence, the user's listening
+observations as observations rather than facts, the QKV+Out / cross-utterance
+decision path, stop criteria, and the active TODO board. Keep that file updated
+as experiments change the evidence.
+
 Read `CODEX_HANDOFF.md` and `EMOTION_V5.md` before changing the runtime or emotion
 pipeline. Preserve ordinary GPT-SoVITS behavior, Korean UI, complete dependency
 scope, user data and checkpoints. Inspect current source and runtime evidence
