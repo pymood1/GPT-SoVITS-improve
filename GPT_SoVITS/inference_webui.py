@@ -31,6 +31,7 @@ import re
 import sys
 import traceback
 import warnings
+from pathlib import Path
 
 import torch
 import torchaudio
@@ -241,6 +242,7 @@ t2s_model_cudagraph = None
 gpt_path_global = None
 sovits_path_global = None
 emotion_controller_metadata = None
+emotion_controller_path_global = None
 use_multilingual_bert = False
 multilingual_bert_model = DEFAULT_MULTILINGUAL_BERT
 multilingual_bert_extractor = None
@@ -286,7 +288,8 @@ default_emotion_controller_path = os.environ.get(
 
 
 def load_emotion_controller_webui(controller_path):
-    global emotion_controller_metadata, t2s_model_cudagraph
+    global emotion_controller_metadata, emotion_controller_path_global
+    global t2s_model_cudagraph
     if controller_path in [None, ""]:
         return (
             {"__type__": "update", "choices": [], "value": None},
@@ -339,6 +342,9 @@ def load_emotion_controller_webui(controller_path):
     ).eval()
     t2s_model.model.set_emotion_controller(controller)
     emotion_controller_metadata = metadata
+    emotion_controller_path_global = str(
+        Path(controller_path).expanduser().resolve()
+    )
 
     if t2s_model_cudagraph is not None:
         t2s_model_cudagraph.close()
@@ -366,13 +372,181 @@ def load_emotion_controller_webui(controller_path):
 
 
 def unload_emotion_controller_webui():
-    global emotion_controller_metadata
+    global emotion_controller_metadata, emotion_controller_path_global
     if t2s_model is not None:
         t2s_model.model.clear_emotion_controller()
     emotion_controller_metadata = None
+    emotion_controller_path_global = None
     return (
         {"__type__": "update", "choices": [], "value": None},
         i18n("情感控制器已卸载"),
+    )
+
+
+def _prompt_language_choice(language_code):
+    code = str(language_code or "").strip().lower()
+    preferred = {
+        "zh": "all_zh",
+        "ja": "all_ja",
+        "ko": "all_ko",
+        "yue": "all_yue",
+        "en": "en",
+    }.get(code, code)
+    for label, value in dict_language.items():
+        if value == preferred:
+            return label
+    for label, value in dict_language.items():
+        if value == code:
+            return label
+    return next(iter(dict_language.keys()), i18n("中文"))
+
+
+def _read_controller_reference_metadata(metadata_path):
+    rows = {}
+    path = Path(str(metadata_path)).expanduser()
+    if not path.is_file():
+        return rows
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                name = str(item.get("canonical_wav") or "").strip()
+                if name:
+                    rows[name] = item
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return rows
+
+
+def _resolve_controller_reference_audio(item, metadata_path=None):
+    for field in ("audio_path", "original_path"):
+        value = str(item.get(field) or "").strip()
+        if not value:
+            continue
+        candidate = Path(value).expanduser()
+        if candidate.is_file():
+            return candidate.resolve()
+
+    canonical_name = str(item.get("canonical_wav") or "").strip()
+    if canonical_name and metadata_path:
+        metadata_file = Path(str(metadata_path)).expanduser()
+        candidate = metadata_file.parent / "wav" / canonical_name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _controller_inference_references():
+    metadata = emotion_controller_metadata or {}
+    extra = metadata.get("extra") or {}
+    metadata_path = extra.get("metadata")
+
+    references = []
+    stored = extra.get("inference_references")
+    if isinstance(stored, list):
+        for value in stored:
+            if not isinstance(value, dict):
+                continue
+            audio_path = _resolve_controller_reference_audio(value, metadata_path)
+            if audio_path is None:
+                continue
+            text_value = str(value.get("text") or "").strip()
+            language_value = str(value.get("language") or "").strip().lower()
+            if not text_value or not language_value:
+                continue
+            references.append(
+                {
+                    **value,
+                    "audio_path": str(audio_path),
+                    "text": text_value,
+                    "language": language_value,
+                }
+            )
+    if references:
+        return references
+
+    # Backward-compatible fallback for controllers created before the
+    # reference metadata was embedded in the controller checkpoint.
+    prompt_cache_path = str(extra.get("reference_prompt_cache") or "").strip()
+    if not metadata_path or not prompt_cache_path:
+        return []
+
+    metadata_rows = _read_controller_reference_metadata(metadata_path)
+    if not metadata_rows:
+        return []
+
+    cache_file = Path(prompt_cache_path).expanduser()
+    if not cache_file.is_file():
+        return []
+    try:
+        payload = torch.load(cache_file, map_location="cpu", weights_only=True)
+    except (OSError, RuntimeError, ValueError):
+        return []
+
+    cached_references = (
+        payload.get("references") if isinstance(payload, dict) else None
+    )
+    if not isinstance(cached_references, dict):
+        return []
+
+    for canonical_name in cached_references:
+        item = metadata_rows.get(str(canonical_name))
+        if not isinstance(item, dict):
+            continue
+        audio_path = _resolve_controller_reference_audio(item, metadata_path)
+        if audio_path is None:
+            continue
+        text_value = str(item.get("text") or "").strip()
+        language_value = str(item.get("language") or "").strip().lower()
+        if not text_value or not language_value:
+            continue
+        references.append(
+            {
+                "speaker_uid": item.get("speaker_uid"),
+                "canonical_wav": str(canonical_name),
+                "audio_path": str(audio_path),
+                "original_path": item.get("original_path"),
+                "text": text_value,
+                "language": language_value,
+            }
+        )
+    return references
+
+
+def use_emotion_controller_reference():
+    if emotion_controller_metadata is None:
+        raise gr.Error(i18n("먼저 Emotion Controller를 로드하세요."))
+
+    references = _controller_inference_references()
+    if not references:
+        raise gr.Error(
+            i18n(
+                "Controller 학습 Reference를 찾지 못했습니다. "
+                "현재 세션의 원본 Dataset/metadata가 있는지 확인하거나 "
+                "최신 trainer로 Controller를 다시 학습하세요."
+            )
+        )
+
+    selected = references[0]
+    language_choice = _prompt_language_choice(selected["language"])
+    canonical_name = str(selected.get("canonical_wav") or "")
+    speaker_uid = str(selected.get("speaker_uid") or "")
+    detail = canonical_name
+    if speaker_uid:
+        detail = f"{speaker_uid} · {canonical_name}"
+    if len(references) > 1:
+        detail += f" · 1/{len(references)}"
+
+    return (
+        {"__type__": "update", "value": selected["audio_path"]},
+        {"__type__": "update", "value": selected["text"]},
+        {"__type__": "update", "value": language_choice},
+        (
+            i18n("Controller 학습 Reference를 추론 입력에 적용했습니다.")
+            + f"\n{detail}"
+        ),
     )
 
 
