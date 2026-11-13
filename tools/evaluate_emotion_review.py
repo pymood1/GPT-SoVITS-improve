@@ -30,6 +30,19 @@ def normalize_label(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def normalize_review_confidence(value: Any) -> str:
+    normalized = normalize_label(value)
+    aliases = {
+        "high": {"high", "h", "높음", "높다", "3"},
+        "medium": {"medium", "mid", "m", "중간", "보통", "2"},
+        "low": {"low", "l", "낮음", "낮다", "1"},
+    }
+    for canonical, values in aliases.items():
+        if normalized in values:
+            return canonical
+    return normalized
+
+
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         raise EvaluationError(f"file not found: {path}")
@@ -236,7 +249,7 @@ def select_reviewed_rows(
         human = normalize_label(row.get("human_emotion"))
         if not human or human in ignore_labels:
             continue
-        confidence = normalize_label(
+        confidence = normalize_review_confidence(
             row.get("human_confidence")
         )
         if (
@@ -392,7 +405,7 @@ def main() -> int:
             for row in reviewed
         )
         confidence_counts = Counter(
-            normalize_label(
+            normalize_review_confidence(
                 row.get("human_confidence")
             )
             or "unspecified"
