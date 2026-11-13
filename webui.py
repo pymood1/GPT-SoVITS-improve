@@ -813,6 +813,13 @@ def _emotion_output_dir(dataset_id):
     ).resolve()
 
 
+def _emotion_sidecar_default_path(dataset_id):
+    return (
+        _emotion_output_dir(dataset_id)
+        / "emotion_sidecar.jsonl"
+    ).resolve()
+
+
 def _emotion_controller_default_path(dataset_id):
     dataset_slug = _emotion_dataset_slug(dataset_id)
     output_root = os.environ.get(
@@ -992,8 +999,7 @@ def run_auto_emotion_sidecar(
 
         if not sidecar_output:
             sidecar_output = str(
-                _emotion_output_dir(dataset_id)
-                / "emotion_sidecar.jsonl"
+                _emotion_sidecar_default_path(dataset_id)
             )
 
         output_path = Path(
@@ -1304,9 +1310,25 @@ def run_emotion_training_pipeline(
             )
 
         if not sidecar_path:
-            raise EmotionPipelineError(
-                "감정 controller 학습에는 sidecar JSONL이 필요합니다."
+            sidecar_path = str(
+                _emotion_sidecar_default_path(dataset_id)
             )
+            log_lines.append(
+                "[sidecar] auto-selected default: "
+                f"{sidecar_path}"
+            )
+
+        sidecar_file = Path(
+            sidecar_path
+        ).expanduser().resolve()
+        if not sidecar_file.is_file():
+            raise EmotionPipelineError(
+                "감정 sidecar JSONL을 찾지 못했습니다: "
+                f"{sidecar_file}. "
+                "먼저 자동 감정 분석(d 단계)을 실행하거나 "
+                "유효한 sidecar 경로를 지정하세요."
+            )
+        sidecar_path = str(sidecar_file)
 
         dataset_ready = (
             metadata_path.is_file()
@@ -5473,8 +5495,9 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 필요하지 않습니다.
 자동 결과가 마음에 들지 않으면 sidecar JSONL을 직접 수정할 수 있습니다.
 
-경로를 비워두면 감정 관련 산출물은 다른 전처리 도구와 마찬가지로
-`output/emotion_opt/<데이터셋 ID>/` 아래에 정리됩니다.
+경로를 비워두면 현재 런타임의 감정 작업 루트 아래
+`<데이터셋 ID>/` 경로를 자동 사용합니다. Kaggle에서는 기본적으로
+`/kaggle/tmp/emotion_opt/<데이터셋 ID>/`가 사용됩니다.
 """
                         )
 
@@ -5514,8 +5537,8 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 label="감정 sidecar JSONL 경로 (자동 생성/수동 지정)",
                                 value="",
                                 placeholder=(
-                                    "비워두면 output/emotion_opt/"
-                                    "<데이터셋 ID>/emotion_sidecar.jsonl"
+                                    "비워두면 데이터셋 ID 기준 기본 sidecar "
+                                    "경로를 자동 선택"
                                 ),
                                 interactive=True,
                             )
@@ -5547,8 +5570,8 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                 label="감정 canonical dataset 출력 폴더",
                                 value="",
                                 placeholder=(
-                                    "비워두면 output/emotion_opt/"
-                                    "<데이터셋 ID>/dataset"
+                                    "비워두면 데이터셋 ID 기준 기본 dataset "
+                                    "경로를 자동 선택"
                                 ),
                                 interactive=True,
                             )
