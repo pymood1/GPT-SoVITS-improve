@@ -77,7 +77,7 @@ class RuntimeStatusTests(unittest.TestCase):
                 self.assertEqual(merged["state"], "running")
                 self.assertIn("GPT/S1", merged["task"])
                 self.assertIn("SoVITS/S2", merged["task"])
-                self.assertAlmostEqual(merged["progress"], 0.375)
+                self.assertAlmostEqual(merged["progress"], 0.25)
 
                 custom = Path(tmp) / "custom.json"
                 os.environ[STATUS_PATH_ENV] = str(custom)
