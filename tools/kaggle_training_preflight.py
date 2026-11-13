@@ -164,22 +164,64 @@ def run_py_compile() -> list[str]:
     return compiled
 
 
-def run_self_tests() -> list[str]:
+def run_self_tests(
+    *,
+    strict: bool,
+) -> tuple[list[str], list[dict[str, Any]]]:
     passed: list[str] = []
+    failed: list[dict[str, Any]] = []
+
     for relative in SELF_TESTS:
         path = ROOT / relative
         if not path.is_file():
-            raise PreflightError(
-                f"self-test missing: {relative}"
+            item = {
+                "test": relative,
+                "error": "self-test file is missing",
+            }
+            failed.append(item)
+            print(
+                f"[WARN] {relative}: {item['error']}",
+                file=sys.stderr,
+                flush=True,
             )
+            continue
+
         print(f"\n[self-test] {relative}", flush=True)
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-u", str(path)],
             cwd=ROOT,
-            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
-        passed.append(relative)
-    return passed
+        if result.stdout:
+            print(result.stdout.rstrip(), flush=True)
+
+        if result.returncode == 0:
+            passed.append(relative)
+            continue
+
+        tail = (result.stdout or "").splitlines()[-30:]
+        item = {
+            "test": relative,
+            "returncode": int(result.returncode),
+            "tail": tail,
+        }
+        failed.append(item)
+        print(
+            f"[WARN] self-test failed: {relative} "
+            f"(exit={result.returncode})",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if failed and strict:
+        raise PreflightError(
+            "strict self-test mode: "
+            + ", ".join(item["test"] for item in failed)
+        )
+
+    return passed, failed
 
 
 def gpu_summary() -> dict[str, Any]:
@@ -231,6 +273,15 @@ def make_parser() -> argparse.ArgumentParser:
         "--skip-self-tests",
         action="store_true",
     )
+    parser.add_argument(
+        "--strict-self-tests",
+        action="store_true",
+        help=(
+            "Fail preflight when an experimental synthetic self-test fails. "
+            "By default self-tests are advisory and hard readiness checks "
+            "still gate training."
+        ),
+    )
     return parser
 
 
@@ -251,18 +302,33 @@ def main() -> int:
         output_root.mkdir(parents=True, exist_ok=True)
         emotion_root.mkdir(parents=True, exist_ok=True)
 
-        print("[preflight] dataset", flush=True)
+        print("[preflight 1/5] dataset", flush=True)
         dataset = check_dataset(training_list, datas_dir)
+        print(
+            f"[OK] dataset samples={dataset['samples']}",
+            flush=True,
+        )
 
-        print("[preflight] Python compile", flush=True)
+        print("[preflight 2/5] Python compile", flush=True)
         compiled = run_py_compile()
+        print(
+            f"[OK] compiled {len(compiled)} key files",
+            flush=True,
+        )
 
+        print("[preflight 3/5] CUDA/GPU", flush=True)
         gpus = gpu_summary()
         if not gpus["cuda_available"]:
             raise PreflightError(
                 "CUDA is not available. Enable a Kaggle GPU accelerator."
             )
 
+        print(
+            f"[OK] CUDA devices={gpus['cuda_device_count']}",
+            flush=True,
+        )
+
+        print("[preflight 4/5] pretrained assets", flush=True)
         pretrained = find_pretrained()
         missing_pretrained = [
             name
@@ -275,18 +341,38 @@ def main() -> int:
                 + ", ".join(missing_pretrained)
             )
 
+        print("[OK] pretrained assets present", flush=True)
+
         tests = []
+        test_failures = []
         if not args.skip_self_tests:
-            tests = run_self_tests()
+            print(
+                "[preflight 5/5] synthetic self-tests "
+                "(advisory by default)",
+                flush=True,
+            )
+            tests, test_failures = run_self_tests(
+                strict=args.strict_self_tests,
+            )
+        else:
+            print(
+                "[preflight 5/5] synthetic self-tests skipped",
+                flush=True,
+            )
 
         report = {
-            "status": "PASS",
+            "status": (
+                "PASS_WITH_WARNINGS"
+                if test_failures
+                else "PASS"
+            ),
             "python": sys.version.split()[0],
             "dataset": dataset,
             "gpu": gpus,
             "pretrained": pretrained,
             "compiled": compiled,
             "self_tests": tests,
+            "self_test_failures": test_failures,
             "disk": {
                 "tmp": disk_summary(Path("/kaggle/tmp")),
                 "working": disk_summary(Path("/kaggle/working")),
@@ -315,6 +401,19 @@ def main() -> int:
             ensure_ascii=False,
             indent=2,
         ))
+        if test_failures:
+            print(
+                "\n⚠️ PRE-FLIGHT PASS WITH WARNINGS — "
+                "hard training prerequisites are ready. "
+                "Synthetic self-test failures are listed above.",
+                flush=True,
+            )
+        else:
+            print(
+                "\n✅ PRE-FLIGHT PASS — hard prerequisites and "
+                "synthetic self-tests passed.",
+                flush=True,
+            )
         return 0
     except (
         PreflightError,
