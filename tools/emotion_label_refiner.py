@@ -1493,6 +1493,11 @@ def apply_critic_outputs(
         row["emotion_critic_oof"] = bool(oof)
 
         intended = normalize_label(row.get("emotion_intended"))
+        seed_target = (
+            seed_label_for_row(original)
+            if index in seed_position
+            else ""
+        )
         raw_top1 = normalize_label(row.get("emotion_raw_top1"))
         ood_mass = safe_float(
             row.get("emotion_ood_mass"),
@@ -1502,27 +1507,40 @@ def apply_critic_outputs(
             row.get("emotion_entropy"),
             1.0,
         )
+        candidate = None
 
         if row.get("emotion_prediction_error"):
             state = "failed"
         elif (
-            raw_top1 in {"other", "unknown"}
-            or ood_mass >= reject_ood
+            index not in seed_position
+            and (
+                raw_top1 in {"other", "unknown"}
+                or ood_mass >= reject_ood
+            )
         ):
             state = "ood"
+        elif index in seed_position and seed_target in emotion_set:
+            state = (
+                "accepted_core"
+                if label == seed_target
+                else "conflict"
+            )
+            candidate = (
+                seed_target
+                if state == "accepted_core"
+                else None
+            )
         elif intended in emotion_set:
-            if index in seed_position:
-                state = (
-                    "accepted_core"
-                    if label == intended
-                    else "conflict"
-                )
-            else:
-                state = (
-                    "critic_confirmed_candidate"
-                    if label == intended
-                    else "conflict"
-                )
+            state = (
+                "critic_confirmed_candidate"
+                if label == intended
+                else "conflict"
+            )
+            candidate = (
+                intended
+                if state == "critic_confirmed_candidate"
+                else None
+            )
         elif intended in {"neutral", "default"}:
             state = (
                 "neutral_candidate"
@@ -1548,14 +1566,9 @@ def apply_critic_outputs(
                 else "reject"
             )
         )
-        row["emotion_v3_candidate"] = (
-            intended
-            if state in {
-                "accepted_core",
-                "critic_confirmed_candidate",
-            }
-            else None
-        )
+        if state == "neutral_candidate":
+            candidate = "neutral"
+        row["emotion_v3_candidate"] = candidate
         row["auto_emotion_refiner"] = "prototype_critic_oof_v1"
 
         states[state] += 1
@@ -1629,6 +1642,11 @@ def apply_refiner_outputs(
         row["emotion_refiner_oof"] = bool(oof)
 
         intended = normalize_label(row.get("emotion_intended"))
+        seed_target = (
+            seed_label_for_row(original)
+            if index in seed_position
+            else ""
+        )
         raw_top1 = normalize_label(row.get("emotion_raw_top1"))
         ood_mass = safe_float(
             row.get("emotion_ood_mass"),
@@ -1648,21 +1666,24 @@ def apply_refiner_outputs(
             state = "failed"
             candidate = None
         elif (
-            raw_top1 in {"other", "unknown"}
-            or ood_mass >= reject_ood
+            index not in seed_position
+            and (
+                raw_top1 in {"other", "unknown"}
+                or ood_mass >= reject_ood
+            )
         ):
             state = "ood"
             candidate = None
+        elif index in seed_position and seed_target in emotion_set:
+            if consensus and critic_label == seed_target:
+                state = "accepted_core"
+                candidate = seed_target
+            else:
+                state = "conflict"
+                candidate = None
         elif intended in emotion_set:
-            if (
-                consensus
-                and critic_label == intended
-            ):
-                state = (
-                    "accepted_core"
-                    if index in seed_position
-                    else "refiner_confirmed_candidate"
-                )
+            if consensus and critic_label == intended:
+                state = "refiner_confirmed_candidate"
                 candidate = intended
             else:
                 state = "conflict"
