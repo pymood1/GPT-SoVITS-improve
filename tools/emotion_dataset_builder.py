@@ -370,6 +370,12 @@ def build_dataset(args: argparse.Namespace) -> None:
             "emotion_predicted_confidence": metadata.get(
                 "emotion_predicted_confidence"
             ),
+            "emotion_raw_scores": metadata.get("emotion_raw_scores"),
+            "emotion_entropy": metadata.get("emotion_entropy"),
+            "emotion_top1_margin": metadata.get("emotion_top1_margin"),
+            "emotion_ood_mass": metadata.get("emotion_ood_mass"),
+            "emotion_raw_top1": metadata.get("emotion_raw_top1"),
+            "emotion_raw_top2": metadata.get("emotion_raw_top2"),
             "emotion_relative_scores": metadata.get(
                 "emotion_relative_scores"
             ),
@@ -379,11 +385,46 @@ def build_dataset(args: argparse.Namespace) -> None:
             "emotion_relative_confidence": metadata.get(
                 "emotion_relative_confidence"
             ),
+            "emotion_relative_gap": metadata.get(
+                "emotion_relative_gap"
+            ),
+            "emotion_relative_z_scores": metadata.get(
+                "emotion_relative_z_scores"
+            ),
+            "emotion_relative_z": metadata.get("emotion_relative_z"),
+            "emotion_relative_z_gap": metadata.get(
+                "emotion_relative_z_gap"
+            ),
+            "emotion_relative_z_top1": metadata.get(
+                "emotion_relative_z_top1"
+            ),
             "emotion_is_default": bool(
                 metadata.get("emotion_is_default", False)
             ),
+            "emotion_label_state_v3": metadata.get(
+                "emotion_label_state_v3"
+            ),
+            "emotion_label_quality_v3": metadata.get(
+                "emotion_label_quality_v3"
+            ),
+            "emotion_v3_candidate": metadata.get(
+                "emotion_v3_candidate"
+            ),
+            "emotion_critic_label": metadata.get(
+                "emotion_critic_label"
+            ),
+            "emotion_critic_max_probability": metadata.get(
+                "emotion_critic_max_probability"
+            ),
+            "emotion_critic_margin": metadata.get(
+                "emotion_critic_margin"
+            ),
+            "emotion_critic_oof": metadata.get("emotion_critic_oof"),
             "auto_emotion_calibration": metadata.get(
                 "auto_emotion_calibration"
+            ),
+            "auto_emotion_refiner": metadata.get(
+                "auto_emotion_refiner"
             ),
             "transcript_source": metadata.get(
                 "transcript_source", "existing_list"
