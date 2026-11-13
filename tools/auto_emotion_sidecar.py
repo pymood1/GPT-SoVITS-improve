@@ -205,6 +205,69 @@ def parse_prediction(result: Any) -> tuple[str, float, dict[str, float]]:
     return label, float(confidence), normalized_scores
 
 
+def prediction_diagnostics(
+    scores: dict[str, float],
+) -> dict[str, float | str]:
+    """Summarize uncertainty without changing the v2 label decision.
+
+    emotion2vec scores are treated as model evidence, not calibrated
+    correctness probabilities.  These diagnostics are intentionally additive:
+    existing callers can ignore them while v3/refiner experiments consume
+    entropy, top-1 margin and open-set mass.
+    """
+    cleaned = {
+        str(label): max(float(value), 0.0)
+        for label, value in (scores or {}).items()
+        if math.isfinite(float(value))
+    }
+    total = sum(cleaned.values())
+    if total <= 0.0:
+        return {
+            "emotion_entropy": 1.0,
+            "emotion_top1_margin": 0.0,
+            "emotion_ood_mass": 1.0,
+            "emotion_score_sum": 0.0,
+            "emotion_raw_top1": "unknown",
+            "emotion_raw_top2": "unknown",
+        }
+
+    probabilities = {
+        label: value / total
+        for label, value in cleaned.items()
+    }
+    ranked = sorted(
+        probabilities.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    top1_label, top1 = ranked[0]
+    top2_label, top2 = (
+        ranked[1] if len(ranked) > 1 else ("unknown", 0.0)
+    )
+
+    entropy = -sum(
+        value * math.log(max(value, 1e-12))
+        for value in probabilities.values()
+        if value > 0.0
+    )
+    if len(probabilities) > 1:
+        entropy /= math.log(len(probabilities))
+    else:
+        entropy = 0.0
+
+    return {
+        "emotion_entropy": float(min(max(entropy, 0.0), 1.0)),
+        "emotion_top1_margin": float(max(top1 - top2, 0.0)),
+        "emotion_ood_mass": float(
+            probabilities.get("other", 0.0)
+            + probabilities.get("unknown", 0.0)
+        ),
+        "emotion_score_sum": float(total),
+        "emotion_raw_top1": str(top1_label),
+        "emotion_raw_top2": str(top2_label),
+    }
+
+
 def load_dataset_rows(
     list_path: Path,
     wav_root: Path | None,
@@ -331,6 +394,7 @@ def predict_emotions(
                 cached.get("emotion_predicted_confidence", 0.0)
             )
             row["emotion_scores"] = cached.get("emotion_scores", {})
+            row.update(prediction_diagnostics(row["emotion_scores"]))
             reused += 1
             print(
                 f"[emotion] {number}/{len(rows)} reuse "
@@ -369,6 +433,7 @@ def predict_emotions(
                 "emotion_predicted": label,
                 "emotion_predicted_confidence": confidence,
                 "emotion_scores": scores,
+                **prediction_diagnostics(scores),
                 "model": model_name,
             }
             append_jsonl(cache_path, cache_row)
@@ -378,6 +443,7 @@ def predict_emotions(
         row["emotion_predicted"] = label
         row["emotion_predicted_confidence"] = confidence
         row["emotion_scores"] = scores
+        row.update(prediction_diagnostics(scores))
 
         print(
             f"[emotion] {number}/{len(rows)} "
@@ -503,6 +569,18 @@ def assign_speaker_relative_labels(
             best_relative = float(
                 relative[best_non_neutral]
             )
+            ranked_non_neutral = sorted(
+                (float(relative[emotion]), emotion)
+                for emotion in trainable
+            )
+            second_relative = (
+                ranked_non_neutral[-2][0]
+                if len(ranked_non_neutral) > 1
+                else best_relative
+            )
+            relative_gap = float(
+                max(best_relative - second_relative, 0.0)
+            )
 
             max_logit = max(comparison_logits.values())
             exp_values = {
@@ -536,6 +614,7 @@ def assign_speaker_relative_labels(
             row["emotion_relative_confidence"] = float(
                 relative_confidence
             )
+            row["emotion_relative_gap"] = relative_gap
             row["emotion_is_default"] = accepted == "neutral"
 
     return baselines
@@ -617,6 +696,22 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
             "emotion_predicted_confidence": float(
                 row.get("emotion_predicted_confidence") or 0.0
             ),
+            "emotion_raw_scores": row.get("emotion_scores", {}),
+            "emotion_entropy": float(
+                row.get("emotion_entropy") or 0.0
+            ),
+            "emotion_top1_margin": float(
+                row.get("emotion_top1_margin") or 0.0
+            ),
+            "emotion_ood_mass": float(
+                row.get("emotion_ood_mass") or 0.0
+            ),
+            "emotion_raw_top1": str(
+                row.get("emotion_raw_top1") or "unknown"
+            ),
+            "emotion_raw_top2": str(
+                row.get("emotion_raw_top2") or "unknown"
+            ),
             "emotion_relative_scores": row.get(
                 "emotion_relative_scores",
                 {},
@@ -626,6 +721,9 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "emotion_relative_confidence": float(
                 row.get("emotion_relative_confidence") or 0.0
+            ),
+            "emotion_relative_gap": float(
+                row.get("emotion_relative_gap") or 0.0
             ),
             "emotion_is_default": bool(
                 row.get("emotion_is_default", False)
@@ -677,6 +775,25 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
             for row in rows
         ),
         "accepted_counts": dict(accepted_counts),
+        "uncertainty": {
+            "mean_entropy": (
+                sum(float(row.get("emotion_entropy") or 0.0) for row in rows)
+                / max(len(rows), 1)
+            ),
+            "mean_top1_margin": (
+                sum(float(row.get("emotion_top1_margin") or 0.0) for row in rows)
+                / max(len(rows), 1)
+            ),
+            "mean_ood_mass": (
+                sum(float(row.get("emotion_ood_mass") or 0.0) for row in rows)
+                / max(len(rows), 1)
+            ),
+            "raw_unknown_or_other_top1": sum(
+                str(row.get("emotion_raw_top1") or "")
+                in {"unknown", "other"}
+                for row in rows
+            ),
+        },
         "speaker_baselines": speaker_baselines,
         "pair_groups": 0,
         "paired_samples": 0,
@@ -693,6 +810,11 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
             (
                 "No exact-text emotion pairs are required by the controller "
                 "training path."
+            ),
+            (
+                "Raw score entropy, top-1 margin, other/unknown OOD mass and "
+                "relative class gap are diagnostic-only in v2 and do not "
+                "change accepted labels."
             ),
         ],
     }
