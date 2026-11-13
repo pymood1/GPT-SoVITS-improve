@@ -381,6 +381,11 @@ def select_seed_indices(
             continue
         if row.get("emotion_prediction_error"):
             continue
+        if normalize_label(row.get("emotion_raw_top1")) in {
+            "other",
+            "unknown",
+        }:
+            continue
         if safe_float(row.get("emotion_ood_mass"), 1.0) > max_ood:
             continue
         if safe_float(row.get("emotion_entropy"), 1.0) > max_entropy:
