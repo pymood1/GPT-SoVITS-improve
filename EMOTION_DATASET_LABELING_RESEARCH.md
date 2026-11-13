@@ -7,6 +7,7 @@
 이 문서는 구현 전 연구/실험 계획이다. 현재 default 동작을 즉시 바꾸는 문서가 아니다.
 
 관련:
+- `ADVERSARIAL_EMOTION_REFINER_DESIGN.md`
 - `tools/auto_emotion_sidecar.py`
 - `tools/emotion_dataset_builder.py`
 - `tools/train_emotion_controller.py`
