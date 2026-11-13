@@ -5577,7 +5577,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                             )
                             emotion_reuse_dataset = gr.Checkbox(
                                 label="기존 감정 canonical dataset 재사용",
-                                value=False,
+                                value=True,
                                 interactive=True,
                             )
 
