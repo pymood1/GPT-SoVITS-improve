@@ -404,7 +404,14 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         global_step += 1
     if epoch % hps.train.save_every_epoch == 0 and rank == 0:
-        if hps.train.if_save_latest == 0:
+        low_disk_save = os.environ.get("GPT_SOVITS_LOW_DISK_SAVE") == "1"
+
+        if low_disk_save:
+            logger.info(
+                "[low-disk] skipping full model+optimizer resume checkpoint; "
+                "saving compact inference weights only"
+            )
+        elif hps.train.if_save_latest == 0:
             utils.save_checkpoint(
                 net_g,
                 optim_g,
@@ -420,7 +427,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 epoch,
                 os.path.join(save_root, "G_{}.pth".format(233333333333)),
             )
-        if rank == 0 and hps.train.if_save_every_weights == True:
+
+        # In low-disk mode a compact weight is mandatory because the large
+        # resume checkpoint above is intentionally omitted.
+        save_compact_weights = (
+            hps.train.if_save_every_weights == True or low_disk_save
+        )
+        if rank == 0 and save_compact_weights:
             if hasattr(net_g, "module"):
                 ckpt = net_g.module.state_dict()
             else:
@@ -431,6 +444,20 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 #     print(key)
                 if key not in no_grad_names:
                     sim_ckpt[key] = ckpt[key].half().cpu()
+
+            if low_disk_save and hps.train.if_save_latest:
+                weight_dir = Path(hps.save_weight_dir)
+                for old_weight in weight_dir.glob(
+                    f"{hps.name}_e*_s*_l{lora_rank}.pth"
+                ):
+                    try:
+                        old_weight.unlink()
+                    except OSError:
+                        logger.warning(
+                            "[low-disk] failed to remove old weight: %s",
+                            old_weight,
+                        )
+
             logger.info(
                 "saving ckpt %s_e%s:%s"
                 % (
