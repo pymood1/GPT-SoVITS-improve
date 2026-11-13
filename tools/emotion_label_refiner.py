@@ -760,11 +760,25 @@ def build_refiner_inputs(
             max(safe_float(raw_scores.get(emotion), 0.0), 1e-6)
             for emotion in emotions
         ]
-        raw_total = sum(raw_values)
+        all_score_total = sum(
+            max(safe_float(value, 0.0), 0.0)
+            for value in raw_scores.values()
+        )
+        active_raw_total = sum(raw_values)
         conditional = [
-            value / max(raw_total, 1e-12)
+            value / max(active_raw_total, 1e-12)
             for value in raw_values
         ]
+        neutral_probability = (
+            max(
+                safe_float(raw_scores.get("neutral"), 0.0),
+                0.0,
+            )
+            / max(all_score_total, 1e-12)
+        )
+        active_probability_mass = (
+            active_raw_total / max(all_score_total, 1e-12)
+        )
         teacher_row = [
             math.log(max(value, 1e-6))
             for value in conditional
@@ -786,6 +800,8 @@ def build_refiner_inputs(
                 safe_float(row.get("emotion_entropy"), 1.0),
                 safe_float(row.get("emotion_top1_margin"), 0.0),
                 safe_float(row.get("emotion_ood_mass"), 1.0),
+                float(neutral_probability),
+                float(active_probability_mass),
                 safe_float(row.get("emotion_relative_gap"), 0.0),
                 safe_float(row.get("emotion_relative_z_gap"), 0.0),
                 safe_float(
@@ -1509,20 +1525,24 @@ def apply_refiner_outputs(
                 state = "conflict"
                 candidate = None
         elif intended in {"neutral", "default"}:
-            if (
-                raw_top1 == "neutral"
-                and entropy <= max_neutral_entropy
-                and not consensus
-            ):
-                state = "neutral_candidate"
-                candidate = "neutral"
-            elif consensus:
+            if raw_top1 == "neutral":
+                state = (
+                    "neutral_candidate"
+                    if entropy <= max_neutral_entropy
+                    else "ambiguous"
+                )
+                candidate = (
+                    "neutral"
+                    if state == "neutral_candidate"
+                    else None
+                )
+            elif consensus and raw_top1 in emotion_set:
                 state = "rescued_candidate"
                 candidate = refiner_label
             else:
                 state = "ambiguous"
                 candidate = None
-        elif consensus:
+        elif consensus and raw_top1 in emotion_set:
             state = "rescued_candidate"
             candidate = refiner_label
         else:
