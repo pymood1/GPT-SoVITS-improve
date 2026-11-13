@@ -622,15 +622,29 @@ GPT-SoVITS 전용 결과는 아니지만 방향 결정에 참고한다.
 
 ## 다음 구현 항목
 
+현재 구현 상태:
+
+- S1 prompt/controller-space 비교 도구: 구현됨
+  - `tools/compare_s1_controller_space.py`
+- S1 LoRA training mode: 구현됨
+  - `full`
+  - `lora_v_o`
+  - `lora_qkv_o`
+- LoRA compact checkpoint merge/export: 구현됨
+- LoRA synthetic merge/routing self-test: 구현됨
+  - `tools/s1_lora_selftest.py`
+- WebUI 선택 UI: 구현됨
+
 아직 구현하지 않은 항목:
 
-- S1 prompt-sensitivity benchmark script
-- S1 LoRA training mode
-- LoRA merge/export
-- held-out/reference-retention validation
-- optional cross-utterance reference-conditioned objective
+- held-out/reference-retention validation을 S1 trainer 내부 early-stop에 직접 통합
+- optional cross-utterance reference-conditioned S1 objective
+- optional hidden-retention / logit-retention loss
+- FFN-only LoRA 비교군
 
-이 문서의 1차 ablation 결과를 먼저 얻은 뒤 순서대로 구현한다.
+중요:
+코드는 준비했지만 실제 dataset 학습/성능 검증은 아직 하지 않았다.
+기본값은 기존 `full`을 유지하며 LoRA를 자동 승격하지 않는다.
 
 
 ---
@@ -1200,3 +1214,149 @@ hidden emotion probe
 를 먼저 본다.
 
 만약 Q/K, embedding, readout까지 크게 이동하면서 hidden cosine과 reference behavior가 나빠진다면, V-only LoRA + frozen semantic coordinate 전략을 우선한다.
+
+
+---
+
+## 24. 2026-11-13 S1 LoRA 구현 상태
+
+### 구현된 attention adapter
+
+파일:
+`GPT_SoVITS/AR/modules/activation.py`
+
+지원 모드:
+
+~~~text
+lora_v_o
+- Q/K frozen
+- V low-rank delta
+- attention out low-rank delta
+
+lora_qkv_o
+- combined Q/K/V low-rank delta
+- attention out low-rank delta
+~~~
+
+LoRA는 기본 비활성이다.
+비활성 상태에서는 legacy state_dict에 추가 parameter가 생기지 않는다.
+
+초기화:
+
+~~~text
+A: Kaiming init
+B: zero init
+~~~
+
+따라서 LoRA 활성 직후 functional output은 pretrained base와 동일해야 한다.
+
+V-only 모드에서는 combined `in_proj_weight=[Q;K;V]` 중 V row block에만 delta를 넣는다.
+
+### frozen backbone training
+
+파일:
+`GPT_SoVITS/AR/models/t2s_lightning_module.py`
+
+LoRA 모드에서는:
+
+~~~text
+전체 S1 backbone requires_grad = False
+→ attention LoRA parameter만 생성/학습
+~~~
+
+embedding / BERT projection / LayerNorm / FFN / semantic readout은 모두 frozen.
+
+optimizer도 `requires_grad=True` parameter만 받는다.
+
+### compact export
+
+파일:
+`GPT_SoVITS/s1_train.py`
+
+training 중 full Lightning resume checkpoint에는 LoRA parameter를 유지할 수 있다.
+
+하지만 compact GPT inference checkpoint 저장 시:
+
+~~~text
+base in_proj_weight + LoRA delta
+base out_proj.weight + LoRA delta
+→ ordinary S1 weights로 merge
+~~~
+
+한 뒤 LoRA parameter를 제거한다.
+
+따라서 기존 inference loader는 LoRA-aware일 필요가 없다.
+
+### WebUI
+
+GPT/S1 학습 UI에 다음 선택 추가:
+
+~~~text
+Full fine-tuning (기존 baseline)
+V + Attention Out LoRA (reference 보존 우선)
+QKV + Attention Out LoRA (비교군)
+~~~
+
+LoRA 기본값:
+- rank = 8
+- alpha = 16
+
+전체 WebUI 기본값은 여전히 `full`.
+
+resume identity에도:
+- s1_adapter
+- s1_lora_rank
+- s1_lora_alpha
+
+를 포함하여 서로 다른 adapter 실험의 full-resume checkpoint가 섞이지 않게 했다.
+
+### synthetic self-test
+
+파일:
+`tools/s1_lora_selftest.py`
+
+검사:
+- V+O zero-init output == base output
+- QKV+O zero-init output == base output
+- V-only Q/K delta == 0
+- active V+O output == merged ordinary weight output
+- active QKV+O output == merged ordinary weight output
+
+실행:
+
+~~~bash
+cd /kaggle/tmp/GPT-SoVITS
+python tools/s1_lora_selftest.py
+~~~
+
+이 테스트는 실제 S1 dataset 학습이 아니다.
+단순 forward/merge 경로 검증이다.
+
+### 현재 실험 순서
+
+실제 학습은 Codex/Kaggle 단계에서 다음 순서로 실행한다.
+
+~~~text
+A0 pretrained S1
+A1 current full15 baseline
+
+↓ S1 space/reference comparison
+
+B1 V+O LoRA r=8
+B2 QKV+O LoRA r=8
+
+↓
+reference sensitivity
+hidden probe
+Controller 재학습
+청감
+~~~
+
+B1/B2 학습 전에는 반드시:
+`python tools/s1_lora_selftest.py`
+를 먼저 실행한다.
+
+실험 결과가 나오기 전까지:
+- full FT 삭제 금지
+- LoRA default 승격 금지
+- cross-reference objective 동시 추가 금지
