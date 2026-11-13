@@ -1115,6 +1115,8 @@ def run_controller_oof_cv(
     hidden_beta: float,
     preference_beta: float,
     semantic_aux_weight: float,
+    hidden_lr: float,
+    hidden_weight_decay: float,
     lr: float,
     weight_decay: float,
     steps: int,
@@ -1160,9 +1162,22 @@ def run_controller_oof_cv(
         ).to(device=device, dtype=torch.float32)
         fold_controller.train()
         fold_optimizer = torch.optim.AdamW(
-            fold_controller.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
+            [
+                {
+                    "params": [
+                        fold_controller.v_proj,
+                        fold_controller.emotion_coeff.weight,
+                        fold_controller.hidden_bias,
+                    ],
+                    "lr": hidden_lr,
+                    "weight_decay": hidden_weight_decay,
+                },
+                {
+                    "params": [fold_controller.u_proj],
+                    "lr": lr,
+                    "weight_decay": weight_decay,
+                },
+            ]
         )
 
         train_by_emotion: Dict[int, List[int]] = defaultdict(list)
@@ -1226,6 +1241,7 @@ def run_controller_oof_cv(
                     valid_mask=prepared_device["valid_mask"],
                     output_weight=output_weight,
                     eos_id=eos_id,
+                    detach_conditioner=True,
                 )
                 if score_tensor is not None:
                     semantic_loss = F.cross_entropy(
@@ -1434,6 +1450,8 @@ def save_checkpoint(
                 "min_support_coverage": args.min_support_coverage,
                 "hidden_beta": args.hidden_beta,
                 "semantic_aux_weight": args.semantic_aux_weight,
+                "hidden_lr": args.hidden_lr,
+                "hidden_weight_decay": args.hidden_weight_decay,
                 "min_samples_per_emotion": args.min_samples_per_emotion,
                 "val_interval": args.val_interval,
                 "val_fraction": args.val_fraction,
@@ -1456,7 +1474,7 @@ def save_checkpoint(
                     "training_diagnosis",
                     None,
                 ),
-                "training_mode": "hidden_primary_semantic_aux_v5_grouped_val",
+                "training_mode": "hidden_primary_decoupled_semantic_aux_v6_grouped_val",
                 "validation_grouping": (
                     "connected(source_id,text_group_id,pair_group_id)"
                 ),
@@ -1524,6 +1542,22 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument(
+        "--hidden-lr",
+        type=float,
+        default=1e-2,
+        help=(
+            "Learning rate for V/emotion_coeff/hidden_bias. "
+            "The diagnostic linear probe converged with a much larger LR "
+            "than the semantic steering path."
+        ),
+    )
+    parser.add_argument(
+        "--hidden-weight-decay",
+        type=float,
+        default=5e-2,
+        help="Weight decay for the hidden-state classifier branch.",
+    )
     parser.add_argument("--preference-beta", type=float, default=4.0)
     parser.add_argument(
         "--hidden-beta", type=float, default=2.0,
@@ -1630,6 +1664,12 @@ def main() -> int:
         )
     if args.lr <= 0:
         raise TrainingDataError("--lr must be positive")
+    if args.hidden_lr <= 0:
+        raise TrainingDataError("--hidden-lr must be positive")
+    if args.hidden_weight_decay < 0:
+        raise TrainingDataError(
+            "--hidden-weight-decay must be non-negative"
+        )
     if args.log_every <= 0:
         raise TrainingDataError("--log-every must be positive")
     if args.min_samples_per_emotion < 3:
@@ -2267,9 +2307,22 @@ def main() -> int:
     )
     controller.train()
     optimizer = torch.optim.AdamW(
-        controller.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
+        [
+            {
+                "params": [
+                    controller.v_proj,
+                    controller.emotion_coeff.weight,
+                    controller.hidden_bias,
+                ],
+                "lr": args.hidden_lr,
+                "weight_decay": args.hidden_weight_decay,
+            },
+            {
+                "params": [controller.u_proj],
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+            },
+        ]
     )
 
     print(
@@ -2464,6 +2517,7 @@ def main() -> int:
                 valid_mask=prepared_device["valid_mask"],
                 output_weight=output_weight,
                 eos_id=model.EOS,
+                detach_conditioner=True,
             )
             if score_tensor is not None:
                 semantic_loss = F.cross_entropy(
@@ -2502,6 +2556,11 @@ def main() -> int:
             grad_c_norm = (
                 controller.emotion_coeff.weight.grad.detach().norm()
                 if controller.emotion_coeff.weight.grad is not None
+                else torch.zeros((), device=device)
+            )
+            grad_bias_norm = (
+                controller.hidden_bias.grad.detach().norm()
+                if controller.hidden_bias.grad is not None
                 else torch.zeros((), device=device)
             )
             hidden_score_span = (
@@ -2604,6 +2663,7 @@ def main() -> int:
                 f"semantic_span={float(semantic_score_span.item()):.6f} "
                 f"grad_u={float(grad_u_norm.item()):.4e} "
                 f"grad_c={float(grad_c_norm.item()):.4e} "
+                f"grad_bias={float(grad_bias_norm.item()):.4e} "
                 f"grad_total={float(total_grad_norm.item()):.4e} "
                 f"u_norm={float(u_norm.item()):.4e} "
                 f"c_spread={float(coeff_spread.item()):.4f} "
@@ -2812,6 +2872,8 @@ def main() -> int:
         hidden_beta=args.hidden_beta,
         preference_beta=args.preference_beta,
         semantic_aux_weight=args.semantic_aux_weight,
+        hidden_lr=args.hidden_lr,
+        hidden_weight_decay=args.hidden_weight_decay,
         lr=args.lr,
         weight_decay=args.weight_decay,
         steps=oof_steps,
@@ -2985,6 +3047,8 @@ def main() -> int:
         "objective": "hidden_primary_semantic_aux",
         "hidden_beta": args.hidden_beta,
         "semantic_aux_weight": args.semantic_aux_weight,
+        "hidden_lr": args.hidden_lr,
+        "hidden_weight_decay": args.hidden_weight_decay,
         "likely_bottleneck": likely_bottleneck,
         "rule": (
             "PASS when class-balanced hidden-space controller OOF CE "
