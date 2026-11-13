@@ -22,9 +22,13 @@ from tools.auto_emotion_sidecar import prediction_diagnostics  # noqa: E402
 from tools.build_emotion_review_set import select_review_rows  # noqa: E402
 from tools.emotion_label_refiner import (  # noqa: E402
     CriticConfig,
+    RefinerConfig,
     apply_critic_outputs,
+    apply_refiner_outputs,
     crossfit_critic,
+    crossfit_refiner,
     fit_final_critic,
+    fit_final_refiner,
 )
 from tools.evaluate_emotion_review import evaluate_system  # noqa: E402
 
@@ -322,6 +326,115 @@ def test_crossfit_critic() -> None:
     )
 
 
+def test_crossfit_refiner() -> None:
+    rows, embeddings = synthetic_critic_problem()
+    emotions = (
+        "happy",
+        "angry",
+        "disgusted",
+        "surprised",
+    )
+    critic_config = CriticConfig(
+        emotions=emotions,
+        pca_dim=8,
+        rank=2,
+        temperature=0.20,
+        ranking_margin=0.20,
+        steps=100,
+        learning_rate=3e-3,
+        seed=4321,
+        max_folds=4,
+    )
+    refiner_config = RefinerConfig(
+        delta_max=1.0,
+        steps=100,
+        learning_rate=2e-3,
+        teacher_weight=0.35,
+        critic_weight=0.50,
+    )
+    seed_indices = list(range(len(rows)))
+
+    critic_oof, _, critic_metrics = crossfit_critic(
+        rows,
+        embeddings,
+        seed_indices,
+        config=critic_config,
+    )
+    require(
+        float(critic_metrics["oof_macro_accuracy"]) >= 0.85,
+        "synthetic prerequisite critic is unexpectedly weak",
+    )
+
+    refiner_oof, refiner_metrics = crossfit_refiner(
+        rows,
+        embeddings,
+        seed_indices,
+        critic_config=critic_config,
+        refiner_config=refiner_config,
+    )
+    require(
+        float(refiner_metrics["oof_macro_accuracy"]) >= 0.85,
+        (
+            "synthetic refiner macro accuracy too low: "
+            f"{refiner_metrics['oof_macro_accuracy']:.3f}"
+        ),
+    )
+    require(
+        float(refiner_metrics["oof_macro_auc"] or 0.0) >= 0.95,
+        (
+            "synthetic refiner macro AUC too low: "
+            f"{refiner_metrics['oof_macro_auc']:.3f}"
+        ),
+    )
+
+    final_critic = fit_final_critic(
+        embeddings,
+        seed_indices,
+        rows,
+        config=critic_config,
+    )
+    final_refiner = fit_final_refiner(
+        rows,
+        seed_indices,
+        final_critic["all_logits"],
+        critic_config=critic_config,
+        refiner_config=refiner_config,
+    )
+    output_rows, states = apply_refiner_outputs(
+        rows,
+        seed_indices=seed_indices,
+        critic_oof_logits=critic_oof,
+        critic_final_logits=final_critic["all_logits"],
+        refiner_oof_logits=refiner_oof,
+        refiner_final_logits=final_refiner["all_logits"],
+        emotions=emotions,
+        reject_ood=0.50,
+        max_neutral_entropy=0.65,
+        min_critic_margin=0.05,
+        min_refiner_margin=0.05,
+    )
+    accepted = sum(
+        row["emotion_label_state_v3"]
+        == "accepted_core"
+        for row in output_rows
+    )
+    require(
+        accepted / len(output_rows) >= 0.85,
+        "synthetic refiner accepted_core ratio is too low",
+    )
+    require(
+        states.get("accepted_core", 0) == accepted,
+        "refiner state report mismatch",
+    )
+    require(
+        all(
+            row.get("emotion_refiner_oof") is True
+            for row in output_rows
+        ),
+        "seed-only synthetic refiner rows must be OOF",
+    )
+
+
 def test_review_evaluator() -> None:
     rows = [
         {
@@ -359,6 +472,7 @@ def main() -> int:
         test_prediction_diagnostics,
         test_review_selector,
         test_crossfit_critic,
+        test_crossfit_refiner,
         test_review_evaluator,
     ]
     for test in tests:
