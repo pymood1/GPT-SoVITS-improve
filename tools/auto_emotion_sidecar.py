@@ -66,6 +66,7 @@ DEFAULT_EMOTIONS = (
     "fearful",
     "surprised",
 )
+ROBUST_SCALE_FLOOR = 0.10
 
 
 class AutoEmotionError(RuntimeError):
@@ -521,6 +522,11 @@ def assign_speaker_relative_labels(
                 row["emotion_relative_scores"] = {}
                 row["emotion_relative_score"] = 0.0
                 row["emotion_relative_confidence"] = 0.0
+                row["emotion_relative_gap"] = 0.0
+                row["emotion_relative_z_scores"] = {}
+                row["emotion_relative_z"] = 0.0
+                row["emotion_relative_z_gap"] = 0.0
+                row["emotion_relative_z_top1"] = None
                 row["emotion_is_default"] = False
             continue
 
@@ -538,6 +544,17 @@ def assign_speaker_relative_labels(
             )
             for emotion in supported
         }
+        robust_scale = {
+            emotion: max(
+                1.4826
+                * median(
+                    abs(values[emotion] - baseline[emotion])
+                    for values in clr_by_index.values()
+                ),
+                ROBUST_SCALE_FLOOR,
+            )
+            for emotion in supported
+        }
         baselines[speaker] = baseline
 
         for row in speaker_rows:
@@ -546,12 +563,21 @@ def assign_speaker_relative_labels(
                 row["emotion_relative_scores"] = {}
                 row["emotion_relative_score"] = 0.0
                 row["emotion_relative_confidence"] = 0.0
+                row["emotion_relative_gap"] = 0.0
+                row["emotion_relative_z_scores"] = {}
+                row["emotion_relative_z"] = 0.0
+                row["emotion_relative_z_gap"] = 0.0
+                row["emotion_relative_z_top1"] = None
                 row["emotion_is_default"] = False
                 continue
 
             clr = clr_by_index[id(row)]
             relative = {
                 emotion: clr[emotion] - baseline[emotion]
+                for emotion in supported
+            }
+            relative_z = {
+                emotion: relative[emotion] / robust_scale[emotion]
                 for emotion in supported
             }
             comparison_logits = {
@@ -580,6 +606,19 @@ def assign_speaker_relative_labels(
             )
             relative_gap = float(
                 max(best_relative - second_relative, 0.0)
+            )
+            ranked_z = sorted(
+                (float(relative_z[emotion]), emotion)
+                for emotion in trainable
+            )
+            best_z, best_z_emotion = ranked_z[-1]
+            second_z = (
+                ranked_z[-2][0]
+                if len(ranked_z) > 1
+                else best_z
+            )
+            relative_z_gap = float(
+                max(best_z - second_z, 0.0)
             )
 
             max_logit = max(comparison_logits.values())
@@ -615,6 +654,10 @@ def assign_speaker_relative_labels(
                 relative_confidence
             )
             row["emotion_relative_gap"] = relative_gap
+            row["emotion_relative_z_scores"] = relative_z
+            row["emotion_relative_z"] = float(best_z)
+            row["emotion_relative_z_gap"] = relative_z_gap
+            row["emotion_relative_z_top1"] = best_z_emotion
             row["emotion_is_default"] = accepted == "neutral"
 
     return baselines
@@ -725,6 +768,19 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
             "emotion_relative_gap": float(
                 row.get("emotion_relative_gap") or 0.0
             ),
+            "emotion_relative_z_scores": row.get(
+                "emotion_relative_z_scores",
+                {},
+            ),
+            "emotion_relative_z": float(
+                row.get("emotion_relative_z") or 0.0
+            ),
+            "emotion_relative_z_gap": float(
+                row.get("emotion_relative_z_gap") or 0.0
+            ),
+            "emotion_relative_z_top1": row.get(
+                "emotion_relative_z_top1"
+            ),
             "emotion_is_default": bool(
                 row.get("emotion_is_default", False)
             ),
@@ -812,9 +868,9 @@ def build_sidecar(args: argparse.Namespace) -> dict[str, Any]:
                 "training path."
             ),
             (
-                "Raw score entropy, top-1 margin, other/unknown OOD mass and "
-                "relative class gap are diagnostic-only in v2 and do not "
-                "change accepted labels."
+                "Raw score entropy, top-1 margin, other/unknown OOD mass, "
+                "relative class gap and robust MAD z-scores are diagnostic-only "
+                "in v2 and do not change accepted labels."
             ),
         ],
     }
