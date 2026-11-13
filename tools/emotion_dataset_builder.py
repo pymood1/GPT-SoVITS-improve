@@ -420,6 +420,18 @@ def build_dataset(args: argparse.Namespace) -> None:
                 "emotion_critic_margin"
             ),
             "emotion_critic_oof": metadata.get("emotion_critic_oof"),
+            "emotion_refiner_label": metadata.get(
+                "emotion_refiner_label"
+            ),
+            "emotion_refiner_max_probability": metadata.get(
+                "emotion_refiner_max_probability"
+            ),
+            "emotion_refiner_margin": metadata.get(
+                "emotion_refiner_margin"
+            ),
+            "emotion_refiner_oof": metadata.get(
+                "emotion_refiner_oof"
+            ),
             "auto_emotion_calibration": metadata.get(
                 "auto_emotion_calibration"
             ),
