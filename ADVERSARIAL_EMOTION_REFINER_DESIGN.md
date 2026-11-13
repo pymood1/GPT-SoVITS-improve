@@ -1245,3 +1245,303 @@ Controller에는 accepted_core 우선
 `critic을 통해 generator/refiner가 자기 판단을 검증받는다`
 는 개념을 유지하지만,
 감정 라벨링 문제에 맞게 안정성과 semantic grounding을 추가한 버전이다.
+
+
+---
+
+# 31. 2026-11-13 구현 진행 상태
+
+아래 항목은 더 이상 설계만 있는 상태가 아니다.
+
+## 구현 완료 — Phase A diagnostics
+
+파일:
+`tools/auto_emotion_sidecar.py`
+
+commit:
+`06d00d25d50fcf89aef4b761e1a0adf954b363f1`
+
+추가된 additive diagnostics:
+- `emotion_raw_scores`
+- `emotion_entropy`
+- `emotion_top1_margin`
+- `emotion_ood_mass`
+- `emotion_raw_top1`
+- `emotion_raw_top2`
+- `emotion_relative_gap`
+
+중요:
+기존 `speaker_relative_clr_median_v2`의 accepted label 결정식은 변경하지 않았다.
+
+즉 이 commit은 behavior-changing labeler가 아니라 diagnostics-only다.
+
+## 구현 완료 — robust MAD diagnostics
+
+파일:
+`tools/auto_emotion_sidecar.py`
+
+commit:
+`1a2f2efb95e98c53518fb4e0f7684848440f58c8`
+
+추가:
+- speaker/class별 median absolute deviation 기반 robust scale
+- `emotion_relative_z_scores`
+- `emotion_relative_z`
+- `emotion_relative_z_gap`
+- `emotion_relative_z_top1`
+
+현재 robust z 값도 diagnostics-only다.
+v2 accepted label decision에는 사용하지 않는다.
+
+scale floor:
+`ROBUST_SCALE_FLOOR = 0.10`
+
+이 값은 v3 threshold calibration 전까지 safety floor이며 최종 calibrated threshold가 아니다.
+
+## 구현 완료 — review set selector
+
+파일:
+`tools/build_emotion_review_set.py`
+
+commit:
+`a18f9c4d3fe81711cabed18c63a0d96b1752ce11`
+
+목적:
+전체 dataset을 사람이 듣게 하지 않고 정보량 높은 약 20~30개만 선택.
+
+선정 근거:
+- class anchor
+- class boundary
+- rare class
+- high OOD
+- raw top1 vs speaker-relative label disagreement
+- neutral anchor
+- suspicious neutral boundary
+
+이 도구는 label을 변경하지 않는다.
+
+예:
+
+~~~bash
+python tools/build_emotion_review_set.py \
+  --sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_review.jsonl \
+  --limit 30
+~~~
+
+출력:
+- `emotion_review.jsonl`
+- `emotion_review.jsonl.report.json`
+
+review JSONL에는 사람이 채울 수 있도록:
+- `human_emotion`
+- `human_confidence`
+- `human_secondary_emotion`
+- `human_notes`
+field가 포함된다.
+
+## 구현 완료 — Phase C critic-only OOF
+
+파일:
+`tools/emotion_label_refiner.py`
+
+initial commit:
+`0c699d052ec6e60d0a978f7d31f6295d9eadca9a`
+
+open-set seed fix:
+`6a177746e701e3afd5f119a730d00a134cde9a32`
+
+현재 구현은 의도적으로 **Critic-only**다.
+
+Bounded Refiner G는 아직 구현하지 않았다.
+
+이유:
+Critic이 OOF에서 informative하지 않으면 G를 붙일 근거가 없기 때문.
+
+현재 Critic:
+- emotion2vec+ embedding cache
+- fold train seed로 PCA
+- small rank residual metric head
+- class prototype initialization
+- balanced CE
+- hardest-negative margin ranking
+- leakage-aware grouped OOF
+
+seed에서 raw top1이:
+- `other`
+- `unknown`
+
+이면 무조건 제외한다.
+
+Critic은 기존 `emotion_intended`를 절대 덮어쓰지 않는다.
+
+추가 output:
+- `emotion_critic_label`
+- `emotion_critic_max_probability`
+- `emotion_critic_margin`
+- `emotion_critic_oof`
+- `emotion_label_state_v3`
+- `emotion_label_quality_v3`
+- `emotion_v3_candidate`
+- `auto_emotion_refiner`
+
+현재 state:
+- `accepted_core`
+- `conflict`
+- `neutral_candidate`
+- `ambiguous`
+- `ood`
+- `failed`
+
+Critic probability는 calibrated correctness probability가 아니다.
+따라서 field 이름도 confidence가 아니라 `max_probability`로 둔다.
+
+## 구현 완료 — canonical metadata propagation
+
+파일:
+`tools/emotion_dataset_builder.py`
+
+commit:
+`14ea6d729b1cb1014ea02c9abb7bbb8de7763d16`
+
+sidecar의 새 diagnostics / critic metadata가 canonical `metadata.jsonl`에서 사라지지 않도록 전달한다.
+
+보존되는 주요 추가 field:
+- raw score / entropy / margin / OOD
+- relative gap / robust z
+- v3 label state
+- critic label/margin/OOF
+- refiner provenance
+
+---
+
+# 32. Codex/Kaggle에서 다음으로 실행할 실제 명령
+
+먼저 최신 sidecar를 다시 생성한다.
+기존 v2 label logic은 그대로이지만 diagnostics field가 추가된다.
+
+WebUI의 "음성에서 상대 감정 라벨 생성" 버튼을 다시 실행해도 된다.
+
+CLI 예:
+
+~~~bash
+cd /kaggle/tmp/GPT-SoVITS
+
+python tools/auto_emotion_sidecar.py \
+  --list /kaggle/input/datasets/pymood1/endfield/training.list \
+  --wav-root /kaggle/input/datasets/pymood1/endfield/datas \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl \
+  --model iic/emotion2vec_plus_large \
+  --device cuda:0 \
+  --min-confidence 0.35
+~~~
+
+기존 prediction cache가 같은 output 옆에 있다면 raw SER inference는 재사용 가능하다.
+
+그 다음 review selector:
+
+~~~bash
+python tools/build_emotion_review_set.py \
+  --sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_review.jsonl \
+  --limit 30
+~~~
+
+그 다음 Critic:
+
+~~~bash
+python tools/emotion_label_refiner.py \
+  --list /kaggle/input/datasets/pymood1/endfield/training.list \
+  --wav-root /kaggle/input/datasets/pymood1/endfield/datas \
+  --sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl \
+  --prediction-cache /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl.predictions.jsonl \
+  --embedding-cache /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_embeddings.pt \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar_v3_critic.jsonl \
+  --artifact /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_critic.pt \
+  --model iic/emotion2vec_plus_large \
+  --device cuda:0 \
+  --emotions happy,angry,disgusted,surprised
+~~~
+
+emotion2vec+ official behavior상 `extract_embedding=True`이면 classification scores와 embedding feature를 함께 반환한다.
+Critic script는 embedding만 cache한다.
+
+---
+
+# 33. Critic 통과 기준
+
+첫 runtime에서 **OOF 수치를 먼저 본다**.
+
+4 active classes라면 chance accuracy 약 25%.
+
+Refiner 구현 진행 조건의 초기 gate:
+
+~~~text
+OOF macro accuracy >= 35%
+AND
+OOF macro AUC >= 0.60
+~~~
+
+이는 현재 Controller generalization gate와 비슷한 보수적 시작점이다.
+
+추가 확인:
+- 한 class로 collapse하지 않았는가
+- `conflict`가 전체 accepted seed 대부분을 차지하지 않는가
+- angry pseudo-label만 유독 critic에서 붕괴하지 않는가
+- disgusted처럼 작은 class의 fold가 유지되는가
+
+특히 current dataset에서 실제 genuine angry가 없다는 사용자 관찰이 있으므로:
+
+~~~text
+angry critic performance가 낮음
+~~~
+
+은 Critic 실패라고 단정하지 않는다.
+
+오히려:
+`angry pseudo-label cluster가 embedding space에서 일관적인가?`
+를 보여주는 진단이 될 수 있다.
+
+---
+
+# 34. Bounded Refiner G 구현 조건
+
+다음 중 하나면 G 구현을 보류:
+
+- Critic OOF near chance
+- macro AUC < 0.60
+- seed class가 2개 이하로 축소
+- OOD seed가 많이 섞임
+- class prototype collapse
+
+Critic이 informative일 때만:
+`ResidualEmotionRefiner`
+를 구현한다.
+
+첫 G는:
+- teacher logits에 bounded residual만 추가
+- zero-effect init
+- seed CE
+- teacher KL retention
+- critic JS consensus
+
+를 사용.
+
+Critic이 실패하면 G를 더 복잡하게 만들지 말고:
+- seed selection
+- embedding quality
+- pseudo-label quality
+를 먼저 조사한다.
+
+---
+
+# 35. Runtime verification 상태
+
+현재까지:
+- 새 Python 코드의 구조/문법은 작성 단계에서 정적 검토함.
+- GitHub repo에 commit 완료.
+- 실제 Kaggle emotion2vec embedding extraction / OOF critic runtime은 **아직 실행하지 않음**.
+
+따라서 Codex는 첫 실행 후 결과를 이 문서와
+`PROJECT_RESEARCH_HISTORY.md`
+에 기록할 것.
