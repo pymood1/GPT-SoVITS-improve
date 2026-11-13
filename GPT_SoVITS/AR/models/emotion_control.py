@@ -60,6 +60,10 @@ class LowRankEmotionPreference(nn.Module):
         self.v_proj = nn.Parameter(torch.empty(self.hidden_dim, self.rank))
         self.u_proj = nn.Parameter(torch.zeros(self.hidden_dim, self.rank))
         self.emotion_coeff = nn.Embedding(self.num_emotions, self.rank)
+        # Hidden-state calibration bias is training/diagnostic only. It does
+        # not alter inference steering, but it removes the class-offset
+        # mismatch seen in OOF evaluation while preserving the low-rank basis.
+        self.hidden_bias = nn.Parameter(torch.zeros(self.num_emotions))
         nn.init.normal_(self.v_proj, mean=0.0, std=self.hidden_dim ** -0.5)
         self._init_emotion_coeff_simplex()
 
@@ -150,17 +154,13 @@ class LowRankEmotionPreference(nn.Module):
         self,
         hidden_state: torch.Tensor,
     ) -> torch.Tensor:
-        """Classify emotion directly from frozen S1 hidden states.
+        """Low-rank linear classifier over raw mean-pooled S1 hidden states.
 
-        The diagnostic probe showed that mean-pooled S1 hidden states contain
-        a substantially stronger emotion signal than semantic likelihood
-        residuals. Reuse the controller's existing low-rank parameters so the
-        primary supervision trains the same basis used by inference, without
-        adding a separate classifier head or changing checkpoint format.
-
-        Both V and U projections participate. U starts at zero to preserve the
-        controller's exact zero-effect inference initialization, while the V
-        branch provides a non-degenerate class signal on the first step.
+        This intentionally mirrors the successful diagnostic probe more
+        closely than the previous layer-normalized V/U mixture. Only V and
+        emotion_coeff define the discriminative basis; U is reserved for the
+        semantic steering map so the weak semantic objective cannot corrupt
+        the primary hidden classifier.
         """
         if hidden_state.ndim != 2:
             raise ValueError(
@@ -175,15 +175,12 @@ class LowRankEmotionPreference(nn.Module):
         if hidden_state.shape[0] == 0:
             raise ValueError("hidden_state sequence must be non-empty")
 
-        normalized = F.layer_norm(
-            hidden_state,
-            (self.hidden_dim,),
+        pooled = hidden_state.mean(dim=0)
+        latent = pooled @ self.v_proj
+        return (
+            latent @ self.emotion_coeff.weight.transpose(0, 1)
+            + self.hidden_bias
         )
-        pooled = normalized.mean(dim=0)
-        latent_v = pooled @ self.v_proj
-        latent_u = pooled @ self.u_proj
-        shared_latent = 0.5 * (latent_v + latent_u)
-        return shared_latent @ self.emotion_coeff.weight.transpose(0, 1)
 
     def tilt_probabilities(
         self,
@@ -287,6 +284,7 @@ def vectorized_sequence_relative_scores(
     valid_mask: Sequence[bool] | torch.Tensor,
     output_weight: torch.Tensor,
     eos_id: int,
+    detach_conditioner: bool = False,
 ) -> Optional[torch.Tensor]:
     """Score every emotion in one GPU pass without changing the objective.
 
@@ -307,7 +305,17 @@ def vectorized_sequence_relative_scores(
 
     vocab_size = base_probs.shape[-1]
     normalized = F.layer_norm(hidden, (controller.hidden_dim,))
-    low_rank = normalized @ controller.v_proj
+    v_proj = (
+        controller.v_proj.detach()
+        if detach_conditioner
+        else controller.v_proj
+    )
+    emotion_coeff = (
+        controller.emotion_coeff.weight.detach()
+        if detach_conditioner
+        else controller.emotion_coeff.weight
+    )
+    low_rank = normalized @ v_proj
 
     # ((hV) * e) U^T W^T == ((hV) * e) (WU)^T.
     # WU is shared by every emotion, so compute it only once per sample.
@@ -316,7 +324,7 @@ def vectorized_sequence_relative_scores(
     )
     conditioned = (
         low_rank.unsqueeze(1)
-        * controller.emotion_coeff.weight.unsqueeze(0)
+        * emotion_coeff.unsqueeze(0)
     )
     preference_scores = torch.matmul(
         conditioned,
@@ -639,7 +647,7 @@ def save_emotion_controller_checkpoint(
 ) -> None:
     """Save only the tiny controller; GPT-SoVITS backbone weights stay separate."""
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "config": {
             "hidden_dim": controller.hidden_dim,
             "num_emotions": controller.num_emotions,
@@ -695,10 +703,11 @@ def load_emotion_controller_checkpoint(
             "Unexpected emotion controller checkpoint keys: "
             + ", ".join(sorted(unexpected_payload_keys))
         )
-    if payload.get("format_version", 1) != 1:
+    format_version = int(payload.get("format_version", 1))
+    if format_version not in {1, 2}:
         raise ValueError(
             f"Unsupported emotion controller format_version: "
-            f"{payload.get('format_version')!r}"
+            f"{format_version!r}"
         )
 
     raw_config = payload.get("config")
@@ -727,12 +736,15 @@ def load_emotion_controller_checkpoint(
                 f"Emotion controller config is missing {required_key!r}"
             )
 
-    expected_state_keys = {
+    base_state_keys = {
         "v_proj",
         "u_proj",
         "emotion_coeff.weight",
     }
-    if set(state_dict) != expected_state_keys:
+    allowed_state_keys = base_state_keys | {"hidden_bias"}
+    if not base_state_keys.issubset(state_dict) or (
+        set(state_dict) - allowed_state_keys
+    ):
         raise ValueError(
             "Emotion controller state_dict keys do not match the expected schema"
         )
@@ -747,6 +759,12 @@ def load_emotion_controller_checkpoint(
         max_log_odds_shift=float(config.get("max_log_odds_shift", 0.35)),
         prefix_log_ratio_budget=float(config.get("prefix_log_ratio_budget", 2.0)),
     )
+    if "hidden_bias" not in state_dict:
+        state_dict = dict(state_dict)
+        state_dict["hidden_bias"] = torch.zeros(
+            controller.num_emotions,
+            dtype=controller.hidden_bias.dtype,
+        )
     controller.load_state_dict(state_dict, strict=True)
 
     emotion_names = payload.get("emotion_names")
@@ -766,7 +784,7 @@ def load_emotion_controller_checkpoint(
     _validate_checkpoint_metadata(extra, "extra")
 
     metadata = {
-        "format_version": payload.get("format_version", 1),
+        "format_version": format_version,
         "emotion_names": emotion_names,
         "extra": extra,
         "config": config,
