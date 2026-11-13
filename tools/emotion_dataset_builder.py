@@ -438,6 +438,9 @@ def build_dataset(args: argparse.Namespace) -> None:
             "auto_emotion_refiner": metadata.get(
                 "auto_emotion_refiner"
             ),
+            "emotion_training_policy_v3": metadata.get(
+                "emotion_training_policy_v3"
+            ),
             "transcript_source": metadata.get(
                 "transcript_source", "existing_list"
             ),
