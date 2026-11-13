@@ -144,9 +144,17 @@ def calibrate(
     grids: dict[str, tuple[float, ...]],
     min_coverage: float,
     min_accepted: int,
+    min_predicted_classes: int,
     top_n: int,
 ) -> dict[str, Any]:
     emotion_set = set(emotions)
+    reviewed_target_classes = sorted(
+        {
+            normalize_label(row.get("human_emotion"))
+            for row in rows
+            if normalize_label(row.get("human_emotion")) in emotion_set
+        }
+    )
     candidates: list[dict[str, Any]] = []
 
     grid_names = (
@@ -189,6 +197,26 @@ def calibrate(
             if label:
                 predicted_counts[label] += 1
 
+        predicted_class_count = len(predicted_counts)
+        if predicted_class_count < min_predicted_classes:
+            continue
+
+        strict_precision_values = []
+        for label in reviewed_target_classes:
+            per_class = report["per_class"].get(label, {})
+            precision = per_class.get("precision")
+            strict_precision_values.append(
+                float(precision)
+                if precision is not None
+                else 0.0
+            )
+        strict_macro_precision = (
+            sum(strict_precision_values)
+            / len(strict_precision_values)
+            if strict_precision_values
+            else 0.0
+        )
+
         candidates.append(
             {
                 "params": params,
@@ -198,12 +226,13 @@ def calibrate(
                     "selective_accuracy"
                 ],
                 "macro_precision": report["macro_precision"],
+                "strict_macro_precision": strict_macro_precision,
                 "macro_recall": report["macro_recall"],
                 "macro_f1": report["macro_f1"],
                 "predicted_class_counts": dict(
                     sorted(predicted_counts.items())
                 ),
-                "predicted_class_count": len(predicted_counts),
+                "predicted_class_count": predicted_class_count,
             }
         )
 
@@ -215,7 +244,7 @@ def calibrate(
 
     candidates.sort(
         key=lambda item: (
-            -metric_or_negative(item["macro_precision"]),
+            -metric_or_negative(item["strict_macro_precision"]),
             -metric_or_negative(item["selective_accuracy"]),
             -int(item["predicted_class_count"]),
             -float(item["coverage"]),
@@ -260,6 +289,8 @@ def calibrate(
     return {
         "reviewed_samples": len(rows),
         "emotions": list(emotions),
+        "reviewed_target_classes": reviewed_target_classes,
+        "min_predicted_classes": min_predicted_classes,
         "grid_combinations_considered": math.prod(
             len(grids[name])
             for name in grid_names
@@ -274,9 +305,10 @@ def calibrate(
                 "IID estimate of dataset-wide accuracy."
             ),
             (
-                "Ranking is precision-first. Do not promote thresholds to "
-                "defaults until downstream Controller OOF/listening also "
-                "improves."
+                "Ranking is strict-macro-precision-first: a reviewed "
+                "target class with no accepted prediction contributes zero "
+                "precision. Do not promote thresholds to defaults until "
+                "downstream Controller OOF/listening also improves."
             ),
             (
                 "A tiny reviewed subset can overfit threshold selection. "
@@ -305,6 +337,11 @@ def make_parser() -> argparse.ArgumentParser:
         "--min-accepted",
         type=int,
         default=6,
+    )
+    parser.add_argument(
+        "--min-predicted-classes",
+        type=int,
+        default=2,
     )
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument(
@@ -356,6 +393,10 @@ def main() -> int:
             )
         if args.min_accepted < 1:
             raise CalibrationError("--min-accepted must be >= 1")
+        if args.min_predicted_classes < 1:
+            raise CalibrationError(
+                "--min-predicted-classes must be >= 1"
+            )
         if args.top_n < 1:
             raise CalibrationError("--top-n must be >= 1")
 
@@ -431,6 +472,7 @@ def main() -> int:
             grids=grids,
             min_coverage=args.min_coverage,
             min_accepted=args.min_accepted,
+            min_predicted_classes=args.min_predicted_classes,
             top_n=args.top_n,
         )
 
