@@ -1311,6 +1311,17 @@ def crossfit_critic(
             len(config.emotions),
         ),
     }
+    metrics["critic_minus_prototype_macro_accuracy"] = (
+        float(metrics["oof_macro_accuracy"])
+        - float(metrics["prototype_oof_macro_accuracy"])
+    )
+    prototype_auc = metrics["prototype_oof_macro_auc"]
+    critic_auc = metrics["oof_macro_auc"]
+    metrics["critic_minus_prototype_macro_auc"] = (
+        float(critic_auc) - float(prototype_auc)
+        if critic_auc is not None and prototype_auc is not None
+        else None
+    )
     return oof_logits, labels, metrics
 
 
