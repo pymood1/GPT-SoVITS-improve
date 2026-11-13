@@ -146,6 +146,45 @@ class LowRankEmotionPreference(nn.Module):
         output_weight = output_weight[:vocab_size]
         return delta_hidden @ output_weight.transpose(0, 1)
 
+    def hidden_emotion_logits(
+        self,
+        hidden_state: torch.Tensor,
+    ) -> torch.Tensor:
+        """Classify emotion directly from frozen S1 hidden states.
+
+        The diagnostic probe showed that mean-pooled S1 hidden states contain
+        a substantially stronger emotion signal than semantic likelihood
+        residuals. Reuse the controller's existing low-rank parameters so the
+        primary supervision trains the same basis used by inference, without
+        adding a separate classifier head or changing checkpoint format.
+
+        Both V and U projections participate. U starts at zero to preserve the
+        controller's exact zero-effect inference initialization, while the V
+        branch provides a non-degenerate class signal on the first step.
+        """
+        if hidden_state.ndim != 2:
+            raise ValueError(
+                f"hidden_state must be [T,H], got {tuple(hidden_state.shape)}"
+            )
+        if hidden_state.shape[-1] != self.hidden_dim:
+            raise ValueError(
+                "hidden dim mismatch: "
+                f"controller={self.hidden_dim}, "
+                f"hidden={hidden_state.shape[-1]}"
+            )
+        if hidden_state.shape[0] == 0:
+            raise ValueError("hidden_state sequence must be non-empty")
+
+        normalized = F.layer_norm(
+            hidden_state,
+            (self.hidden_dim,),
+        )
+        pooled = normalized.mean(dim=0)
+        latent_v = pooled @ self.v_proj
+        latent_u = pooled @ self.u_proj
+        shared_latent = 0.5 * (latent_v + latent_u)
+        return shared_latent @ self.emotion_coeff.weight.transpose(0, 1)
+
     def tilt_probabilities(
         self,
         base_probs: torch.Tensor,
