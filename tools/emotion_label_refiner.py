@@ -6,8 +6,9 @@ speaker-relative pseudo-label is geometrically compatible with the audio.
 It never overwrites emotion_intended. Accepted samples are scored OOF; samples
 that were not training seeds are scored by a final critic fitted on all seeds.
 
-This is Phase C of ADVERSARIAL_EMOTION_REFINER_DESIGN.md. The bounded refiner
-should only be added after this critic proves informative out-of-fold.
+This implements Phase C and the gated Phase D described in
+ADVERSARIAL_EMOTION_REFINER_DESIGN.md. Critic-only remains the default. The
+bounded residual refiner can run only after the critic passes its OOF gate.
 """
 
 from __future__ import annotations
@@ -65,6 +66,49 @@ class CriticConfig:
     grad_clip: float = 1.0
     seed: int = 1234
     max_folds: int = 5
+
+
+@dataclass(frozen=True)
+class RefinerConfig:
+    delta_max: float = 1.0
+    steps: int = 300
+    learning_rate: float = 2e-3
+    weight_decay: float = 1e-2
+    grad_clip: float = 1.0
+    teacher_weight: float = 0.35
+    critic_weight: float = 0.50
+
+
+class ResidualEmotionRefiner(nn.Module):
+    """Small zero-effect MLP that can only adjust teacher logits boundedly."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        class_count: int,
+        *,
+        delta_max: float,
+    ) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 32),
+            nn.SiLU(),
+            nn.Dropout(0.10),
+            nn.Linear(32, 16),
+            nn.SiLU(),
+            nn.Linear(16, class_count),
+        )
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+        self.delta_max = float(delta_max)
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        teacher_logits: torch.Tensor,
+    ) -> torch.Tensor:
+        delta = self.delta_max * torch.tanh(self.net(features))
+        return teacher_logits + delta
 
 
 class PrototypeMatchCritic(nn.Module):
@@ -667,16 +711,14 @@ def probability_summary(
     return indices[:, 0], top1, top1 - top2
 
 
-def crossfit_critic(
+def seed_labels_and_groups(
     rows: Sequence[dict[str, Any]],
-    embeddings: torch.Tensor,
     seed_indices: Sequence[int],
-    *,
-    config: CriticConfig,
-) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    emotions: Sequence[str],
+) -> tuple[torch.Tensor, list[dict[str, Any]]]:
     emotion_to_id = {
         emotion: index
-        for index, emotion in enumerate(config.emotions)
+        for index, emotion in enumerate(emotions)
     }
     labels = torch.tensor(
         [
@@ -701,6 +743,409 @@ def crossfit_critic(
         }
         for index in seed_indices
     ]
+    return labels, group_samples
+
+
+def build_refiner_inputs(
+    rows: Sequence[dict[str, Any]],
+    emotions: Sequence[str],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return compact evidence features and teacher logits for all rows."""
+    features: list[list[float]] = []
+    teacher_logits: list[list[float]] = []
+
+    for row in rows:
+        raw_scores = row.get("emotion_raw_scores") or {}
+        raw_values = [
+            max(safe_float(raw_scores.get(emotion), 0.0), 1e-6)
+            for emotion in emotions
+        ]
+        raw_total = sum(raw_values)
+        conditional = [
+            value / max(raw_total, 1e-12)
+            for value in raw_values
+        ]
+        teacher_row = [
+            math.log(max(value, 1e-6))
+            for value in conditional
+        ]
+
+        relative = row.get("emotion_relative_scores") or {}
+        relative_z = row.get("emotion_relative_z_scores") or {}
+        feature_row = list(teacher_row)
+        feature_row.extend(
+            safe_float(relative.get(emotion), 0.0)
+            for emotion in emotions
+        )
+        feature_row.extend(
+            safe_float(relative_z.get(emotion), 0.0)
+            for emotion in emotions
+        )
+        feature_row.extend(
+            [
+                safe_float(row.get("emotion_entropy"), 1.0),
+                safe_float(row.get("emotion_top1_margin"), 0.0),
+                safe_float(row.get("emotion_ood_mass"), 1.0),
+                safe_float(row.get("emotion_relative_gap"), 0.0),
+                safe_float(row.get("emotion_relative_z_gap"), 0.0),
+                safe_float(
+                    row.get("emotion_relative_confidence"),
+                    0.0,
+                ),
+            ]
+        )
+        features.append(feature_row)
+        teacher_logits.append(teacher_row)
+
+    feature_tensor = torch.tensor(features, dtype=torch.float32)
+    teacher_tensor = torch.tensor(
+        teacher_logits,
+        dtype=torch.float32,
+    )
+    if not bool(torch.isfinite(feature_tensor).all()):
+        raise CriticError("refiner features contain NaN/Inf")
+    if not bool(torch.isfinite(teacher_tensor).all()):
+        raise CriticError("teacher logits contain NaN/Inf")
+    return feature_tensor, teacher_tensor
+
+
+def standardize_features(
+    train_features: torch.Tensor,
+    other_features: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    mean = train_features.mean(dim=0, keepdim=True)
+    std = train_features.std(
+        dim=0,
+        unbiased=False,
+        keepdim=True,
+    ).clamp_min(1e-3)
+    return (
+        (train_features - mean) / std,
+        (other_features - mean) / std,
+        mean.squeeze(0),
+        std.squeeze(0),
+    )
+
+
+def js_distribution_loss(
+    left_logits: torch.Tensor,
+    right_logits: torch.Tensor,
+) -> torch.Tensor:
+    left = F.softmax(left_logits, dim=-1).clamp_min(1e-8)
+    right = F.softmax(right_logits, dim=-1).clamp_min(1e-8)
+    middle = 0.5 * (left + right)
+    return 0.5 * (
+        F.kl_div(
+            torch.log(middle),
+            left,
+            reduction="batchmean",
+        )
+        + F.kl_div(
+            torch.log(middle),
+            right,
+            reduction="batchmean",
+        )
+    )
+
+
+def train_refiner(
+    features: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    critic_logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    class_count: int,
+    config: RefinerConfig,
+    run_seed: int,
+) -> ResidualEmotionRefiner:
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(run_seed)
+        model = ResidualEmotionRefiner(
+            input_dim=features.shape[1],
+            class_count=class_count,
+            delta_max=config.delta_max,
+        )
+
+    weights = balanced_class_weights(labels, class_count)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
+    teacher_probs = F.softmax(
+        teacher_logits.detach(),
+        dim=-1,
+    ).clamp_min(1e-8)
+    critic_logits = critic_logits.detach()
+
+    model.train()
+    for _ in range(config.steps):
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(features, teacher_logits)
+        ce = F.cross_entropy(
+            logits,
+            labels,
+            weight=weights,
+        )
+        teacher_kl = F.kl_div(
+            F.log_softmax(logits, dim=-1),
+            teacher_probs,
+            reduction="batchmean",
+        )
+        critic_js = js_distribution_loss(
+            logits,
+            critic_logits,
+        )
+        loss = (
+            ce
+            + config.teacher_weight * teacher_kl
+            + config.critic_weight * critic_js
+        )
+        loss.backward()
+        nn.utils.clip_grad_norm_(
+            model.parameters(),
+            config.grad_clip,
+        )
+        optimizer.step()
+
+    model.eval()
+    return model
+
+
+def critic_gate_passed(
+    metrics: dict[str, Any],
+    *,
+    min_macro_accuracy: float,
+    min_macro_auc: float,
+) -> bool:
+    macro_accuracy = safe_float(
+        metrics.get("oof_macro_accuracy"),
+        0.0,
+    )
+    macro_auc_value = metrics.get("oof_macro_auc")
+    macro_auc_score = (
+        safe_float(macro_auc_value, 0.0)
+        if macro_auc_value is not None
+        else 0.0
+    )
+    return (
+        macro_accuracy >= min_macro_accuracy
+        and macro_auc_score >= min_macro_auc
+    )
+
+
+def crossfit_refiner(
+    rows: Sequence[dict[str, Any]],
+    embeddings: torch.Tensor,
+    seed_indices: Sequence[int],
+    *,
+    critic_config: CriticConfig,
+    refiner_config: RefinerConfig,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    labels, group_samples = seed_labels_and_groups(
+        rows,
+        seed_indices,
+        critic_config.emotions,
+    )
+    try:
+        folds = stratified_group_kfold_indices(
+            group_samples,
+            labels.tolist(),
+            max_folds=critic_config.max_folds,
+            seed=critic_config.seed,
+        )
+    except EmotionPipelineError as exc:
+        raise CriticError(str(exc)) from exc
+
+    all_refiner_features, all_teacher_logits = build_refiner_inputs(
+        rows,
+        critic_config.emotions,
+    )
+    oof_logits = torch.full(
+        (len(seed_indices), len(critic_config.emotions)),
+        float("nan"),
+        dtype=torch.float32,
+    )
+
+    for fold_index, (train_local, val_local) in enumerate(folds):
+        train_global = [seed_indices[index] for index in train_local]
+        val_global = [seed_indices[index] for index in val_local]
+        train_local_tensor = torch.tensor(
+            train_local,
+            dtype=torch.long,
+        )
+        val_local_tensor = torch.tensor(
+            val_local,
+            dtype=torch.long,
+        )
+        train_labels = labels.index_select(
+            0,
+            train_local_tensor,
+        )
+
+        pca_mean, pca_components = fit_pca(
+            embeddings[train_global],
+            critic_config.pca_dim,
+        )
+        train_critic_features = transform_pca(
+            embeddings[train_global],
+            pca_mean,
+            pca_components,
+        )
+        val_critic_features = transform_pca(
+            embeddings[val_global],
+            pca_mean,
+            pca_components,
+        )
+        critic = train_critic(
+            train_critic_features,
+            train_labels,
+            config=critic_config,
+            run_seed=(
+                critic_config.seed
+                + 2003 * (fold_index + 1)
+            ),
+        )
+        with torch.no_grad():
+            critic_train_logits = critic(
+                train_critic_features
+            )
+            _ = critic(val_critic_features)
+
+        train_refiner_raw = all_refiner_features[train_global]
+        val_refiner_raw = all_refiner_features[val_global]
+        (
+            train_refiner_features,
+            val_refiner_features,
+            _,
+            _,
+        ) = standardize_features(
+            train_refiner_raw,
+            val_refiner_raw,
+        )
+
+        model = train_refiner(
+            train_refiner_features,
+            all_teacher_logits[train_global],
+            critic_train_logits,
+            train_labels,
+            class_count=len(critic_config.emotions),
+            config=refiner_config,
+            run_seed=(
+                critic_config.seed
+                + 3001 * (fold_index + 1)
+            ),
+        )
+        with torch.no_grad():
+            val_logits = model(
+                val_refiner_features,
+                all_teacher_logits[val_global],
+            )
+        oof_logits.index_copy_(
+            0,
+            val_local_tensor,
+            val_logits,
+        )
+
+    if not bool(torch.isfinite(oof_logits).all()):
+        raise CriticError(
+            "refiner cross-fit did not produce complete OOF logits"
+        )
+
+    predictions = oof_logits.argmax(dim=-1)
+    metrics = {
+        "folds": len(folds),
+        "seed_samples": len(seed_indices),
+        "oof_ce": float(
+            F.cross_entropy(oof_logits, labels).item()
+        ),
+        "oof_accuracy": float(
+            (predictions == labels).float().mean().item()
+        ),
+        "oof_macro_accuracy": macro_accuracy(
+            oof_logits,
+            labels,
+            len(critic_config.emotions),
+        ),
+        "oof_macro_auc": macro_auc(
+            oof_logits,
+            labels,
+            len(critic_config.emotions),
+        ),
+    }
+    return oof_logits, metrics
+
+
+def fit_final_refiner(
+    rows: Sequence[dict[str, Any]],
+    seed_indices: Sequence[int],
+    final_critic_logits: torch.Tensor,
+    *,
+    critic_config: CriticConfig,
+    refiner_config: RefinerConfig,
+) -> dict[str, Any]:
+    emotion_to_id = {
+        emotion: index
+        for index, emotion in enumerate(critic_config.emotions)
+    }
+    labels = torch.tensor(
+        [
+            emotion_to_id[
+                normalize_label(
+                    rows[index].get("emotion_intended")
+                )
+            ]
+            for index in seed_indices
+        ],
+        dtype=torch.long,
+    )
+    all_features, all_teacher_logits = build_refiner_inputs(
+        rows,
+        critic_config.emotions,
+    )
+    seed_features = all_features[list(seed_indices)]
+    mean = seed_features.mean(dim=0, keepdim=True)
+    std = seed_features.std(
+        dim=0,
+        unbiased=False,
+        keepdim=True,
+    ).clamp_min(1e-3)
+    normalized_all = (all_features - mean) / std
+
+    model = train_refiner(
+        normalized_all[list(seed_indices)],
+        all_teacher_logits[list(seed_indices)],
+        final_critic_logits[list(seed_indices)],
+        labels,
+        class_count=len(critic_config.emotions),
+        config=refiner_config,
+        run_seed=critic_config.seed + 77771,
+    )
+    with torch.no_grad():
+        all_logits = model(
+            normalized_all,
+            all_teacher_logits,
+        )
+    return {
+        "model": model,
+        "feature_mean": mean.squeeze(0),
+        "feature_std": std.squeeze(0),
+        "all_logits": all_logits,
+    }
+
+
+def crossfit_critic(
+    rows: Sequence[dict[str, Any]],
+    embeddings: torch.Tensor,
+    seed_indices: Sequence[int],
+    *,
+    config: CriticConfig,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    labels, group_samples = seed_labels_and_groups(
+        rows,
+        seed_indices,
+        config.emotions,
+    )
 
     try:
         folds = stratified_group_kfold_indices(
@@ -960,6 +1405,154 @@ def apply_critic_outputs(
     return output, dict(sorted(states.items()))
 
 
+def apply_refiner_outputs(
+    rows: Sequence[dict[str, Any]],
+    *,
+    seed_indices: Sequence[int],
+    critic_oof_logits: torch.Tensor,
+    critic_final_logits: torch.Tensor,
+    refiner_oof_logits: torch.Tensor,
+    refiner_final_logits: torch.Tensor,
+    emotions: Sequence[str],
+    reject_ood: float,
+    max_neutral_entropy: float,
+    min_critic_margin: float,
+    min_refiner_margin: float,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    seed_position = {
+        global_index: local_index
+        for local_index, global_index in enumerate(seed_indices)
+    }
+    emotion_set = set(emotions)
+    output: list[dict[str, Any]] = []
+    states: Counter[str] = Counter()
+
+    for index, original in enumerate(rows):
+        row = {
+            key: value
+            for key, value in original.items()
+            if not str(key).startswith("_")
+        }
+        if index in seed_position:
+            local = seed_position[index]
+            critic_logits = critic_oof_logits[local : local + 1]
+            refiner_logits = refiner_oof_logits[local : local + 1]
+            oof = True
+        else:
+            critic_logits = critic_final_logits[index : index + 1]
+            refiner_logits = refiner_final_logits[index : index + 1]
+            oof = False
+
+        critic_ids, critic_probability, critic_margin = (
+            probability_summary(critic_logits)
+        )
+        refiner_ids, refiner_probability, refiner_margin = (
+            probability_summary(refiner_logits)
+        )
+        critic_label = str(emotions[int(critic_ids.item())])
+        refiner_label = str(emotions[int(refiner_ids.item())])
+
+        row["emotion_critic_label"] = critic_label
+        row["emotion_critic_max_probability"] = float(
+            critic_probability.item()
+        )
+        row["emotion_critic_margin"] = float(
+            critic_margin.item()
+        )
+        row["emotion_critic_oof"] = bool(oof)
+        row["emotion_refiner_label"] = refiner_label
+        row["emotion_refiner_max_probability"] = float(
+            refiner_probability.item()
+        )
+        row["emotion_refiner_margin"] = float(
+            refiner_margin.item()
+        )
+        row["emotion_refiner_oof"] = bool(oof)
+
+        intended = normalize_label(row.get("emotion_intended"))
+        raw_top1 = normalize_label(row.get("emotion_raw_top1"))
+        ood_mass = safe_float(
+            row.get("emotion_ood_mass"),
+            1.0,
+        )
+        entropy = safe_float(
+            row.get("emotion_entropy"),
+            1.0,
+        )
+        consensus = (
+            critic_label == refiner_label
+            and float(critic_margin.item()) >= min_critic_margin
+            and float(refiner_margin.item()) >= min_refiner_margin
+        )
+
+        if row.get("emotion_prediction_error"):
+            state = "failed"
+            candidate = None
+        elif (
+            raw_top1 in {"other", "unknown"}
+            or ood_mass >= reject_ood
+        ):
+            state = "ood"
+            candidate = None
+        elif intended in emotion_set:
+            if (
+                consensus
+                and critic_label == intended
+            ):
+                state = (
+                    "accepted_core"
+                    if index in seed_position
+                    else "refiner_confirmed_candidate"
+                )
+                candidate = intended
+            else:
+                state = "conflict"
+                candidate = None
+        elif intended in {"neutral", "default"}:
+            if (
+                raw_top1 == "neutral"
+                and entropy <= max_neutral_entropy
+                and not consensus
+            ):
+                state = "neutral_candidate"
+                candidate = "neutral"
+            elif consensus:
+                state = "rescued_candidate"
+                candidate = refiner_label
+            else:
+                state = "ambiguous"
+                candidate = None
+        elif consensus:
+            state = "rescued_candidate"
+            candidate = refiner_label
+        else:
+            state = "ambiguous"
+            candidate = None
+
+        row["emotion_label_state_v3"] = state
+        row["emotion_label_quality_v3"] = (
+            "high"
+            if state == "accepted_core"
+            else (
+                "candidate"
+                if state in {
+                    "neutral_candidate",
+                    "refiner_confirmed_candidate",
+                    "rescued_candidate",
+                }
+                else "reject"
+            )
+        )
+        row["emotion_v3_candidate"] = candidate
+        row["auto_emotion_refiner"] = (
+            "critic_guided_residual_oof_v1"
+        )
+        states[state] += 1
+        output.append(row)
+
+    return output, dict(sorted(states.items()))
+
+
 def write_jsonl(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -992,6 +1585,9 @@ def save_artifact(
     model_name: str,
     final_result: dict[str, Any],
     metrics: dict[str, Any],
+    refiner_config: RefinerConfig | None = None,
+    refiner_result: dict[str, Any] | None = None,
+    refiner_metrics: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     critic = final_result["critic"]
@@ -1008,6 +1604,29 @@ def save_artifact(
         },
         "metrics": metrics,
     }
+    if (
+        refiner_config is not None
+        and refiner_result is not None
+        and refiner_metrics is not None
+    ):
+        refiner_model = refiner_result["model"]
+        payload.update(
+            {
+                "kind": "critic_guided_residual_oof_v1",
+                "refiner_config": asdict(refiner_config),
+                "refiner_state_dict": {
+                    key: value.detach().cpu()
+                    for key, value in refiner_model.state_dict().items()
+                },
+                "refiner_feature_mean": refiner_result[
+                    "feature_mean"
+                ].cpu(),
+                "refiner_feature_std": refiner_result[
+                    "feature_std"
+                ].cpu(),
+                "refiner_metrics": refiner_metrics,
+            }
+        )
     temporary = path.with_name(
         f".{path.name}.tmp-{os.getpid()}"
     )
@@ -1036,6 +1655,16 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--emotions",
         default="happy,angry,disgusted,surprised",
+    )
+
+    parser.add_argument(
+        "--mode",
+        choices=("critic", "refiner"),
+        default="critic",
+        help=(
+            "critic is the safe default. refiner is automatically blocked "
+            "unless the critic OOF gate passes."
+        ),
     )
 
     parser.add_argument("--pca-dim", type=int, default=32)
@@ -1073,6 +1702,44 @@ def make_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.65,
     )
+
+    parser.add_argument("--refiner-delta-max", type=float, default=1.0)
+    parser.add_argument("--refiner-steps", type=int, default=300)
+    parser.add_argument(
+        "--refiner-learning-rate",
+        type=float,
+        default=2e-3,
+    )
+    parser.add_argument(
+        "--refiner-teacher-weight",
+        type=float,
+        default=0.35,
+    )
+    parser.add_argument(
+        "--refiner-critic-weight",
+        type=float,
+        default=0.50,
+    )
+    parser.add_argument(
+        "--refiner-min-critic-macro-accuracy",
+        type=float,
+        default=0.35,
+    )
+    parser.add_argument(
+        "--refiner-min-critic-macro-auc",
+        type=float,
+        default=0.60,
+    )
+    parser.add_argument(
+        "--refiner-min-critic-margin",
+        type=float,
+        default=0.15,
+    )
+    parser.add_argument(
+        "--refiner-min-refiner-margin",
+        type=float,
+        default=0.15,
+    )
     return parser
 
 
@@ -1092,6 +1759,17 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.min_seed_per_class < 2:
         raise CriticError("--min-seed-per-class must be >= 2")
 
+    if args.refiner_delta_max <= 0:
+        raise CriticError("--refiner-delta-max must be positive")
+    if args.refiner_steps < 1:
+        raise CriticError("--refiner-steps must be >= 1")
+    if args.refiner_learning_rate <= 0:
+        raise CriticError("--refiner-learning-rate must be positive")
+    if args.refiner_teacher_weight < 0:
+        raise CriticError("--refiner-teacher-weight must be >= 0")
+    if args.refiner_critic_weight < 0:
+        raise CriticError("--refiner-critic-weight must be >= 0")
+
     for name in (
         "seed_max_ood",
         "seed_max_entropy",
@@ -1099,6 +1777,10 @@ def validate_args(args: argparse.Namespace) -> None:
         "seed_min_relative_confidence",
         "reject_ood",
         "max_neutral_entropy",
+        "refiner_min_critic_macro_accuracy",
+        "refiner_min_critic_macro_auc",
+        "refiner_min_critic_margin",
+        "refiner_min_refiner_margin",
     ):
         value = float(getattr(args, name))
         if not 0.0 <= value <= 1.0:
@@ -1230,19 +1912,86 @@ def main() -> int:
             rows,
             config=config,
         )
-        output_rows, state_counts = apply_critic_outputs(
-            rows,
-            seed_indices=seeds,
-            oof_logits=oof_logits,
-            final_logits=final_result["all_logits"],
-            emotions=config.emotions,
-            reject_ood=args.reject_ood,
-            max_neutral_entropy=args.max_neutral_entropy,
-        )
+
+        refiner_config = None
+        refiner_result = None
+        refiner_metrics = None
+        if args.mode == "refiner":
+            if not critic_gate_passed(
+                metrics,
+                min_macro_accuracy=(
+                    args.refiner_min_critic_macro_accuracy
+                ),
+                min_macro_auc=args.refiner_min_critic_macro_auc,
+            ):
+                raise CriticError(
+                    "bounded refiner blocked: critic OOF gate failed "
+                    f"(macro_accuracy={metrics.get('oof_macro_accuracy')}, "
+                    f"macro_auc={metrics.get('oof_macro_auc')})"
+                )
+
+            refiner_config = RefinerConfig(
+                delta_max=args.refiner_delta_max,
+                steps=args.refiner_steps,
+                learning_rate=args.refiner_learning_rate,
+                teacher_weight=args.refiner_teacher_weight,
+                critic_weight=args.refiner_critic_weight,
+            )
+            refiner_oof_logits, refiner_metrics = (
+                crossfit_refiner(
+                    rows,
+                    embeddings,
+                    seeds,
+                    critic_config=config,
+                    refiner_config=refiner_config,
+                )
+            )
+            refiner_result = fit_final_refiner(
+                rows,
+                seeds,
+                final_result["all_logits"],
+                critic_config=config,
+                refiner_config=refiner_config,
+            )
+            output_rows, state_counts = apply_refiner_outputs(
+                rows,
+                seed_indices=seeds,
+                critic_oof_logits=oof_logits,
+                critic_final_logits=final_result["all_logits"],
+                refiner_oof_logits=refiner_oof_logits,
+                refiner_final_logits=refiner_result["all_logits"],
+                emotions=config.emotions,
+                reject_ood=args.reject_ood,
+                max_neutral_entropy=args.max_neutral_entropy,
+                min_critic_margin=args.refiner_min_critic_margin,
+                min_refiner_margin=args.refiner_min_refiner_margin,
+            )
+            kind = "critic_guided_residual_oof_v1"
+            print(
+                "[refiner OOF] "
+                + " ".join(
+                    f"{key}={value}"
+                    for key, value in refiner_metrics.items()
+                ),
+                flush=True,
+            )
+        else:
+            output_rows, state_counts = apply_critic_outputs(
+                rows,
+                seed_indices=seeds,
+                oof_logits=oof_logits,
+                final_logits=final_result["all_logits"],
+                emotions=config.emotions,
+                reject_ood=args.reject_ood,
+                max_neutral_entropy=args.max_neutral_entropy,
+            )
+            kind = "prototype_critic_oof_v1"
+
         write_jsonl(output_path, output_rows)
 
         report = {
-            "kind": "prototype_critic_oof_v1",
+            "kind": kind,
+            "mode": args.mode,
             "teacher_model": args.model,
             "samples": len(rows),
             "embedding_dim": int(embeddings.shape[1]),
@@ -1251,19 +2000,28 @@ def main() -> int:
             "active_emotions": list(config.emotions),
             "state_counts": state_counts,
             "metrics": metrics,
+            "refiner_metrics": refiner_metrics,
             "config": asdict(config),
+            "refiner_config": (
+                asdict(refiner_config)
+                if refiner_config is not None
+                else None
+            ),
             "notes": [
                 (
-                    "emotion_intended is never overwritten; critic fields and "
-                    "v3 states are additive diagnostics."
+                    "emotion_intended is never overwritten; critic/refiner "
+                    "fields and v3 states are additive diagnostics."
                 ),
                 (
-                    "Seed samples are evaluated OOF. Non-seed samples use a "
-                    "final critic fitted on all accepted seeds."
+                    "Seed samples are evaluated OOF. Non-seed samples use "
+                    "final models fitted on all accepted seeds."
                 ),
                 (
-                    "Do not implement/enable the bounded refiner unless this "
-                    "critic is informative OOF."
+                    "Refiner mode is blocked automatically unless the critic "
+                    "passes the configured OOF macro-accuracy/AUC gate."
+                ),
+                (
+                    "Candidate states are not automatic Controller targets."
                 ),
             ],
         }
@@ -1286,6 +2044,9 @@ def main() -> int:
             model_name=args.model,
             final_result=final_result,
             metrics=metrics,
+            refiner_config=refiner_config,
+            refiner_result=refiner_result,
+            refiner_metrics=refiner_metrics,
         )
 
         print(
