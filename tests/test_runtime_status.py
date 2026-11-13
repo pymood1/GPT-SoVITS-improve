@@ -101,6 +101,29 @@ class RuntimeStatusTests(unittest.TestCase):
             else:
                 os.environ[STATUS_PATH_ENV] = previous_status
 
+    def test_parallel_merge_keeps_failed_task_visible(self):
+        merged = merge_activities(
+            [
+                {
+                    "state": "failed",
+                    "task": "GPT / S1 학습",
+                    "stage": "failed",
+                    "updated_at": 10.0,
+                },
+                {
+                    "state": "running",
+                    "task": "SoVITS / S2 학습",
+                    "stage": "training",
+                    "progress": 0.4,
+                    "updated_at": 11.0,
+                },
+            ]
+        )
+        self.assertEqual(merged["state"], "running")
+        self.assertIn("GPT / S1 학습 · failed", merged["metric"])
+        self.assertIn("SoVITS / S2 학습 40%", merged["metric"])
+        self.assertAlmostEqual(merged["progress"], 0.4)
+
     def test_stale_activity_degrades_to_idle(self):
         for state_name in ("running", "failed"):
             with self.subTest(state=state_name):
