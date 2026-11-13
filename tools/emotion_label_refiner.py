@@ -413,6 +413,8 @@ def select_seed_indices(
     min_relative_score: float,
     min_relative_confidence: float,
     min_relative_gap: float,
+    min_relative_z: float,
+    min_relative_z_gap: float,
     min_seed_per_class: int,
 ) -> tuple[list[int], tuple[str, ...]]:
     requested = tuple(emotions)
@@ -455,6 +457,16 @@ def select_seed_indices(
         if (
             safe_float(row.get("emotion_relative_gap"), 0.0)
             < min_relative_gap
+        ):
+            continue
+        if (
+            safe_float(row.get("emotion_relative_z"), 0.0)
+            < min_relative_z
+        ):
+            continue
+        if (
+            safe_float(row.get("emotion_relative_z_gap"), 0.0)
+            < min_relative_z_gap
         ):
             continue
         provisional.append(index)
@@ -1773,6 +1785,16 @@ def make_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
     )
+    parser.add_argument(
+        "--seed-min-relative-z",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--seed-min-relative-z-gap",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--min-seed-per-class", type=int, default=3)
 
     parser.add_argument("--reject-ood", type=float, default=0.50)
@@ -1847,6 +1869,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise CriticError("--max-folds must be >= 2")
     if args.min_seed_per_class < 2:
         raise CriticError("--min-seed-per-class must be >= 2")
+    if args.seed_min_relative_z < 0:
+        raise CriticError("--seed-min-relative-z must be >= 0")
+    if args.seed_min_relative_z_gap < 0:
+        raise CriticError("--seed-min-relative-z-gap must be >= 0")
 
     if args.refiner_delta_max <= 0:
         raise CriticError("--refiner-delta-max must be positive")
@@ -1958,6 +1984,8 @@ def main() -> int:
                 args.seed_min_relative_confidence
             ),
             min_relative_gap=args.seed_min_relative_gap,
+            min_relative_z=args.seed_min_relative_z,
+            min_relative_z_gap=args.seed_min_relative_z_gap,
             min_seed_per_class=args.min_seed_per_class,
         )
         config = CriticConfig(
