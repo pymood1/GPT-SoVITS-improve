@@ -367,6 +367,11 @@ def load_emotion_controller_webui(controller_path):
             + "\n"
             + i18n("可用情感标签")
             + f": {tag_examples}"
+            + "\n"
+            + i18n(
+                "학습 Reference는 아래 'Controller 학습 Reference 사용' "
+                "버튼으로 바로 불러올 수 있습니다."
+            )
         ),
     )
 
@@ -2040,6 +2045,27 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         value=0.0, label="CFG",
                         visible=False, interactive=False, scale=1,
                     )
+                emotion_reference_button = gr.Button(
+                    i18n("Controller 학습 Reference 사용"),
+                    variant="secondary",
+                    scale=1,
+                )
+                gr.Markdown(
+                    i18n(
+                        "Emotion Controller 학습 때 사용한 fixed reference의 "
+                        "오디오·전사문·언어를 그대로 불러옵니다."
+                    )
+                )
+                emotion_reference_button.click(
+                    use_emotion_controller_reference,
+                    [],
+                    [
+                        inp_ref,
+                        prompt_text,
+                        prompt_language,
+                        emotion_status,
+                    ],
+                )
                 inp_refs = (
                     gr.File(
                         label=i18n(
