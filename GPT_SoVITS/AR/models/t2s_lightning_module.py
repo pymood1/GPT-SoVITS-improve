@@ -5,12 +5,14 @@ import sys
 
 now_dir = os.getcwd()
 sys.path.append(now_dir)
+from collections import OrderedDict
 from typing import Dict
 
 import torch
 from pytorch_lightning import LightningModule
 
 from AR.models.t2s_model import Text2SemanticDecoder
+from AR.modules.activation import MultiheadAttention
 from AR.modules.lr_schedulers import WarmupCosineLRSchedule
 from AR.modules.optim import ScaledAdam
 
@@ -33,7 +35,10 @@ class Text2SemanticLightningModule(LightningModule):
                     )["weight"],
                 )
             )
+
+        self.s1_adapter_mode = "full"
         if is_train:
+            self._configure_s1_adapter(pretrained_s1)
             self.automatic_optimization = False
             self.grad_accum_steps = int(
                 config["train"].get("grad_accumulation_steps", 4)
@@ -44,6 +49,130 @@ class Text2SemanticLightningModule(LightningModule):
             self.save_hyperparameters()
             self.eval_dir = output_dir / "eval"
             self.eval_dir.mkdir(parents=True, exist_ok=True)
+
+    def _configure_s1_adapter(self, pretrained_s1):
+        train_config = self.config.get("train", {})
+        mode = str(
+            train_config.get("s1_adapter", "full") or "full"
+        ).strip().lower()
+        aliases = {
+            "none": "full",
+            "full_ft": "full",
+            "full-finetune": "full",
+            "v_o_lora": "lora_v_o",
+            "v+o": "lora_v_o",
+            "qkv_o_lora": "lora_qkv_o",
+            "qkv+o": "lora_qkv_o",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {
+            "full",
+            "lora_v_o",
+            "lora_qkv_o",
+        }:
+            raise ValueError(
+                f"unsupported S1 adapter mode: {mode!r}"
+            )
+        self.s1_adapter_mode = mode
+
+        if mode == "full":
+            return
+        if not pretrained_s1:
+            raise ValueError(
+                "S1 LoRA requires train.pretrained_s1 so the frozen "
+                "backbone has a pretrained reference geometry"
+            )
+
+        rank = int(train_config.get("s1_lora_rank", 8))
+        alpha = float(train_config.get("s1_lora_alpha", 16.0))
+        if rank <= 0:
+            raise ValueError("train.s1_lora_rank must be positive")
+        if alpha <= 0:
+            raise ValueError("train.s1_lora_alpha must be positive")
+
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
+
+        target = "v" if mode == "lora_v_o" else "qkv"
+        attention_count = 0
+        for module in self.model.modules():
+            if not isinstance(module, MultiheadAttention):
+                continue
+            module.enable_lora(
+                target=target,
+                rank=rank,
+                alpha=alpha,
+            )
+            attention_count += 1
+
+        if attention_count == 0:
+            raise RuntimeError(
+                "S1 LoRA found no MultiheadAttention modules"
+            )
+
+        trainable = sum(
+            parameter.numel()
+            for parameter in self.model.parameters()
+            if parameter.requires_grad
+        )
+        total = sum(
+            parameter.numel()
+            for parameter in self.model.parameters()
+        )
+        ratio = 100.0 * trainable / max(total, 1)
+        print(
+            "[S1 adapter] "
+            f"mode={mode} target={target}+out "
+            f"rank={rank} alpha={alpha:g} "
+            f"attention_layers={attention_count} "
+            f"trainable={trainable:,}/{total:,} "
+            f"({ratio:.3f}%)"
+        )
+
+    def inference_state_dict(self):
+        """Return a normal S1 state_dict with training LoRA merged.
+
+        Full Lightning resume checkpoints keep the explicit LoRA parameters.
+        Compact GPT checkpoints call this method so inference/loaders remain
+        completely LoRA-unaware and backward compatible.
+        """
+        state = self.state_dict()
+        if self.s1_adapter_mode == "full":
+            return state
+
+        exported = OrderedDict(
+            (key, value)
+            for key, value in state.items()
+            if ".lora_" not in key
+        )
+        merged = 0
+        for name, module in self.model.named_modules():
+            if (
+                not isinstance(module, MultiheadAttention)
+                or not module.lora_enabled
+            ):
+                continue
+            prefix = f"model.{name}."
+            in_key = prefix + "in_proj_weight"
+            out_key = prefix + "out_proj.weight"
+            if in_key not in exported or out_key not in exported:
+                raise RuntimeError(
+                    "S1 LoRA compact export could not find base "
+                    f"attention weights for {name!r}"
+                )
+            exported[in_key] = (
+                module.merged_in_proj_weight().detach()
+            )
+            exported[out_key] = (
+                module.merged_out_proj_weight().detach()
+            )
+            merged += 1
+
+        if merged == 0:
+            raise RuntimeError(
+                "S1 LoRA compact export found no active adapters"
+            )
+        return exported
 
     def training_step(self, batch: Dict, batch_idx: int):
         opt = self.optimizers()
@@ -140,9 +269,22 @@ class Text2SemanticLightningModule(LightningModule):
     # torch.save(pred_semantic.detach().cpu(), save_path)
 
     def configure_optimizers(self):
-        model_parameters = self.model.parameters()
-        parameters_names = []
-        parameters_names.append([name_param_pair[0] for name_param_pair in self.model.named_parameters()])
+        named_parameters = [
+            (name, parameter)
+            for name, parameter in self.model.named_parameters()
+            if parameter.requires_grad
+        ]
+        if not named_parameters:
+            raise RuntimeError(
+                "S1 optimizer has no trainable parameters"
+            )
+        model_parameters = [
+            parameter
+            for _, parameter in named_parameters
+        ]
+        parameters_names = [
+            [name for name, _ in named_parameters]
+        ]
         lm_opt = ScaledAdam(
             model_parameters,
             lr=0.01,
