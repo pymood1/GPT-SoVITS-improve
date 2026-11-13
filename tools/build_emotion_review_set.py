@@ -289,6 +289,60 @@ def select_review_rows(
                 2.2,
             )
 
+    # Once critic/refiner diagnostics exist, their disagreements are more
+    # informative than generic uncertainty alone. Keep them additive so the
+    # same selector also works on the original v2 sidecar.
+    for index, row in enumerate(rows):
+        intended = normalized_label(row.get("emotion_intended"))
+        critic = normalized_label(row.get("emotion_critic_label"))
+        refiner = normalized_label(row.get("emotion_refiner_label"))
+        state = normalized_label(
+            row.get("emotion_label_state_v3")
+        )
+
+        if (
+            critic
+            and intended not in NON_TARGET
+            and critic != intended
+        ):
+            add_reason(
+                candidates,
+                index,
+                "critic_vs_v2_disagreement",
+                3.2,
+            )
+        if critic and refiner and critic != refiner:
+            add_reason(
+                candidates,
+                index,
+                "critic_vs_refiner_disagreement",
+                3.4,
+            )
+        if state == "conflict":
+            add_reason(
+                candidates,
+                index,
+                "v3_conflict",
+                3.6,
+            )
+        elif state == "rescued_candidate":
+            add_reason(
+                candidates,
+                index,
+                "v3_rescued_candidate",
+                3.0,
+            )
+        elif state in {
+            "critic_confirmed_candidate",
+            "refiner_confirmed_candidate",
+        }:
+            add_reason(
+                candidates,
+                index,
+                f"v3_{state}",
+                2.4,
+            )
+
     # v2 maps every non-accepted sample to neutral/default. Review a mix of
     # clean-looking neutral anchors and suspicious neutral assignments.
     if neutral_indices and neutral_cases > 0:
@@ -393,6 +447,24 @@ def select_review_rows(
                 "emotion_raw_scores": row.get(
                     "emotion_raw_scores",
                     {},
+                ),
+                "emotion_critic_label": row.get(
+                    "emotion_critic_label"
+                ),
+                "emotion_critic_margin": row.get(
+                    "emotion_critic_margin"
+                ),
+                "emotion_refiner_label": row.get(
+                    "emotion_refiner_label"
+                ),
+                "emotion_refiner_margin": row.get(
+                    "emotion_refiner_margin"
+                ),
+                "emotion_label_state_v3": row.get(
+                    "emotion_label_state_v3"
+                ),
+                "emotion_v3_candidate": row.get(
+                    "emotion_v3_candidate"
                 ),
                 "human_emotion": None,
                 "human_confidence": None,
