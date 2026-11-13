@@ -1553,6 +1553,53 @@ def apply_refiner_outputs(
     return output, dict(sorted(states.items()))
 
 
+def materialize_training_sidecar(
+    rows: Sequence[dict[str, Any]],
+    *,
+    policy: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Create a derived sidecar without mutating the baseline pseudo-labels."""
+    allowed_states = {"accepted_core"}
+    if policy in {"core+confirmed", "all-candidates"}:
+        allowed_states.update(
+            {
+                "critic_confirmed_candidate",
+                "refiner_confirmed_candidate",
+            }
+        )
+    if policy == "all-candidates":
+        allowed_states.add("rescued_candidate")
+
+    output: list[dict[str, Any]] = []
+    counts: Counter[str] = Counter()
+    for original in rows:
+        row = dict(original)
+        state = normalize_label(
+            row.get("emotion_label_state_v3")
+        )
+        candidate = normalize_label(
+            row.get("emotion_v3_candidate")
+        )
+
+        if state in allowed_states and candidate not in NON_TARGET:
+            row["emotion_intended"] = candidate
+            row["emotion_is_default"] = False
+            counts[f"target:{candidate}"] += 1
+        elif state == "neutral_candidate":
+            row["emotion_intended"] = "neutral"
+            row["emotion_is_default"] = True
+            counts["neutral"] += 1
+        else:
+            row["emotion_intended"] = None
+            row["emotion_is_default"] = False
+            counts[f"excluded:{state or 'unknown'}"] += 1
+
+        row["emotion_training_policy_v3"] = policy
+        output.append(row)
+
+    return output, dict(sorted(counts.items()))
+
+
 def write_jsonl(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -1646,6 +1693,18 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-cache", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact")
+    parser.add_argument(
+        "--training-sidecar",
+        help=(
+            "Optional derived sidecar for Controller training. The baseline "
+            "sidecar is never modified."
+        ),
+    )
+    parser.add_argument(
+        "--training-policy",
+        choices=("core", "core+confirmed", "all-candidates"),
+        default="core",
+    )
     parser.add_argument("--wav-root")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -1848,6 +1907,11 @@ def main() -> int:
             if args.artifact
             else output_path.with_suffix(".critic.pt")
         )
+        training_sidecar_path = (
+            Path(args.training_sidecar).expanduser().resolve()
+            if args.training_sidecar
+            else None
+        )
 
         rows = prepare_rows(
             list_path=list_path,
@@ -2012,6 +2076,25 @@ def main() -> int:
 
         write_jsonl(output_path, output_rows)
 
+        training_counts = None
+        if training_sidecar_path is not None:
+            training_rows, training_counts = (
+                materialize_training_sidecar(
+                    output_rows,
+                    policy=args.training_policy,
+                )
+            )
+            write_jsonl(
+                training_sidecar_path,
+                training_rows,
+            )
+            print(
+                "[training sidecar] "
+                f"policy={args.training_policy} "
+                f"path={training_sidecar_path}",
+                flush=True,
+            )
+
         report = {
             "kind": kind,
             "mode": args.mode,
@@ -2022,6 +2105,17 @@ def main() -> int:
             "seed_counts": dict(sorted(seed_counts.items())),
             "active_emotions": list(config.emotions),
             "state_counts": state_counts,
+            "training_sidecar": (
+                str(training_sidecar_path)
+                if training_sidecar_path is not None
+                else None
+            ),
+            "training_policy": (
+                args.training_policy
+                if training_sidecar_path is not None
+                else None
+            ),
+            "training_counts": training_counts,
             "metrics": metrics,
             "refiner_metrics": refiner_metrics,
             "config": asdict(config),
@@ -2044,7 +2138,9 @@ def main() -> int:
                     "passes the configured OOF macro-accuracy/AUC gate."
                 ),
                 (
-                    "Candidate states are not automatic Controller targets."
+                    "Candidate states are not automatic Controller targets. "
+                    "A derived training sidecar is created only when "
+                    "--training-sidecar is explicitly supplied."
                 ),
             ],
         }
