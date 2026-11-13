@@ -134,24 +134,40 @@ class my_model_ckpt(ModelCheckpoint):
         self.half_weights_save_dir = half_weights_save_dir
         self.exp_name = exp_name
         self.config = config
+        self.low_disk_save = (
+            os.environ.get("GPT_SOVITS_LOW_DISK_SAVE") == "1"
+        )
 
     def on_train_epoch_end(self, trainer, pl_module):
         # if not self._should_skip_saving_checkpoint(trainer) and self._should_save_on_train_epoch_end(trainer):
         if self._should_save_on_train_epoch_end(trainer):
             monitor_candidates = self._monitor_candidates(trainer)
             if self._every_n_epochs >= 1 and (trainer.current_epoch + 1) % self._every_n_epochs == 0:
-                if (
-                    self.if_save_latest == True
-                ):  ####如果设置只保存最后一个ckpt，在保存下一个ckpt后要清理掉之前的所有ckpt
-                    to_clean = list(os.listdir(self.dirpath))
-                self._save_topk_checkpoint(trainer, monitor_candidates)
-                if self.if_save_latest == True:
-                    for name in to_clean:
-                        try:
-                            os.remove("%s/%s" % (self.dirpath, name))
-                        except:
-                            pass
-                if self.if_save_every_weights == True:
+                if self.low_disk_save:
+                    logging.info(
+                        "[low-disk] skipping full Lightning resume checkpoint; "
+                        "saving compact inference weights only"
+                    )
+                else:
+                    if (
+                        self.if_save_latest == True
+                    ):  ####如果设置只保存最后一个ckpt，在保存下一个ckpt后要清理掉之前的所有ckpt
+                        to_clean = list(os.listdir(self.dirpath))
+                    self._save_topk_checkpoint(trainer, monitor_candidates)
+                    if self.if_save_latest == True:
+                        for name in to_clean:
+                            try:
+                                os.remove("%s/%s" % (self.dirpath, name))
+                            except:
+                                pass
+
+                # In low-disk mode compact weights are mandatory because
+                # full Lightning checkpoints are intentionally omitted.
+                save_compact_weights = (
+                    self.if_save_every_weights == True
+                    or self.low_disk_save
+                )
+                if save_compact_weights:
                     to_save_od = OrderedDict()
                     to_save_od["weight"] = OrderedDict()
                     dictt = trainer.strategy._lightning_module.state_dict()
@@ -159,9 +175,21 @@ class my_model_ckpt(ModelCheckpoint):
                         to_save_od["weight"][key] = dictt[key].half()
                     to_save_od["config"] = self.config
                     to_save_od["info"] = "GPT-e%s" % (trainer.current_epoch + 1)
-                    # torch.save(
-                    # print(os.environ)
+
                     if os.environ.get("LOCAL_RANK", "0") == "0":
+                        if self.low_disk_save and self.if_save_latest:
+                            weight_dir = Path(self.half_weights_save_dir)
+                            for old_weight in weight_dir.glob(
+                                f"{self.exp_name}-e*.ckpt"
+                            ):
+                                try:
+                                    old_weight.unlink()
+                                except OSError:
+                                    logging.warning(
+                                        "[low-disk] failed to remove old weight: %s",
+                                        old_weight,
+                                    )
+
                         my_save(
                             to_save_od,
                             "%s/%s-e%s.ckpt"
@@ -171,7 +199,9 @@ class my_model_ckpt(ModelCheckpoint):
                                 trainer.current_epoch + 1,
                             ),
                         )
-            self._save_last_checkpoint(trainer, monitor_candidates)
+
+            if not self.low_disk_save:
+                self._save_last_checkpoint(trainer, monitor_candidates)
 
 
 def main(args):
