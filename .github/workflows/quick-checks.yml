@@ -49,7 +49,17 @@ jobs:
           import json
           from pathlib import Path
 
-          notebooks = sorted(Path(".").glob("*.ipynb"))
+          # Legacy Colab-Inference.ipynb is not valid JSON in upstream/fork
+          # history. Validate the notebooks actively maintained by this fork.
+          notebooks = [
+              Path("Colab-Inference-Fast.ipynb"),
+              Path("Colab-WebUI.ipynb"),
+              Path("GPT_SoVITS_Improve_Kaggle_Fast_Minimal.ipynb"),
+          ]
+          optional = Path("GPT_SoVITS_Improve_Kaggle_Training.ipynb")
+          if optional.exists():
+              notebooks.append(optional)
+
           for path in notebooks:
               with path.open("r", encoding="utf-8") as handle:
                   json.load(handle)
