@@ -156,6 +156,24 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertNotIn("<script>alert", html)
         self.assertIn("&lt;T4&gt;", html)
 
+    def test_render_failed_activity_state(self):
+        html = render_status_html(
+            {
+                "cpu_percent": None,
+                "ram_percent": None,
+                "gpu_available": False,
+            },
+            {
+                "state": "failed",
+                "task": "GPT / S1 학습",
+                "stage": "failed",
+                "metric": "boom",
+            },
+        )
+        self.assertIn("status-activity-failed", html)
+        self.assertIn("FAILED", html)
+        self.assertIn("GPT / S1 학습", html)
+
     def test_training_paths_publish_runtime_status(self):
         required = {
             "GPT_SoVITS/s1_train.py": "publish_activity",
