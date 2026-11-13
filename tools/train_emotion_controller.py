@@ -845,25 +845,13 @@ def evaluate_controller(
     repetition_penalty: float,
     min_support_coverage: float,
 ) -> dict:
-    """Evaluate hidden-primary controller generalization.
-
-    Hidden-space CE is the primary validation objective because the frozen S1
-    hidden probe is informative while semantic likelihood residuals are weak.
-    Semantic likelihood remains a bounded auxiliary diagnostic so the learned
-    controller stays connected to the actual autoregressive readout path.
-    """
+    """Evaluate hidden-primary held-out generalization."""
     class_count = len(emotion_names)
     hidden_metric_sums = torch.zeros(
-        3,
-        class_count,
-        dtype=torch.float32,
-        device=device,
+        3, class_count, dtype=torch.float32, device=device
     )
     semantic_metric_sums = torch.zeros(
-        3,
-        class_count,
-        dtype=torch.float32,
-        device=device,
+        3, class_count, dtype=torch.float32, device=device
     )
     evaluated_counts = [0 for _ in emotion_names]
     semantic_counts = [0 for _ in emotion_names]
@@ -875,7 +863,6 @@ def evaluate_controller(
             for sample in samples:
                 cache_key = (sample["reference"], sample["name"])
                 prepared = frozen_sample_cache.get(cache_key)
-
                 if prepared is None:
                     batch = build_single_sample_batch(
                         store=store,
@@ -898,44 +885,33 @@ def evaluate_controller(
                 prepared_device = device_sample_cache.get(cache_key)
                 if prepared_device is None:
                     prepared_device = controller_sample_to_device(
-                        prepared,
-                        device,
+                        prepared, device
                     )
                     device_sample_cache[cache_key] = prepared_device
 
                 target_id = int(sample["emotion_id"])
                 target = torch.tensor(
-                    [target_id],
-                    dtype=torch.long,
-                    device=device,
+                    [target_id], dtype=torch.long, device=device
                 )
 
-                hidden_logits = (
-                    hidden_beta
-                    * controller.hidden_emotion_logits(
-                        prepared_device["hidden"]
-                    )
+                hidden_logits = hidden_beta * controller.hidden_emotion_logits(
+                    prepared_device["hidden"]
                 )
                 hidden_loss = F.cross_entropy(
-                    hidden_logits.unsqueeze(0),
-                    target,
+                    hidden_logits.unsqueeze(0), target
                 )
-                hidden_other_mask = torch.ones(
-                    class_count,
-                    dtype=torch.bool,
-                    device=device,
+                other_mask = torch.ones(
+                    class_count, dtype=torch.bool, device=device
                 )
-                hidden_other_mask[target_id] = False
+                other_mask[target_id] = False
                 hidden_gap = (
                     hidden_logits[target_id]
-                    - hidden_logits[hidden_other_mask].max()
+                    - hidden_logits[other_mask].max()
                 )
                 hidden_metric_sums[0, target_id].add_(hidden_loss)
                 hidden_metric_sums[1, target_id].add_(hidden_gap)
                 hidden_metric_sums[2, target_id].add_(
-                    (hidden_logits.argmax() == target_id).to(
-                        dtype=torch.float32
-                    )
+                    (hidden_logits.argmax() == target_id).float()
                 )
                 evaluated_counts[target_id] += 1
 
@@ -958,25 +934,16 @@ def evaluate_controller(
 
                 semantic_logits = preference_beta * score_tensor
                 semantic_loss = F.cross_entropy(
-                    semantic_logits.unsqueeze(0),
-                    target,
+                    semantic_logits.unsqueeze(0), target
                 )
-                semantic_other_mask = torch.ones(
-                    class_count,
-                    dtype=torch.bool,
-                    device=device,
-                )
-                semantic_other_mask[target_id] = False
                 semantic_gap = (
                     semantic_logits[target_id]
-                    - semantic_logits[semantic_other_mask].max()
+                    - semantic_logits[other_mask].max()
                 )
                 semantic_metric_sums[0, target_id].add_(semantic_loss)
                 semantic_metric_sums[1, target_id].add_(semantic_gap)
                 semantic_metric_sums[2, target_id].add_(
-                    (semantic_logits.argmax() == target_id).to(
-                        dtype=torch.float32
-                    )
+                    (semantic_logits.argmax() == target_id).float()
                 )
                 semantic_counts[target_id] += 1
     finally:
@@ -995,79 +962,65 @@ def evaluate_controller(
 
     hidden_values = hidden_metric_sums.detach().cpu()
     per_class_hidden_loss = {
-        emotion: float(
-            hidden_values[0, index] / evaluated_counts[index]
-        )
-        for index, emotion in enumerate(emotion_names)
+        emotion: float(hidden_values[0, i] / evaluated_counts[i])
+        for i, emotion in enumerate(emotion_names)
     }
     per_class_hidden_gap = {
-        emotion: float(
-            hidden_values[1, index] / evaluated_counts[index]
-        )
-        for index, emotion in enumerate(emotion_names)
+        emotion: float(hidden_values[1, i] / evaluated_counts[i])
+        for i, emotion in enumerate(emotion_names)
     }
     per_class_hidden_accuracy = {
-        emotion: float(
-            hidden_values[2, index] / evaluated_counts[index]
-        )
-        for index, emotion in enumerate(emotion_names)
+        emotion: float(hidden_values[2, i] / evaluated_counts[i])
+        for i, emotion in enumerate(emotion_names)
     }
-
-    hidden_loss = (
-        sum(per_class_hidden_loss.values()) / class_count
-    )
-    hidden_gap = (
-        sum(per_class_hidden_gap.values()) / class_count
-    )
+    hidden_loss = sum(per_class_hidden_loss.values()) / class_count
+    hidden_gap = sum(per_class_hidden_gap.values()) / class_count
     hidden_accuracy = (
         sum(per_class_hidden_accuracy.values()) / class_count
     )
 
-    semantic_available_classes = [
-        index
-        for index, count in enumerate(semantic_counts)
-        if count > 0
-    ]
-    semantic_loss = None
-    semantic_gap = None
-    semantic_accuracy = None
     per_class_semantic_loss = {}
-    per_class_semantic_accuracy = {}
     per_class_semantic_gap = {}
-    if semantic_available_classes:
-        semantic_values = semantic_metric_sums.detach().cpu()
-        for index in semantic_available_classes:
-            emotion = emotion_names[index]
-            count = semantic_counts[index]
-            per_class_semantic_loss[emotion] = float(
-                semantic_values[0, index] / count
-            )
-            per_class_semantic_gap[emotion] = float(
-                semantic_values[1, index] / count
-            )
-            per_class_semantic_accuracy[emotion] = float(
-                semantic_values[2, index] / count
-            )
-        semantic_loss = (
-            sum(per_class_semantic_loss.values())
-            / len(per_class_semantic_loss)
+    per_class_semantic_accuracy = {}
+    semantic_values = semantic_metric_sums.detach().cpu()
+    for i, emotion in enumerate(emotion_names):
+        if semantic_counts[i] <= 0:
+            continue
+        per_class_semantic_loss[emotion] = float(
+            semantic_values[0, i] / semantic_counts[i]
         )
-        semantic_gap = (
-            sum(per_class_semantic_gap.values())
-            / len(per_class_semantic_gap)
+        per_class_semantic_gap[emotion] = float(
+            semantic_values[1, i] / semantic_counts[i]
         )
-        semantic_accuracy = (
-            sum(per_class_semantic_accuracy.values())
-            / len(per_class_semantic_accuracy)
+        per_class_semantic_accuracy[emotion] = float(
+            semantic_values[2, i] / semantic_counts[i]
         )
 
-    combined_loss = hidden_loss
-    if semantic_loss is not None:
-        combined_loss += semantic_aux_weight * semantic_loss
+    semantic_loss = (
+        sum(per_class_semantic_loss.values())
+        / len(per_class_semantic_loss)
+        if per_class_semantic_loss
+        else None
+    )
+    semantic_gap = (
+        sum(per_class_semantic_gap.values())
+        / len(per_class_semantic_gap)
+        if per_class_semantic_gap
+        else None
+    )
+    semantic_accuracy = (
+        sum(per_class_semantic_accuracy.values())
+        / len(per_class_semantic_accuracy)
+        if per_class_semantic_accuracy
+        else None
+    )
+    combined_loss = hidden_loss + (
+        semantic_aux_weight * semantic_loss
+        if semantic_loss is not None
+        else 0.0
+    )
 
     return {
-        # Keep legacy keys pointed at the new primary objective so existing
-        # early-stop and WebUI reporting remain compatible.
         "loss": hidden_loss,
         "accuracy": hidden_accuracy,
         "gap": hidden_gap,
@@ -1168,20 +1121,14 @@ def run_controller_oof_cv(
     seed: int,
     min_support_coverage: float,
 ) -> dict:
-    """Train fresh controllers per fold with hidden-primary supervision."""
+    """Train fresh controllers per fold using hidden-primary supervision."""
     eligible_samples = list(samples)
-    labels = [
-        int(sample["emotion_id"])
-        for sample in eligible_samples
-    ]
+    labels = [int(sample["emotion_id"]) for sample in eligible_samples]
     class_count = len(emotion_names)
 
     try:
         folds = stratified_group_kfold_indices(
-            eligible_samples,
-            labels,
-            max_folds=5,
-            seed=seed,
+            eligible_samples, labels, max_folds=5, seed=seed
         )
     except EmotionPipelineError:
         return {
@@ -1196,11 +1143,7 @@ def run_controller_oof_cv(
         float("nan"),
         dtype=torch.float32,
     )
-    semantic_oof_logits = torch.full(
-        (len(eligible_samples), class_count),
-        float("nan"),
-        dtype=torch.float32,
-    )
+    semantic_oof_logits = torch.full_like(oof_logits, float("nan"))
     fold_metrics = []
 
     for fold_index, (train_idx, val_idx) in enumerate(folds):
@@ -1244,18 +1187,17 @@ def run_controller_oof_cv(
             candidates = train_by_emotion.get(class_id) or []
             if not candidates:
                 continue
+
             sample_index = fold_rng.choice(candidates)
             sample = eligible_samples[sample_index]
             prepared = frozen_sample_cache[
                 (sample["reference"], sample["name"])
             ]
-
             cache_key = (sample["reference"], sample["name"])
             prepared_device = oof_device_cache.get(cache_key)
             if prepared_device is None:
                 prepared_device = controller_sample_to_device(
-                    prepared,
-                    device,
+                    prepared, device
                 )
                 oof_device_cache[cache_key] = prepared_device
 
@@ -1271,8 +1213,7 @@ def run_controller_oof_cv(
                 )
             )
             hidden_loss = F.cross_entropy(
-                hidden_logits.unsqueeze(0),
-                target,
+                hidden_logits.unsqueeze(0), target
             )
 
             semantic_loss = None
@@ -1289,8 +1230,7 @@ def run_controller_oof_cv(
                 if score_tensor is not None:
                     semantic_loss = F.cross_entropy(
                         (
-                            preference_beta
-                            * score_tensor
+                            preference_beta * score_tensor
                         ).unsqueeze(0),
                         target,
                     )
@@ -1301,17 +1241,11 @@ def run_controller_oof_cv(
 
             fold_optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            fold_grad_norm = torch.nn.utils.clip_grad_norm_(
-                fold_controller.parameters(),
-                max_norm=1.0,
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                fold_controller.parameters(), max_norm=1.0
             )
-            fold_grad_norm_value = float(
-                fold_grad_norm.detach().item()
-            )
-            if (
-                not math.isfinite(fold_grad_norm_value)
-                or fold_grad_norm_value <= 1e-12
-            ):
+            grad_value = float(grad_norm.detach().item())
+            if not math.isfinite(grad_value) or grad_value <= 1e-12:
                 fold_optimizer.zero_grad(set_to_none=True)
                 continue
             fold_optimizer.step()
@@ -1341,8 +1275,7 @@ def run_controller_oof_cv(
                 prepared_device = oof_device_cache.get(cache_key)
                 if prepared_device is None:
                     prepared_device = controller_sample_to_device(
-                        prepared,
-                        device,
+                        prepared, device
                     )
                     oof_device_cache[cache_key] = prepared_device
 
@@ -1352,9 +1285,9 @@ def run_controller_oof_cv(
                         prepared_device["hidden"]
                     )
                 )
-                hidden_logits_cpu = hidden_logits.detach().cpu()
-                oof_logits[sample_index] = hidden_logits_cpu
-                fold_logits.append(hidden_logits_cpu)
+                hidden_cpu = hidden_logits.detach().cpu()
+                oof_logits[sample_index] = hidden_cpu
+                fold_logits.append(hidden_cpu)
                 fold_targets.append(labels[sample_index])
 
                 if float(prepared["coverage"]) >= min_support_coverage:
@@ -1396,12 +1329,9 @@ def run_controller_oof_cv(
             "verdict": "unavailable",
         }
 
-    final_logits = oof_logits[complete]
-    final_labels = torch.tensor(labels, dtype=torch.long)[complete]
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
     metrics = _classification_metrics(
-        final_logits,
-        final_labels,
-        class_count,
+        oof_logits[complete], labels_tensor[complete], class_count
     )
     random_ce = math.log(class_count)
     verdict = (
@@ -1419,9 +1349,7 @@ def run_controller_oof_cv(
         "verdict": "unavailable",
     }
     if bool(semantic_complete.any()):
-        semantic_labels = (
-            torch.tensor(labels, dtype=torch.long)[semantic_complete]
-        )
+        semantic_labels = labels_tensor[semantic_complete]
         if len(set(semantic_labels.tolist())) == class_count:
             semantic_metrics = _classification_metrics(
                 semantic_oof_logits[semantic_complete],
@@ -1598,18 +1526,14 @@ def main() -> int:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--preference-beta", type=float, default=4.0)
     parser.add_argument(
-        "--hidden-beta",
-        type=float,
-        default=2.0,
+        "--hidden-beta", type=float, default=2.0,
         help="Scale for hidden-state primary emotion logits.",
     )
     parser.add_argument(
-        "--semantic-aux-weight",
-        type=float,
-        default=0.20,
+        "--semantic-aux-weight", type=float, default=0.20,
         help=(
-            "Weight of the semantic-likelihood auxiliary CE. "
-            "Hidden-state CE remains the primary objective."
+            "Weight of semantic-likelihood auxiliary CE; hidden-state "
+            "CE remains the primary objective."
         ),
     )
     parser.add_argument("--top-k", type=int, default=15)
@@ -2052,37 +1976,483 @@ def main() -> int:
 
         emotion = sample["emotion"]
         coverage = float(prepared["coverage"])
+        coverage_by_emotion[emotion]["total"] += 1
+        if coverage >= args.min_support_coverage:
+            coverage_by_emotion[emotion]["eligible"] += 1
+        else:
+            coverage_by_emotion[emotion]["skipped"] += 1
+            probe_coverage_skipped += 1
+
+        hidden = prepared["hidden"].float()
+        if (
+            hidden.ndim != 2
+            or hidden.shape[0] == 0
+            or not bool(torch.isfinite(hidden).all())
+        ):
+            probe_invalid_hidden += 1
+            continue
+
+        g_full, g_topk = residual_summary_features(
+            prepared,
+            output_weight,
+            device,
+        )
+        label = int(sample["emotion_id"])
+        h_features.append(hidden.mean(dim=0))
+        g_full_features.append(g_full)
+        text_features.append(
+            text_only_probe_features(
+                store,
+                sample["name"],
+            )
+        )
+        all_probe_labels.append(label)
+        all_probe_samples.append(sample)
+
+        if coverage >= args.min_support_coverage:
+            g_topk_features.append(g_topk)
+            topk_probe_labels.append(label)
+            topk_probe_samples.append(sample)
+
+        if (
+            probe_index == len(all_usable_samples)
+            or probe_index % 25 == 0
+        ):
+            publish_activity(
+                task="Emotion Controller 학습",
+                stage="probe-cache",
+                progress=probe_index / len(all_usable_samples),
+                metric=(
+                    f"S1 표현 캐시 {probe_index}/"
+                    f"{len(all_usable_samples)}"
+                ),
+            )
+            print(
+                f"[probe] cached={probe_index}/"
+                f"{len(all_usable_samples)} "
+                f"usable={len(h_features)} "
+                f"coverage_skipped={probe_coverage_skipped}"
+            )
+
+    probe_counter = 0
+
+    def _run_probe(
+        values: List[torch.Tensor],
+        labels: List[int],
+        samples: List[dict],
+        method: str,
+    ) -> dict:
+        nonlocal probe_counter
+        probe_counter += 1
+        started_at = time.perf_counter()
+        publish_activity(
+            task="Emotion Controller 학습",
+            stage="diagnostic-probe",
+            progress=(probe_counter - 1) / 4.0,
+            metric=f"진단 probe {probe_counter}/4 · {method}",
+        )
+        if not values:
+            report = {
+                "method": method,
+                "status": "insufficient_data",
+                "verdict": "unavailable",
+                "samples": 0,
+            }
+            publish_activity(
+                task="Emotion Controller 학습",
+                stage="diagnostic-probe",
+                progress=probe_counter / 4.0,
+                metric=(
+                    f"진단 probe {probe_counter}/4 완료 · "
+                    "insufficient_data"
+                ),
+            )
+            return report
+        print(
+            f"[probe] start method={method} "
+            f"samples={len(labels)}",
+            flush=True,
+        )
+        report = run_mean_pool_linear_probe(
+            torch.stack(values, dim=0),
+            labels,
+            emotion_names,
+            samples=samples,
+            seed=args.seed,
+            max_folds=5,
+            permutations=3,
+            steps=80,
+            method=method,
+        )
+        publish_activity(
+            task="Emotion Controller 학습",
+            stage="diagnostic-probe",
+            progress=probe_counter / 4.0,
+            metric=(
+                f"진단 probe {probe_counter}/4 완료 · "
+                f"{report.get('status')}"
+            ),
+        )
+        print(
+            f"[probe] done method={method} "
+            f"status={report.get('status')} "
+            f"elapsed={time.perf_counter() - started_at:.1f}s",
+            flush=True,
+        )
+        return report
+
+    coverage_report = {}
+    for emotion, values in coverage_by_emotion.items():
+        total = values["total"]
+        coverage_report[emotion] = {
+            **values,
+            "eligible_rate": (
+                values["eligible"] / total
+                if total
+                else 0.0
+            ),
+            "skip_rate": (
+                values["skipped"] / total
+                if total
+                else 0.0
+            ),
+        }
+
+    # The hidden probe is the primary evidence. A sample with a valid S1
+    # hidden state remains trainable even when its observed semantic token is
+    # outside the truncated sampler support; coverage only gates the semantic
+    # auxiliary loss.
+    controller_eligible_samples = list(all_probe_samples)
+    eligible_counts: Dict[str, int] = defaultdict(int)
+    for sample in controller_eligible_samples:
+        eligible_counts[sample["emotion"]] += 1
+
+    insufficient_support = [
+        emotion
+        for emotion in emotion_names
+        if eligible_counts.get(emotion, 0)
+        < args.min_samples_per_emotion
+    ]
+    if insufficient_support:
+        print(
+            "[data] excluded low-sample controller classes: "
+            + ", ".join(
+                f"{emotion}={eligible_counts.get(emotion, 0)}"
+                for emotion in insufficient_support
+            )
+            + f" (min={args.min_samples_per_emotion})"
+        )
+
+    emotion_names = [
+        emotion
+        for emotion in emotion_names
+        if eligible_counts.get(emotion, 0)
+        >= args.min_samples_per_emotion
+    ]
+    if len(emotion_names) < 2:
+        raise TrainingDataError(
+            "Need at least two controller emotions after hidden-state "
+            "sample-count filtering "
+            f"(min={args.min_samples_per_emotion})"
+        )
+
+    emotion_to_id = {
+        name: index
+        for index, name in enumerate(emotion_names)
+    }
+    controller_eligible_samples = [
+        sample
+        for sample in controller_eligible_samples
+        if sample["emotion"] in emotion_to_id
+    ]
+    for sample in controller_eligible_samples:
+        sample["emotion_id"] = emotion_to_id[sample["emotion"]]
+
+    retained_probe_indices = [
+        index
+        for index, sample in enumerate(all_probe_samples)
+        if sample["emotion"] in emotion_to_id
+    ]
+    h_features = [
+        h_features[index]
+        for index in retained_probe_indices
+    ]
+    g_full_features = [
+        g_full_features[index]
+        for index in retained_probe_indices
+    ]
+    text_features = [
+        text_features[index]
+        for index in retained_probe_indices
+    ]
+    all_probe_samples = [
+        all_probe_samples[index]
+        for index in retained_probe_indices
+    ]
+    all_probe_labels = [
+        emotion_to_id[sample["emotion"]]
+        for sample in all_probe_samples
+    ]
+
+    retained_topk_indices = [
+        index
+        for index, sample in enumerate(topk_probe_samples)
+        if sample["emotion"] in emotion_to_id
+    ]
+    g_topk_features = [
+        g_topk_features[index]
+        for index in retained_topk_indices
+    ]
+    topk_probe_samples = [
+        topk_probe_samples[index]
+        for index in retained_topk_indices
+    ]
+    topk_probe_labels = [
+        emotion_to_id[sample["emotion"]]
+        for sample in topk_probe_samples
+    ]
+
+    representation_probe = _run_probe(
+        h_features,
+        all_probe_labels,
+        all_probe_samples,
+        "s1_hidden_mean_linear_grouped_oof_v3",
+    )
+    g_full_probe = _run_probe(
+        g_full_features,
+        all_probe_labels,
+        all_probe_samples,
+        "semantic_residual_full_softmax_grouped_oof_v2",
+    )
+    g_topk_probe = _run_probe(
+        g_topk_features,
+        topk_probe_labels,
+        topk_probe_samples,
+        "semantic_residual_topk_supported_grouped_oof_v2",
+    )
+    text_probe = _run_probe(
+        text_features,
+        all_probe_labels,
+        all_probe_samples,
+        "transcript_hashed_char_ngram_grouped_oof_v3",
+    )
+
+    training_samples, validation_samples = (
+        split_train_validation_samples(
+            controller_eligible_samples,
+            emotion_names,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+            min_train_samples=2,
+        )
+    )
+    samples_by_emotion: Dict[str, List[dict]] = defaultdict(list)
+    for sample in training_samples:
+        samples_by_emotion[sample["emotion"]].append(sample)
+
+    # Instantiate the trainable controller only after support filtering has
+    # finalized the class set and emotion IDs.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(args.seed)
+        controller = LowRankEmotionPreference(
+            hidden_dim=model.model_dim,
+            num_emotions=len(emotion_names),
+            rank=args.rank,
+            max_log_odds_shift=args.max_log_odds_shift,
+            prefix_log_ratio_budget=args.prefix_log_ratio_budget,
+        )
+    controller = controller.to(
+        device=device,
+        dtype=torch.float32,
+    )
+    controller.train()
+    optimizer = torch.optim.AdamW(
+        controller.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+
+    print(
+        f"[data] leakage-safe held-out validation: "
+        f"eligible={len(controller_eligible_samples)} "
+        f"train={len(training_samples)} "
+        f"val={len(validation_samples)} "
+        f"interval={args.val_interval} "
+        f"patience={args.early_stop_patience}"
+    )
+
+    representation_probe["coverage_skipped"] = probe_coverage_skipped
+    representation_probe["invalid_hidden"] = probe_invalid_hidden
+    diagnostic_probes = {
+        "s1_hidden": representation_probe,
+        "g_full": g_full_probe,
+        "g_topk": g_topk_probe,
+        "text_only": text_probe,
+        "coverage_by_emotion": coverage_report,
+    }
+    args.representation_probe = representation_probe
+    args.diagnostic_probes = diagnostic_probes
+
+    for probe_name, report in (
+        ("h", representation_probe),
+        ("G(full)", g_full_probe),
+        ("G(top-k)", g_topk_probe),
+        ("text", text_probe),
+    ):
+        if report.get("status") == "ok":
+            auc = report.get("oof_macro_auc")
+            auc_text = (
+                f"{auc:.3f}"
+                if auc is not None
+                else "nan"
+            )
+            print(
+                f"[probe:{probe_name}] "
+                f"n={report['samples']} "
+                f"OOF_CE={report['oof_ce']:.5f} "
+                f"macro_acc={report['oof_macro_accuracy']:.2%} "
+                f"macro_auc={auc_text} "
+                f"perm={report['permutation_macro_accuracy_mean']:.2%} "
+                f"verdict={report['verdict']}"
+            )
+        else:
+            reason = str(report.get("error") or "").strip()
+            print(
+                f"[probe:{probe_name}][WARNING] "
+                f"status={report.get('status')} "
+                f"n={report.get('samples', 0)}"
+                + (f" reason={reason}" if reason else "")
+            )
+
+    print(
+        "[coverage] "
+        + " ".join(
+            f"{emotion}="
+            f"{values['eligible']}/{values['total']}"
+            f"({values['eligible_rate']:.0%})"
+            for emotion, values in coverage_report.items()
+        )
+    )
+
+    if representation_probe.get("status") == "ok":
+        if representation_probe["verdict"] == "weak":
+            print(
+                "[probe][WARNING] Frozen S1 hidden states do not separate "
+                "the current labels reliably."
+            )
+        elif representation_probe["verdict"] == "informative":
+            print(
+                "[probe][OK] Frozen S1 hidden states contain a separable "
+                "signal for the current labels."
+            )
+
+    diagnostics_report_path = output.with_name(
+        f"{output.stem}.diagnostics.json"
+    )
+    diagnostics_report_path.write_text(
+        json.dumps(
+            {
+                "representation_probe": representation_probe,
+                "diagnostic_probes": diagnostic_probes,
+                "training_diagnosis": None,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"[probe] saved {diagnostics_report_path}")
+    accepted_steps = 0
+    attempts = 0
+    training_limit = args.steps
+    max_attempts = max(args.max_auto_steps * 20, 100)
+    skipped_low_coverage = 0
+    skipped_no_gradient = 0
+    attempts_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    accepted_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    coverage_skips_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    no_grad_skips_by_emotion = {
+        emotion: 0 for emotion in emotion_names
+    }
+    running_loss = torch.zeros((), device=device)
+    running_hidden_loss = torch.zeros((), device=device)
+    running_semantic_loss = torch.zeros((), device=device)
+    running_semantic_count = 0
+    running_gap = torch.zeros((), device=device)
+    running_count = 0
+    log_window_started = time.perf_counter()
+    best_val_loss = float("inf")
+    best_val_step = 0
+    best_val_metrics: Optional[dict] = None
+    best_controller_state: Optional[dict] = None
+    validations_without_improvement = 0
+    stopped_early = False
+
+    while accepted_steps < training_limit and attempts < max_attempts:
+        attempts += 1
+        min_accepted = min(accepted_by_emotion.values())
+        least_trained_emotions = [
+            emotion
+            for emotion in emotion_names
+            if accepted_by_emotion[emotion] == min_accepted
+        ]
+        sampled_emotion = rng.choice(least_trained_emotions)
+        attempts_by_emotion[sampled_emotion] += 1
+        sample = rng.choice(samples_by_emotion[sampled_emotion])
+        cache_key = (sample["reference"], sample["name"])
+        prepared = frozen_sample_cache.get(cache_key)
+        cache_hit = prepared is not None
+
+        if prepared is None:
+            batch = build_single_sample_batch(
+                store=store,
+                reference_name=sample["reference"],
+                target_name=sample["name"],
+                device=device,
+                pad_val=int(config["data"]["pad_val"]),
+                reference_prompt_cache=reference_prompt_cache,
+            )
+            prepared = prepare_controller_sample(
+                model=model,
+                batch=batch,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                temperature=args.temperature,
+                repetition_penalty=args.repetition_penalty,
+            )
+            frozen_sample_cache[cache_key] = prepared
+            cache_misses += 1
+        else:
+            cache_hits += 1
+
+        coverage = float(prepared["coverage"])
         prepared_device = device_sample_cache.get(cache_key)
         if prepared_device is None:
             prepared_device = controller_sample_to_device(
-                prepared,
-                device,
+                prepared, device
             )
             device_sample_cache[cache_key] = prepared_device
 
         target_id = int(sample["emotion_id"])
         target = torch.tensor(
-            [target_id],
-            dtype=torch.long,
-            device=device,
+            [target_id], dtype=torch.long, device=device
         )
 
-        # Primary objective: directly preserve the emotion signal already
-        # demonstrated in frozen S1 hidden states.
-        hidden_logits = (
-            args.hidden_beta
-            * controller.hidden_emotion_logits(
-                prepared_device["hidden"]
-            )
+        hidden_logits = args.hidden_beta * controller.hidden_emotion_logits(
+            prepared_device["hidden"]
         )
         hidden_loss = F.cross_entropy(
-            hidden_logits.unsqueeze(0),
-            target,
+            hidden_logits.unsqueeze(0), target
         )
 
-        # Auxiliary objective: keep the learned low-rank basis connected to
-        # the actual semantic readout path, but do not let this weak signal
-        # dominate or veto hidden-state learning.
         semantic_loss = None
         score_tensor = None
         if coverage >= args.min_support_coverage:
@@ -2098,8 +2468,7 @@ def main() -> int:
             if score_tensor is not None:
                 semantic_loss = F.cross_entropy(
                     (
-                        args.preference_beta
-                        * score_tensor
+                        args.preference_beta * score_tensor
                     ).unsqueeze(0),
                     target,
                 )
@@ -2113,9 +2482,7 @@ def main() -> int:
 
         correct_score = hidden_logits[target_id]
         other_mask = torch.ones(
-            len(emotion_names),
-            dtype=torch.bool,
-            device=device,
+            len(emotion_names), dtype=torch.bool, device=device
         )
         other_mask[target_id] = False
         best_other = hidden_logits[other_mask].max()
@@ -2205,10 +2572,7 @@ def main() -> int:
             )
             mean_semantic_loss = (
                 float(
-                    (
-                        running_semantic_loss
-                        / running_semantic_count
-                    ).item()
+                    (running_semantic_loss / running_semantic_count).item()
                 )
                 if running_semantic_count
                 else float("nan")
@@ -2502,17 +2866,14 @@ def main() -> int:
         else "near_chance"
     )
     probe_verdict = representation_probe.get(
-        "verdict",
-        "unavailable",
+        "verdict", "unavailable"
     )
-
     g_full_verdict = g_full_probe.get("verdict", "unavailable")
     g_topk_verdict = g_topk_probe.get("verdict", "unavailable")
     text_verdict = text_probe.get("verdict", "unavailable")
 
     h_acc = representation_probe.get("oof_macro_accuracy")
     text_acc = text_probe.get("oof_macro_accuracy")
-
     text_matches_hidden = (
         text_verdict == "informative"
         and h_acc is not None
@@ -2522,8 +2883,7 @@ def main() -> int:
 
     semantic_oof = controller_oof.get("semantic_oof") or {}
     semantic_oof_signal = semantic_oof.get(
-        "verdict",
-        "unavailable",
+        "verdict", "unavailable"
     )
 
     if controller_signal == "generalization_detected":
@@ -2621,11 +2981,11 @@ def main() -> int:
         "g_topk_verdict": g_topk_verdict,
         "text_verdict": text_verdict,
         "text_matches_hidden": text_matches_hidden,
-        "likely_bottleneck": likely_bottleneck,
         "semantic_oof_signal": semantic_oof_signal,
         "objective": "hidden_primary_semantic_aux",
         "hidden_beta": args.hidden_beta,
         "semantic_aux_weight": args.semantic_aux_weight,
+        "likely_bottleneck": likely_bottleneck,
         "rule": (
             "PASS when class-balanced hidden-space controller OOF CE "
             "beats ln(K) by at least 0.03. If OOF is unavailable, fall "
