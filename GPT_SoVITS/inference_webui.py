@@ -1358,6 +1358,55 @@ def audio_sr(audio, sr):
 # cache_tokens={}#暂未实现清理机制
 cache = {}
 
+# Upstream cache-dit / DBCache. Default stays off.
+CACHE_DIT = {
+    "cache_dit": "off",
+    "dbcache_fn": None,
+    "dbcache_threshold": 0.02,
+    "dbcache_warmup": 8,
+    "dbcache_downsample": 4,
+}
+
+
+def update_cache_dit(mode, fn, thr, warmup, ds):
+    CACHE_DIT["cache_dit"] = str(mode or "off")
+    CACHE_DIT["dbcache_fn"] = (
+        None if fn in (None, "") or int(fn) < 0 else int(fn)
+    )
+    CACHE_DIT["dbcache_threshold"] = (
+        float(thr) if thr not in (None, "") else 0.02
+    )
+    CACHE_DIT["dbcache_warmup"] = (
+        int(warmup) if warmup not in (None, "") else 8
+    )
+    CACHE_DIT["dbcache_downsample"] = (
+        int(ds) if ds not in (None, "") else 4
+    )
+
+
+def apply_cache_dit(vq_model, sample_steps, params=None):
+    cfm = getattr(vq_model, "cfm", None)
+    if cfm is None or not hasattr(cfm, "set_dbcache"):
+        return None
+
+    from module.cache_dit import config_from_params
+
+    cfg = config_from_params(
+        dict(params if params is not None else CACHE_DIT),
+        int(sample_steps),
+        getattr(cfm, "cache_depth", 0) or None,
+    )
+    if (
+        cfg.enabled
+        and str(model_version) == "v5turbo"
+        and not cfg.force
+    ):
+        cfg.fn = 0
+    cfm.set_dbcache(cfg)
+    if cfg.enabled:
+        print("cache-dit:", cfg)
+    return cfg
+
 
 def get_tts_wav(
     ref_wav_path,
@@ -1388,6 +1437,7 @@ def get_tts_wav(
     if cfg_rate is None:
         cfg_rate = 0.0
     sample_steps, cfg_rate = int(sample_steps), float(cfg_rate)
+    apply_cache_dit(globals().get("vq_model"), sample_steps)
     emotion_strength = float(emotion_strength)
     if not np.isfinite(emotion_strength) or emotion_strength < 0:
         raise gr.Error(i18n("情感强度必须是有限的非负数"))
@@ -2097,6 +2147,62 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         value=(32 if model_version == "v3" else 8),
                     )
                 )
+                with gr.Accordion(
+                    "DiT 가속 cache-dit / DBCache (기본 OFF)",
+                    open=False,
+                ):
+                    with gr.Row():
+                        cache_dit_mode = gr.Dropdown(
+                            label="cache-dit",
+                            choices=["off", "auto", "f4", "f8", "f16"],
+                            value="off",
+                            scale=2,
+                        )
+                        dbcache_fn = gr.Number(
+                            label="fn",
+                            value=-1,
+                            precision=0,
+                            scale=1,
+                        )
+                        dbcache_threshold = gr.Number(
+                            label="threshold",
+                            value=0.02,
+                            scale=1,
+                        )
+                        dbcache_warmup = gr.Number(
+                            label="warmup",
+                            value=8,
+                            precision=0,
+                            scale=1,
+                        )
+                        dbcache_downsample = gr.Number(
+                            label="downsample",
+                            value=4,
+                            precision=0,
+                            scale=1,
+                        )
+                    gr.Markdown(
+                        "V5dev 32-step 추론 가속용입니다. "
+                        "기본 OFF이며 auto는 16 step 이상에서 F8을 사용합니다. "
+                        "V5turbo 4-step은 기본적으로 비활성화됩니다."
+                    )
+                    for _cache_component in (
+                        cache_dit_mode,
+                        dbcache_fn,
+                        dbcache_threshold,
+                        dbcache_warmup,
+                        dbcache_downsample,
+                    ):
+                        _cache_component.change(
+                            update_cache_dit,
+                            [
+                                cache_dit_mode,
+                                dbcache_fn,
+                                dbcache_threshold,
+                                dbcache_warmup,
+                                dbcache_downsample,
+                            ],
+                        )
                 if_sr_Checkbox = gr.Checkbox(
                     label=i18n("v3输出如果觉得闷可以试试开超分"),
                     value=False,

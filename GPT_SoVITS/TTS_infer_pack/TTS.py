@@ -1254,6 +1254,40 @@ class TTS:
         """
         self.stop_flag = True
 
+    def apply_cache_dit(self, inputs: dict = None, sample_steps: int = 32):
+        """Configure upstream DBCache for the DiT sampler.
+
+        Default stays off. Environment fallbacks and mode parsing live in
+        module/cache_dit.py. v5turbo remains disabled unless explicitly forced.
+        """
+        cfm = getattr(self.vits_model, "cfm", None)
+        if cfm is None or not hasattr(cfm, "set_dbcache"):
+            return None
+
+        from module.cache_dit import config_from_params
+
+        cfg = config_from_params(
+            dict(inputs or {}),
+            int(sample_steps),
+            getattr(cfm, "cache_depth", 0) or None,
+        )
+        if (
+            cfg.enabled
+            and str(getattr(self.configs, "version", "")) == "v5turbo"
+            and not cfg.force
+        ):
+            print(
+                i18n(
+                    "cache-dit: not supported for v5turbo "
+                    "(4 steps), staying off"
+                )
+            )
+            cfg.fn = 0
+        cfm.set_dbcache(cfg)
+        if cfg.enabled:
+            print(i18n("cache-dit: %s" % cfg))
+        return cfg
+
     @torch.no_grad()
     def run(self, inputs: dict):
         """
@@ -1341,6 +1375,7 @@ class TTS:
         cfg_rate = inputs.get("cfg_rate")
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
         cfg_rate = (1.30 if self.configs.version == "v5dev" else 0.0) if cfg_rate is None else float(cfg_rate)
+        self.apply_cache_dit(inputs, sample_steps)
         super_sampling = inputs.get("super_sampling", False)
         streaming_mode = inputs.get("streaming_mode", False)
         overlap_length = inputs.get("overlap_length", 2)

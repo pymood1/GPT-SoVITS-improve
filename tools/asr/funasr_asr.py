@@ -2,7 +2,19 @@
 
 import argparse
 import os
+import sys
 import traceback
+
+# FunASR dependencies still import distutils on newer Python releases.
+# Re-export setuptools' maintained compatibility copy when stdlib distutils
+# is unavailable/removed.
+import setuptools._distutils as _distutils
+import setuptools._distutils.util as _distutils_util
+import setuptools._distutils.version as _distutils_version
+
+sys.modules.setdefault("distutils", _distutils)
+sys.modules.setdefault("distutils.util", _distutils_util)
+sys.modules.setdefault("distutils.version", _distutils_version)
 
 from funasr import AutoModel
 from modelscope import snapshot_download
@@ -81,6 +93,8 @@ def create_fun_asr_model(model_sources, device):
         "vad_model": "fsmn-vad",
         "device": device,
         "disable_update": True,
+        "check_latest": False,
+        "vad_kwargs": {"check_latest": False},
     }
     last_error = None
 
@@ -140,6 +154,8 @@ def create_model(language="zh", **kwargs):
                 vad_model="fsmn-vad",
                 device=device,
                 disable_update=True,
+                check_latest=False,
+                vad_kwargs={"check_latest": False},
             )
             model_name = "SenseVoice"
 
@@ -222,6 +238,8 @@ def create_model(language="zh", **kwargs):
         vad_model_revision=vad_model_revision,
         punc_model=path_punc,
         punc_model_revision=punc_model_revision,
+        disable_update=True,
+        check_latest=False,
     )
     print(f"FunASR classic model loaded: {language.upper()}")
 

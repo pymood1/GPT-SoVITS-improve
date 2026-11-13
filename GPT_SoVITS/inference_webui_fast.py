@@ -73,6 +73,31 @@ language = os.environ.get("language", "Auto")
 language = sys.argv[-1] if sys.argv[-1] in scan_language_list() else language
 i18n = I18nAuto(language=language)
 
+# Upstream cache-dit / DBCache. Default stays off.
+CACHE_DIT = {
+    "cache_dit": "off",
+    "dbcache_fn": None,
+    "dbcache_threshold": 0.02,
+    "dbcache_warmup": 8,
+    "dbcache_downsample": 4,
+}
+
+
+def update_cache_dit(mode, fn, thr, warmup, ds):
+    CACHE_DIT["cache_dit"] = str(mode or "off")
+    CACHE_DIT["dbcache_fn"] = (
+        None if fn in (None, "") or int(fn) < 0 else int(fn)
+    )
+    CACHE_DIT["dbcache_threshold"] = (
+        float(thr) if thr not in (None, "") else 0.02
+    )
+    CACHE_DIT["dbcache_warmup"] = (
+        int(warmup) if warmup not in (None, "") else 8
+    )
+    CACHE_DIT["dbcache_downsample"] = (
+        int(ds) if ds not in (None, "") else 4
+    )
+
 
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'  # 确保直接启动推理UI时也能够设置。
 
@@ -209,6 +234,7 @@ def inference(
         "cfg_rate": float(cfg_rate),
         "super_sampling": super_sampling,
     }
+    inputs.update(CACHE_DIT)
     try:
         for item in tts_pipeline.run(inputs):
             yield item, actual_seed
@@ -421,6 +447,62 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     repetition_penalty = gr.Slider(
                         minimum=0, maximum=2, step=0.05, label=i18n("重复惩罚"), value=1.35, interactive=True
                     )
+                with gr.Accordion(
+                    "DiT 가속 cache-dit / DBCache (기본 OFF)",
+                    open=False,
+                ):
+                    with gr.Row():
+                        cache_dit_mode = gr.Dropdown(
+                            label="cache-dit",
+                            choices=["off", "auto", "f4", "f8", "f16"],
+                            value="off",
+                            scale=2,
+                        )
+                        dbcache_fn = gr.Number(
+                            label="fn",
+                            value=-1,
+                            precision=0,
+                            scale=1,
+                        )
+                        dbcache_threshold = gr.Number(
+                            label="threshold",
+                            value=0.02,
+                            scale=1,
+                        )
+                        dbcache_warmup = gr.Number(
+                            label="warmup",
+                            value=8,
+                            precision=0,
+                            scale=1,
+                        )
+                        dbcache_downsample = gr.Number(
+                            label="downsample",
+                            value=4,
+                            precision=0,
+                            scale=1,
+                        )
+                    gr.Markdown(
+                        "V5dev 32-step 추론 가속용입니다. "
+                        "기본 OFF이며, auto는 16 step 이상에서 F8을 사용합니다. "
+                        "V5turbo 4-step은 기본적으로 비활성화됩니다."
+                    )
+                    for _cache_component in (
+                        cache_dit_mode,
+                        dbcache_fn,
+                        dbcache_threshold,
+                        dbcache_warmup,
+                        dbcache_downsample,
+                    ):
+                        _cache_component.change(
+                            update_cache_dit,
+                            [
+                                cache_dit_mode,
+                                dbcache_fn,
+                                dbcache_threshold,
+                                dbcache_warmup,
+                                dbcache_downsample,
+                            ],
+                        )
 
             with gr.Column():
                 with gr.Row():

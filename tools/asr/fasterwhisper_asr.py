@@ -41,6 +41,30 @@ language_code_list = [
 
 
 def download_model(model_size: str):
+    model_path = ""
+    if "distil" in model_size:
+        if "3.5" in model_size:
+            model_path = "tools/asr/models/faster-distil-whisper-large-v3.5"
+        else:
+            repo_id = "Systran/faster-{}-whisper-{}".format(
+                *model_size.split("-", maxsplit=1)
+            )
+            model_path = (
+                "tools/asr/models/"
+                + repo_id.replace("Systran/", "")
+            )
+    elif model_size == "large-v3-turbo":
+        model_path = "tools/asr/models/faster-whisper-large-v3-turbo"
+    else:
+        model_path = f"tools/asr/models/faster-whisper-{model_size}"
+
+    if (
+        os.path.isfile(os.path.join(model_path, "config.json"))
+        and os.path.isfile(os.path.join(model_path, "model.bin"))
+    ):
+        print(f"Using local Faster Whisper model: {model_path}")
+        return model_path
+
     url = "https://huggingface.co/api/models/gpt2"
     try:
         response = requests.get(url, timeout=3)
