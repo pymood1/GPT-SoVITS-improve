@@ -74,13 +74,26 @@ def merge_review_with_sidecar(
             )
         sidecar[wav] = row
 
+    review_override_fields = {
+        "review_rank",
+        "review_priority",
+        "review_reasons",
+        "human_emotion",
+        "human_confidence",
+        "human_secondary_emotion",
+        "human_notes",
+    }
+
     merged = []
     for row in review_rows:
         wav = str(row.get("wav") or "")
         if not wav:
             raise EvaluationError("review row is missing wav")
         combined = dict(sidecar.get(wav, {}))
-        combined.update(row)
+        combined["wav"] = wav
+        for field in review_override_fields:
+            if field in row:
+                combined[field] = row[field]
         merged.append(combined)
     return merged
 
