@@ -2950,7 +2950,7 @@ def main() -> int:
     if controller_signal == "generalization_detected":
         if semantic_oof_signal == "near_chance":
             likely_bottleneck = (
-                "semantic_aux_weak_hidden_primary_generalizes"
+                "none_hidden_direction_semantic_diagnostic_weak"
             )
         else:
             likely_bottleneck = "none_obvious"
@@ -2984,8 +2984,8 @@ def main() -> int:
         )
         if semantic_oof_signal == "near_chance":
             result_reason += (
-                "; semantic likelihood remains weak and is retained only "
-                "as an auxiliary steering constraint"
+                "; semantic likelihood remains weak but is diagnostic only "
+                "because steering now uses the learned hidden direction directly"
             )
         if text_confound_risk:
             result_reason += (
@@ -3035,6 +3035,16 @@ def main() -> int:
         ),
         "controller_oof": controller_oof,
         "controller_signal": controller_signal,
+        "controller_oof_macro_accuracy": (
+            controller_oof.get("oof_macro_accuracy")
+            if oof_available
+            else None
+        ),
+        "controller_oof_macro_auc": (
+            controller_oof.get("oof_macro_auc")
+            if oof_available
+            else None
+        ),
         "validated_checkpoint": validated_checkpoint,
         "text_confound_risk": text_confound_risk,
         "probe_verdict": probe_verdict,
@@ -3087,6 +3097,8 @@ def main() -> int:
         f"best_val={final_best_loss:.5f} "
         f"eval={controller_eval_source}:{controller_eval_loss:.5f} "
         f"controller={controller_signal} "
+        f"oof_acc={controller_oof.get('oof_macro_accuracy', float('nan')):.2%} "
+        f"oof_auc={controller_oof.get('oof_macro_auc', float('nan')):.3f} "
         f"probe={probe_verdict} "
         f"Gfull={g_full_verdict} "
         f"Gtopk={g_topk_verdict} "
