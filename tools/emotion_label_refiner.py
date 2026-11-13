@@ -1463,6 +1463,45 @@ def fit_final_critic(
     }
 
 
+def prototype_geometry(
+    critic: PrototypeMatchCritic,
+    emotions: Sequence[str],
+) -> dict[str, Any]:
+    prototypes = F.normalize(
+        critic.prototypes.detach().float().cpu(),
+        dim=-1,
+        eps=1e-6,
+    )
+    matrix = prototypes @ prototypes.transpose(0, 1)
+    class_count = len(emotions)
+    max_off_diagonal = -1.0
+    closest_pair: tuple[str, str] | None = None
+    rows: dict[str, dict[str, float]] = {}
+
+    for i, emotion_i in enumerate(emotions):
+        rows[emotion_i] = {}
+        for j, emotion_j in enumerate(emotions):
+            value = float(matrix[i, j].item())
+            rows[emotion_i][emotion_j] = value
+            if i != j and value > max_off_diagonal:
+                max_off_diagonal = value
+                closest_pair = (emotion_i, emotion_j)
+
+    return {
+        "cosine_matrix": rows,
+        "max_off_diagonal": (
+            max_off_diagonal
+            if class_count > 1
+            else None
+        ),
+        "closest_pair": (
+            list(closest_pair)
+            if closest_pair is not None
+            else None
+        ),
+    }
+
+
 def apply_critic_outputs(
     rows: Sequence[dict[str, Any]],
     *,
@@ -2364,6 +2403,10 @@ def main() -> int:
             ),
             "active_emotions": list(config.emotions),
             "state_counts": state_counts,
+            "prototype_geometry": prototype_geometry(
+                final_result["critic"],
+                config.emotions,
+            ),
             "training_sidecar": (
                 str(training_sidecar_path)
                 if training_sidecar_path is not None
