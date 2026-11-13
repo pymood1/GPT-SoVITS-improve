@@ -437,7 +437,7 @@ jobs:
       - name: Install Gradio 4.x WebUI stack
         run: |
           python -m pip install -q uv
-          uv pip install --system             "gradio==4.44.1"             "fastapi[standard]>=0.115.2,<0.116"             "pydantic<=2.10.6"
+          uv pip install --system             "gradio==4.44.1"             "fastapi[standard]>=0.115.2,<0.116"             "pydantic<=2.10.6"             "audioop-lts<=0.2.2"
       - name: Verify persistent error API
         run: |
           python - <<'PY'
