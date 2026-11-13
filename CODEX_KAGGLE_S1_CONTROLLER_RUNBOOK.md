@@ -3,6 +3,94 @@
 작성일: 2026-11-13  
 대상: Codex가 Chrome/Kaggle을 직접 조작하여 학습·검증·수정 루프를 이어갈 때 사용
 
+## 2026-11-13 Kaggle 실행 준비 상태
+
+현재 GitHub notebook:
+`GPT_SoVITS_Improve_Kaggle_Fast_Minimal.ipynb`
+
+Kaggle-ready notebook commit:
+`0b1abf5aded4c063fda2c6545b4056a46317291c`
+
+추가된 preflight:
+`tools/kaggle_training_preflight.py`
+
+preflight commit:
+`3a7758e18d0ff1027894d3e18ba4f9a11480498c`
+
+### Codex가 초기화된 직후 할 것
+
+~~~text
+1. GitHub main 최신화
+2. Kaggle에서 최신 GPT_SoVITS_Improve_Kaggle_Fast_Minimal.ipynb 사용
+3. Dataset 준비 셀 실행
+4. 설치 셀 실행
+5. 학습 전 Preflight 셀 실행
+6. PASS 확인
+7. WebUI 셀 실행
+8. 그때부터 실제 학습/실험 시작
+~~~
+
+중요:
+이미 브라우저에서 열어 둔 Kaggle notebook은 GitHub의 `.ipynb` 수정이 자동 반영되지 않는다.
+따라서 기존 live notebook을 계속 쓴다면 새 notebook을 import하거나, GitHub 최신 notebook의 새 preflight/WebUI 셀을 반영해야 한다.
+
+### 첫 S1 실험 이름 권장
+
+출력 혼동 방지를 위해 exp_name을 명확히 나눈다.
+
+~~~text
+A1: Gilberta_s1_full_baseline
+B1: Gilberta_s1_lora_v_o_r8_a16
+B2: Gilberta_s1_lora_qkv_o_r8_a16
+~~~
+
+기존 full15 checkpoint가 이미 비교 기준으로 충분하면 A1을 다시 학습할 필요는 없다.
+
+### Preflight가 확인하는 것
+
+- `training.list` 전 행의 audio 존재
+- CUDA/GPU
+- pretrained S1/S2/Vocoder 존재
+- 핵심 수정 Python 파일 `py_compile`
+- `tools/s1_lora_selftest.py`
+- `tools/emotion_labeling_selftest.py`
+- `/kaggle/tmp`, `/kaggle/working` disk 상태
+
+Preflight는 실제 학습을 시작하지 않는다.
+
+### GPU 정책
+
+Kaggle T4×2:
+- 독립 GPT/S1 job과 SoVITS job을 동시에 돌릴 때 각 GPU 1개씩 우선.
+- S1 LoRA 한 작업을 기본적으로 DDP 2-GPU로 쪼개지 않는다.
+- S1/reference 비교 실험에서는 S2를 고정한다.
+
+### S1 실험 UI
+
+WebUI의 GPT/S1 학습 방식:
+
+~~~text
+Full fine-tuning (baseline)
+V + Attention Out LoRA
+QKV + Attention Out LoRA
+~~~
+
+첫 LoRA:
+~~~text
+V + Attention Out LoRA
+rank = 8
+alpha = 16
+~~~
+
+실험 결과 전까지 기본값은 Full FT 유지.
+
+### Controller 규칙
+
+S1 checkpoint가 달라지면 Controller도 새로 학습한다.
+다른 S1에서 학습한 Controller checkpoint 재사용 금지.
+
+---
+
 ## 0. 이 문서의 목적
 
 이 문서는 "무엇을 연구할지"보다 **Codex가 실제로 어떤 순서로 실행하고, 무엇을 보고, 다음 행동을 어떻게 결정할지**를 정한다.
