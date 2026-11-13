@@ -177,6 +177,134 @@ class MultiheadAttention(Module):
 
         self.add_zero_attn = add_zero_attn
 
+        # Optional S1 training-time LoRA. Disabled by default, so legacy
+        # checkpoints/state_dicts remain unchanged. Compact export merges
+        # these deltas into ordinary attention weights for inference.
+        self.lora_target = None
+        self.lora_rank = 0
+        self.lora_alpha = 0.0
+        self.register_parameter("lora_in_A", None)
+        self.register_parameter("lora_in_B", None)
+        self.register_parameter("lora_out_A", None)
+        self.register_parameter("lora_out_B", None)
+
+    @property
+    def lora_enabled(self) -> bool:
+        return self.lora_target is not None
+
+    @property
+    def lora_scale(self) -> float:
+        if not self.lora_enabled or self.lora_rank <= 0:
+            return 0.0
+        return float(self.lora_alpha) / float(self.lora_rank)
+
+    def enable_lora(
+        self,
+        *,
+        target: str = "v",
+        rank: int = 8,
+        alpha: float = 16.0,
+    ) -> None:
+        """Enable explicit low-rank adaptation for S1 self-attention.
+
+        target="v" preserves Q/K routing and adapts V + output projection.
+        target="qkv" adapts combined Q/K/V + output projection.
+        """
+        target = str(target).strip().lower()
+        if target not in {"v", "qkv"}:
+            raise ValueError(
+                f"unsupported attention LoRA target: {target!r}"
+            )
+        if (
+            not self._qkv_same_embed_dim
+            or self.in_proj_weight is None
+        ):
+            raise ValueError(
+                "S1 attention LoRA requires combined Q/K/V "
+                "in_proj_weight"
+            )
+        if self.lora_enabled:
+            raise RuntimeError("attention LoRA is already enabled")
+
+        rank = int(rank)
+        alpha = float(alpha)
+        if rank <= 0:
+            raise ValueError("attention LoRA rank must be positive")
+        if not math.isfinite(alpha) or alpha <= 0.0:
+            raise ValueError(
+                "attention LoRA alpha must be positive and finite"
+            )
+
+        input_rows = (
+            self.embed_dim
+            if target == "v"
+            else 3 * self.embed_dim
+        )
+        factory = {
+            "device": self.in_proj_weight.device,
+            "dtype": self.in_proj_weight.dtype,
+        }
+        self.lora_in_A = Parameter(
+            torch.empty((rank, self.embed_dim), **factory)
+        )
+        self.lora_in_B = Parameter(
+            torch.zeros((input_rows, rank), **factory)
+        )
+        self.lora_out_A = Parameter(
+            torch.empty((rank, self.embed_dim), **factory)
+        )
+        self.lora_out_B = Parameter(
+            torch.zeros((self.embed_dim, rank), **factory)
+        )
+        torch.nn.init.kaiming_uniform_(
+            self.lora_in_A,
+            a=math.sqrt(5),
+        )
+        torch.nn.init.kaiming_uniform_(
+            self.lora_out_A,
+            a=math.sqrt(5),
+        )
+
+        self.lora_target = target
+        self.lora_rank = rank
+        self.lora_alpha = alpha
+
+    def lora_in_proj_delta(self) -> Tensor:
+        if not self.lora_enabled:
+            return torch.zeros_like(self.in_proj_weight)
+
+        core = (
+            self.lora_in_B @ self.lora_in_A
+        ) * self.lora_scale
+        if self.lora_target == "qkv":
+            return core
+
+        # Combined in_proj_weight is stacked [Q; K; V]. Preserve Q/K
+        # exactly in the reference-retention-first V-only mode.
+        zeros = torch.zeros(
+            (2 * self.embed_dim, self.embed_dim),
+            device=core.device,
+            dtype=core.dtype,
+        )
+        return torch.cat((zeros, core), dim=0)
+
+    def lora_out_proj_delta(self) -> Tensor:
+        if not self.lora_enabled:
+            return torch.zeros_like(self.out_proj.weight)
+        return (
+            self.lora_out_B @ self.lora_out_A
+        ) * self.lora_scale
+
+    def merged_in_proj_weight(self) -> Tensor:
+        if not self.lora_enabled:
+            return self.in_proj_weight
+        return self.in_proj_weight + self.lora_in_proj_delta()
+
+    def merged_out_proj_weight(self) -> Tensor:
+        if not self.lora_enabled:
+            return self.out_proj.weight
+        return self.out_proj.weight + self.lora_out_proj_delta()
+
     def _reset_parameters(self):
         if self._qkv_same_embed_dim:
             xavier_uniform_(self.in_proj_weight)
@@ -284,6 +412,10 @@ class MultiheadAttention(Module):
             why_not_fast_path = (
                 f"dtypes of query ({query.dtype}) and self.in_proj_weight ({self.in_proj_weight.dtype}) don't match"
             )
+        elif self.lora_enabled:
+            why_not_fast_path = (
+                "training-time attention LoRA is enabled"
+            )
         elif self.training:
             why_not_fast_path = "training is enabled"
         elif not self.batch_first:
@@ -359,6 +491,17 @@ class MultiheadAttention(Module):
             else:
                 query, key, value = [x.transpose(1, 0) for x in (query, key, value)]
 
+        effective_in_proj_weight = (
+            self.merged_in_proj_weight()
+            if self.lora_enabled
+            else self.in_proj_weight
+        )
+        effective_out_proj_weight = (
+            self.merged_out_proj_weight()
+            if self.lora_enabled
+            else self.out_proj.weight
+        )
+
         if not self._qkv_same_embed_dim:
             attn_output, attn_output_weights = F.multi_head_attention_forward(
                 query,
@@ -366,13 +509,13 @@ class MultiheadAttention(Module):
                 value,
                 self.embed_dim,
                 self.num_heads,
-                self.in_proj_weight,
+                effective_in_proj_weight,
                 self.in_proj_bias,
                 self.bias_k,
                 self.bias_v,
                 self.add_zero_attn,
                 self.dropout,
-                self.out_proj.weight,
+                effective_out_proj_weight,
                 self.out_proj.bias,
                 training=self.training,
                 key_padding_mask=key_padding_mask,
@@ -392,13 +535,13 @@ class MultiheadAttention(Module):
                 value,
                 self.embed_dim,
                 self.num_heads,
-                self.in_proj_weight,
+                effective_in_proj_weight,
                 self.in_proj_bias,
                 self.bias_k,
                 self.bias_v,
                 self.add_zero_attn,
                 self.dropout,
-                self.out_proj.weight,
+                effective_out_proj_weight,
                 self.out_proj.bias,
                 training=self.training,
                 key_padding_mask=key_padding_mask,
