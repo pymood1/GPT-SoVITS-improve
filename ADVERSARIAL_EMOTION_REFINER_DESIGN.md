@@ -1386,12 +1386,15 @@ Critic은 기존 `emotion_intended`를 절대 덮어쓰지 않는다.
 - `auto_emotion_refiner`
 
 현재 state:
-- `accepted_core`
+- `accepted_core` — high-confidence seed + OOF Critic agreement
+- `critic_confirmed_candidate` — seed 기준을 못 넘긴 기존 v2 label에 final Critic이 동의
 - `conflict`
 - `neutral_candidate`
 - `ambiguous`
 - `ood`
 - `failed`
+
+`critic_confirmed_candidate`는 자동 Controller target으로 승격하지 않는다.
 
 Critic probability는 calibrated correctness probability가 아니다.
 따라서 field 이름도 confidence가 아니라 `max_probability`로 둔다.
@@ -1545,3 +1548,110 @@ Critic이 실패하면 G를 더 복잡하게 만들지 말고:
 따라서 Codex는 첫 실행 후 결과를 이 문서와
 `PROJECT_RESEARCH_HISTORY.md`
 에 기록할 것.
+
+
+## 2026-11-13 추가 안전 수정
+
+commit:
+`910cf2e47e0f2abf9ce7ad001e547da41ac56853`
+
+초기 Critic 구현을 다시 읽는 과정에서 다음 경로를 발견했다.
+
+~~~text
+v2에서는 accepted
+하지만 high-confidence seed 기준은 실패
++
+final Critic은 v2 label에 동의
+→ accepted_core
+~~~
+
+이 경로는 너무 공격적이었다.
+
+수정 후:
+
+~~~text
+high-confidence seed + OOF agreement
+→ accepted_core
+
+non-seed v2 label + final Critic agreement
+→ critic_confirmed_candidate
+~~~
+
+즉 high-quality core와 "검토할 가치가 있는 후보"를 분리한다.
+
+---
+
+# 36. 추가 구현 — human review evaluator
+
+파일:
+`tools/evaluate_emotion_review.py`
+
+commit:
+`b59f931a1c3b48aa9fe560987166280eed693a83`
+
+사람이 review JSONL에서 일부 sample에만 `human_emotion`을 채워도 다음을 동일 subset에서 비교한다.
+
+- raw emotion2vec
+- speaker-relative v2
+- Critic
+- conservative v3 selective
+
+주요 metric:
+- coverage
+- selective accuracy
+- macro precision
+- macro recall
+- macro F1
+- per-class confusion
+
+v3 selective는 abstain이 가능하므로 accuracy 단독이 아니라 coverage와 함께 본다.
+
+사람 label도 절대 ground truth로 가정하지 않는다.
+기본적으로 human confidence가 low인 row는 평가에서 제외한다.
+
+예:
+
+~~~bash
+python tools/evaluate_emotion_review.py \
+  --review /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_review.jsonl \
+  --sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar_v3_critic.jsonl \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_review_eval.json
+~~~
+
+---
+
+# 37. 추가 구현 — synthetic smoke test
+
+파일:
+`tools/emotion_labeling_selftest.py`
+
+commit:
+`0a6263a2fc12690914880d0c6a3755f88c5bab6d`
+
+실제 audio/FunASR model 없이 다음을 검사한다.
+
+- uncertainty diagnostics
+- review set selector
+- separable synthetic embedding에서 grouped OOF Critic
+- review evaluator
+
+Kaggle에서 가장 먼저 실행:
+
+~~~bash
+cd /kaggle/tmp/GPT-SoVITS
+python tools/emotion_labeling_selftest.py
+~~~
+
+기대:
+모든 항목 `[PASS]`.
+
+개발 환경에서 Critic core를 exact source 기준으로 synthetic separable data에 별도 실행했을 때:
+- OOF accuracy = 1.0
+- OOF macro accuracy = 1.0
+- OOF macro AUC = 1.0
+
+review selector/evaluator의 core function도 synthetic input에서 기대 결과를 확인했다.
+
+단:
+현재 환경에서는 GitHub DNS가 차단되어 **repo 전체를 clone한 상태의 실제 self-test 파일 실행은 못 했다**.
+따라서 Kaggle에서 위 self-test를 첫 runtime gate로 실행한다.
