@@ -276,9 +276,16 @@ def merge_activities(
                     progress = _clamp_progress(epoch / total_epochs)
             except (TypeError, ValueError):
                 pass
+        activity_state = str(
+            activity.get("state") or "running"
+        ).lower()
+        activity_stage = str(activity.get("stage") or "").strip()
         if progress is not None:
             progress_values.append(progress)
-            parts.append(f"{task} {progress:.0%}")
+            suffix = " · FAILED" if activity_state == "failed" else ""
+            parts.append(f"{task} {progress:.0%}{suffix}")
+        elif activity_stage:
+            parts.append(f"{task} · {activity_stage}")
         else:
             parts.append(task)
 
@@ -553,7 +560,10 @@ def render_status_html(
 
     state = str(activity.get("state") or "idle").lower()
     running = state == "running"
-    task = html.escape(str(activity.get("task") or "대기 중"))
+    failed = state == "failed"
+    task = html.escape(
+        str(activity.get("task") or ("작업 실패" if failed else "대기 중"))
+    )
     stage = html.escape(str(activity.get("stage") or "idle"))
 
     progress = _clamp_progress(activity.get("progress"))
@@ -612,8 +622,10 @@ def render_status_html(
             else stage
         )
 
-    badge = "RUNNING" if running else "IDLE"
-    activity_class = "running" if running else "idle"
+    badge = "RUNNING" if running else ("FAILED" if failed else "IDLE")
+    activity_class = (
+        "running" if running else ("failed" if failed else "idle")
+    )
 
     activity_card = (
         f'<section class="status-activity status-activity-{activity_class}" data-status-activity>'
