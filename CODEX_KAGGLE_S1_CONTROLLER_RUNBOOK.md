@@ -759,11 +759,8 @@ audio 자체를 checkpoint에 embed하지는 않음.
 - `tools/emotion_labeling_selftest.py` — 실제 audio 없이 synthetic smoke test
 
 중요:
-현재 `emotion_label_refiner.py`는 의도적으로 **Critic-only**다.
-Bounded Refiner G는 아직 구현하지 않는다.
-
-이유:
-Critic이 OOF에서 informative하다는 증거가 먼저 필요하다.
+`emotion_label_refiner.py`에는 Critic과 Bounded Refiner G가 모두 구현되어 있다.
+하지만 **기본값은 `--mode critic`**이고, G는 Critic OOF gate를 통과해야만 실행된다.
 
 Kaggle에서 감정 연구를 시작할 때 가장 먼저:
 
@@ -772,9 +769,9 @@ cd /kaggle/tmp/GPT-SoVITS
 python tools/emotion_labeling_selftest.py
 ~~~
 
-모두 PASS하면 최신 sidecar를 생성한 뒤 Critic을 실행한다.
+모두 PASS하면 최신 sidecar를 생성한 뒤 먼저 Critic-only를 실행한다.
 
-Critic의 초기 진행 gate:
+Critic / Refiner 초기 gate:
 
 ~~~text
 OOF macro accuracy >= 35%
@@ -782,27 +779,67 @@ AND
 OOF macro AUC >= 0.60
 ~~~
 
-gate 실패:
-- G 구현 금지
-- seed quality / OOD / embedding geometry부터 조사
-
-gate 통과:
-- `ADVERSARIAL_EMOTION_REFINER_DESIGN.md`의 bounded residual G 단계로 진행 가능
-
-현재 state policy:
+실행 규칙:
 
 ~~~text
-high-confidence seed + OOF Critic 동의
-→ accepted_core
+Critic OOF gate 실패
+→ Refiner 실행 차단
+→ seed quality / OOD / embedding geometry 조사
 
-seed 기준 미달 v2 label + final Critic 동의
-→ critic_confirmed_candidate
+Critic gate 통과
+→ --mode refiner 실행 가능
 
-Critic 불일치
-→ conflict
+Refiner OOF gate 실패
+→ final Refiner output 차단
+→ G를 더 복잡하게 만들지 말고 teacher/seed/critic evidence 재검토
 ~~~
 
-`critic_confirmed_candidate`는 자동 Controller target으로 사용하지 않는다.
+Refiner mode의 state policy:
+
+~~~text
+high-confidence seed
++ OOF Critic 동의
++ OOF Refiner 동의
++ margin gate
+→ accepted_core
+
+seed 기준 미달 v2 label
++ final Critic/Refiner 동의
+→ refiner_confirmed_candidate
+
+ambiguous/neutral
++ low OOD
++ Critic/Refiner strong consensus
+→ rescued_candidate
+
+불일치
+→ conflict/ambiguous
+~~~
+
+`refiner_confirmed_candidate`, `rescued_candidate`는 자동 Controller target으로 사용하지 않는다.
+
+Controller용 파생 sidecar는 명시적으로 `--training-sidecar`를 줄 때만 생성한다.
+첫 비교는 반드시 `--training-policy core`로 시작한다.
+
+Refiner 실행 예:
+
+~~~bash
+python tools/emotion_label_refiner.py \
+  --mode refiner \
+  --list /kaggle/input/datasets/pymood1/endfield/training.list \
+  --wav-root /kaggle/input/datasets/pymood1/endfield/datas \
+  --sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl \
+  --prediction-cache /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl.predictions.jsonl \
+  --embedding-cache /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_embeddings.pt \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar_v3_refiner.jsonl \
+  --artifact /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_refiner.pt \
+  --training-sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar_v3_core_training.jsonl \
+  --training-policy core \
+  --device cuda:0 \
+  --emotions happy,angry,disgusted,surprised
+~~~
+
+상세 설계/현재 commit은 `ADVERSARIAL_EMOTION_REFINER_DESIGN.md`를 따른다.
 
 ---
 
