@@ -843,6 +843,56 @@ python tools/emotion_label_refiner.py \
 
 ---
 
+## S1 LoRA 구현 완료 상태
+
+현재 코드에는 실제 학습 전까지 필요한 S1 LoRA 경로가 구현되어 있다.
+
+지원:
+- `full` — 기존 full fine-tuning baseline
+- `lora_v_o` — Q/K frozen, V + attention out LoRA
+- `lora_qkv_o` — Q/K/V + attention out LoRA
+
+WebUI에서 선택 가능하며 기본값은 계속 `full`.
+
+LoRA rank/alpha 기본:
+- rank 8
+- alpha 16
+
+compact GPT checkpoint 저장 시 LoRA delta는 ordinary S1 attention weight에 merge된다.
+따라서 inference loader는 수정할 필요가 없다.
+
+실제 학습 전에 먼저:
+
+~~~bash
+cd /kaggle/tmp/GPT-SoVITS
+python tools/s1_lora_selftest.py
+~~~
+
+이 self-test는 학습이 아니라:
+- zero-init 동일성
+- V-only Q/K 보존
+- merge equivalence
+
+만 확인한다.
+
+중요:
+현재 ChatGPT 단계에서는 **코드 구현/정적 검증까지만 수행**한다.
+실제 Kaggle dataset 학습, 장시간 ablation, 청감 평가는 Codex/사용자 실행 단계로 남긴다.
+
+실제 실험 순서:
+
+~~~text
+pretrained vs current full15
+→ compare_s1_controller_space.py
+→ V+O LoRA r=8
+→ QKV+O LoRA r=8
+→ 각 S1마다 Controller 재학습/OOF/청감
+~~~
+
+LoRA가 좋다는 이유만으로 default로 승격하지 않는다.
+
+---
+
 ## 19. 현재 추천 실행 순서
 
 첫 Chrome/Kaggle 자동 실행에서 해야 할 일:
