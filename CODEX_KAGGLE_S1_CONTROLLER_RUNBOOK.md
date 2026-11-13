@@ -18,6 +18,7 @@
 
 - `S1_REFERENCE_RETENTION_EXPERIMENTS.md`
 - `RESEARCH_METHODOLOGY_HANDOFF.md` — 연구/디버깅/실험 설계 방법론과 판단 원칙
+- `PROJECT_RESEARCH_HISTORY.md` — 실패/진단/수정/결정의 시간순 역사와 폐기된 접근의 이유
 
 현재 S1 비교 도구:
 
