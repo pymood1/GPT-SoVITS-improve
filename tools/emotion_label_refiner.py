@@ -1031,7 +1031,7 @@ def crossfit_refiner(
             config=critic_config,
             run_seed=(
                 critic_config.seed
-                + 2003 * (fold_index + 1)
+                + 1009 * (fold_index + 1)
             ),
         )
         with torch.no_grad():
@@ -1081,6 +1081,27 @@ def crossfit_refiner(
         )
 
     predictions = oof_logits.argmax(dim=-1)
+    teacher_seed_logits = all_teacher_logits[list(seed_indices)]
+    teacher_macro_accuracy = macro_accuracy(
+        teacher_seed_logits,
+        labels,
+        len(critic_config.emotions),
+    )
+    teacher_macro_auc = macro_auc(
+        teacher_seed_logits,
+        labels,
+        len(critic_config.emotions),
+    )
+    refiner_macro_accuracy = macro_accuracy(
+        oof_logits,
+        labels,
+        len(critic_config.emotions),
+    )
+    refiner_macro_auc = macro_auc(
+        oof_logits,
+        labels,
+        len(critic_config.emotions),
+    )
     metrics = {
         "folds": len(folds),
         "seed_samples": len(seed_indices),
@@ -1090,15 +1111,25 @@ def crossfit_refiner(
         "oof_accuracy": float(
             (predictions == labels).float().mean().item()
         ),
-        "oof_macro_accuracy": macro_accuracy(
-            oof_logits,
-            labels,
-            len(critic_config.emotions),
+        "oof_macro_accuracy": refiner_macro_accuracy,
+        "oof_macro_auc": refiner_macro_auc,
+        "teacher_seed_ce": float(
+            F.cross_entropy(
+                teacher_seed_logits,
+                labels,
+            ).item()
         ),
-        "oof_macro_auc": macro_auc(
-            oof_logits,
-            labels,
-            len(critic_config.emotions),
+        "teacher_seed_macro_accuracy": teacher_macro_accuracy,
+        "teacher_seed_macro_auc": teacher_macro_auc,
+        "refiner_minus_teacher_macro_accuracy": (
+            float(refiner_macro_accuracy)
+            - float(teacher_macro_accuracy)
+        ),
+        "refiner_minus_teacher_macro_auc": (
+            float(refiner_macro_auc) - float(teacher_macro_auc)
+            if refiner_macro_auc is not None
+            and teacher_macro_auc is not None
+            else None
         ),
     }
     return oof_logits, metrics
