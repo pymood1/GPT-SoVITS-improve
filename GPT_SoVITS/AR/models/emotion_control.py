@@ -42,6 +42,7 @@ class LowRankEmotionPreference(nn.Module):
         rank: int = 8,
         max_log_odds_shift: float = 0.35,
         prefix_log_ratio_budget: float = 2.0,
+        steering_mode: str = "hidden_direction",
     ) -> None:
         super().__init__()
         if hidden_dim <= 0 or num_emotions <= 0 or rank <= 0:
@@ -54,6 +55,10 @@ class LowRankEmotionPreference(nn.Module):
         self.rank = int(rank)
         self.max_log_odds_shift = float(max_log_odds_shift)
         self.prefix_log_ratio_budget = float(prefix_log_ratio_budget)
+        steering_mode = str(steering_mode).strip().lower()
+        if steering_mode not in {"legacy_low_rank", "hidden_direction"}:
+            raise ValueError(f"unsupported steering_mode: {steering_mode}")
+        self.steering_mode = steering_mode
 
         # Zero-effect initialization: attaching an untrained controller does not
         # change GPT-SoVITS output probabilities.
@@ -110,6 +115,22 @@ class LowRankEmotionPreference(nn.Module):
         with torch.no_grad():
             self.emotion_coeff.weight.copy_(coeff)
 
+    def hidden_directions(self) -> torch.Tensor:
+        """Return one centered hidden-space direction per emotion."""
+        directions = (
+            self.v_proj
+            @ self.emotion_coeff.weight.transpose(0, 1)
+        ).transpose(0, 1)
+        directions = directions - directions.mean(
+            dim=0,
+            keepdim=True,
+        )
+        return F.normalize(
+            directions,
+            dim=-1,
+            eps=1e-6,
+        )
+
     def preference_scores(
         self,
         hidden_state: torch.Tensor,
@@ -117,51 +138,85 @@ class LowRankEmotionPreference(nn.Module):
         emotion_id: Union[int, torch.Tensor],
         vocab_size: Optional[int] = None,
     ) -> torch.Tensor:
-        """Project a low-rank virtual hidden delta through the pretrained readout."""
+        """Produce bounded readout preferences for the selected emotion.
+
+        New controllers bypass the weak observed-token likelihood mapping:
+        the discriminative hidden-space emotion direction is projected
+        directly onto normalized S1 readout vectors. Legacy checkpoints keep
+        the original context-dependent V/U path.
+        """
         if hidden_state.ndim != 2:
-            raise ValueError(f"hidden_state must be [B,H], got {tuple(hidden_state.shape)}")
+            raise ValueError(
+                f"hidden_state must be [B,H], got {tuple(hidden_state.shape)}"
+            )
         if hidden_state.shape[-1] != self.hidden_dim:
             raise ValueError(
-                f"hidden dim mismatch: controller={self.hidden_dim}, hidden={hidden_state.shape[-1]}"
+                f"hidden dim mismatch: controller={self.hidden_dim}, "
+                f"hidden={hidden_state.shape[-1]}"
             )
 
         batch_size = hidden_state.shape[0]
         if isinstance(emotion_id, int):
             emotion_id = torch.full(
-                (batch_size,), emotion_id, dtype=torch.long, device=hidden_state.device
+                (batch_size,),
+                emotion_id,
+                dtype=torch.long,
+                device=hidden_state.device,
             )
         else:
-            emotion_id = emotion_id.to(device=hidden_state.device, dtype=torch.long).reshape(-1)
+            emotion_id = emotion_id.to(
+                device=hidden_state.device,
+                dtype=torch.long,
+            ).reshape(-1)
             if emotion_id.numel() == 1 and batch_size != 1:
                 emotion_id = emotion_id.expand(batch_size)
             if emotion_id.numel() != batch_size:
-                raise ValueError("emotion_id must be scalar or have one value per batch item")
+                raise ValueError(
+                    "emotion_id must be scalar or have one value per batch item"
+                )
 
-        if torch.any(emotion_id < 0) or torch.any(emotion_id >= self.num_emotions):
+        if torch.any(emotion_id < 0) or torch.any(
+            emotion_id >= self.num_emotions
+        ):
             raise ValueError("emotion_id out of range")
-
-        normalized = F.layer_norm(hidden_state, (self.hidden_dim,))
-        low_rank = normalized @ self.v_proj
-        low_rank = low_rank * self.emotion_coeff(emotion_id)
-        delta_hidden = low_rank @ self.u_proj.transpose(0, 1)
 
         if vocab_size is None:
             vocab_size = output_weight.shape[0]
         output_weight = output_weight[:vocab_size]
+
+        if self.steering_mode == "hidden_direction":
+            directions = self.hidden_directions().to(
+                device=hidden_state.device,
+                dtype=hidden_state.dtype,
+            )
+            selected = directions.index_select(0, emotion_id)
+            normalized_readout = F.normalize(
+                output_weight.to(
+                    device=hidden_state.device,
+                    dtype=hidden_state.dtype,
+                ),
+                dim=-1,
+                eps=1e-6,
+            )
+            return (
+                selected
+                @ normalized_readout.transpose(0, 1)
+            )
+
+        normalized = F.layer_norm(
+            hidden_state,
+            (self.hidden_dim,),
+        )
+        low_rank = normalized @ self.v_proj
+        low_rank = low_rank * self.emotion_coeff(emotion_id)
+        delta_hidden = low_rank @ self.u_proj.transpose(0, 1)
         return delta_hidden @ output_weight.transpose(0, 1)
 
     def hidden_emotion_logits(
         self,
         hidden_state: torch.Tensor,
     ) -> torch.Tensor:
-        """Low-rank linear classifier over raw mean-pooled S1 hidden states.
-
-        This intentionally mirrors the successful diagnostic probe more
-        closely than the previous layer-normalized V/U mixture. Only V and
-        emotion_coeff define the discriminative basis; U is reserved for the
-        semantic steering map so the weak semantic objective cannot corrupt
-        the primary hidden classifier.
-        """
+        """Bounded cosine classifier over mean-pooled S1 hidden states."""
         if hidden_state.ndim != 2:
             raise ValueError(
                 f"hidden_state must be [T,H], got {tuple(hidden_state.shape)}"
@@ -175,12 +230,24 @@ class LowRankEmotionPreference(nn.Module):
         if hidden_state.shape[0] == 0:
             raise ValueError("hidden_state sequence must be non-empty")
 
-        pooled = hidden_state.mean(dim=0)
-        latent = pooled @ self.v_proj
-        return (
-            latent @ self.emotion_coeff.weight.transpose(0, 1)
-            + self.hidden_bias
+        pooled = F.layer_norm(
+            hidden_state.mean(dim=0),
+            (self.hidden_dim,),
         )
+        latent = F.normalize(
+            pooled @ self.v_proj,
+            dim=-1,
+            eps=1e-6,
+        )
+        coeff = F.normalize(
+            self.emotion_coeff.weight,
+            dim=-1,
+            eps=1e-6,
+        )
+        # Keep class offsets useful but bounded so a tiny validation set cannot
+        # drive arbitrarily overconfident CE while ranking remains sensible.
+        bias = 0.25 * torch.tanh(self.hidden_bias)
+        return latent @ coeff.transpose(0, 1) + bias
 
     def tilt_probabilities(
         self,
@@ -304,32 +371,52 @@ def vectorized_sequence_relative_scores(
         raise ValueError("valid mask length does not match hidden")
 
     vocab_size = base_probs.shape[-1]
-    normalized = F.layer_norm(hidden, (controller.hidden_dim,))
-    v_proj = (
-        controller.v_proj.detach()
-        if detach_conditioner
-        else controller.v_proj
-    )
-    emotion_coeff = (
-        controller.emotion_coeff.weight.detach()
-        if detach_conditioner
-        else controller.emotion_coeff.weight
-    )
-    low_rank = normalized @ v_proj
 
-    # ((hV) * e) U^T W^T == ((hV) * e) (WU)^T.
-    # WU is shared by every emotion, so compute it only once per sample.
-    readout_basis = (
-        output_weight[:vocab_size] @ controller.u_proj
-    )
-    conditioned = (
-        low_rank.unsqueeze(1)
-        * emotion_coeff.unsqueeze(0)
-    )
-    preference_scores = torch.matmul(
-        conditioned,
-        readout_basis.transpose(0, 1),
-    )
+    if controller.steering_mode == "hidden_direction":
+        directions = controller.hidden_directions()
+        if detach_conditioner:
+            directions = directions.detach()
+        normalized_readout = F.normalize(
+            output_weight[:vocab_size],
+            dim=-1,
+            eps=1e-6,
+        )
+        per_emotion = (
+            directions
+            @ normalized_readout.transpose(0, 1)
+        )
+        preference_scores = per_emotion.unsqueeze(0).expand(
+            hidden.shape[0],
+            -1,
+            -1,
+        )
+    else:
+        normalized = F.layer_norm(hidden, (controller.hidden_dim,))
+        v_proj = (
+            controller.v_proj.detach()
+            if detach_conditioner
+            else controller.v_proj
+        )
+        emotion_coeff = (
+            controller.emotion_coeff.weight.detach()
+            if detach_conditioner
+            else controller.emotion_coeff.weight
+        )
+        low_rank = normalized @ v_proj
+
+        # ((hV) * e) U^T W^T == ((hV) * e) (WU)^T.
+        # WU is shared by every emotion, so compute it only once per sample.
+        readout_basis = (
+            output_weight[:vocab_size] @ controller.u_proj
+        )
+        conditioned = (
+            low_rank.unsqueeze(1)
+            * emotion_coeff.unsqueeze(0)
+        )
+        preference_scores = torch.matmul(
+            conditioned,
+            readout_basis.transpose(0, 1),
+        )
 
     support = base_probs > 0
     support_count = support.sum(dim=-1)
@@ -647,13 +734,14 @@ def save_emotion_controller_checkpoint(
 ) -> None:
     """Save only the tiny controller; GPT-SoVITS backbone weights stay separate."""
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "config": {
             "hidden_dim": controller.hidden_dim,
             "num_emotions": controller.num_emotions,
             "rank": controller.rank,
             "max_log_odds_shift": controller.max_log_odds_shift,
             "prefix_log_ratio_budget": controller.prefix_log_ratio_budget,
+            "steering_mode": controller.steering_mode,
         },
         "state_dict": controller.state_dict(),
         "emotion_names": list(emotion_names) if emotion_names is not None else None,
@@ -704,7 +792,7 @@ def load_emotion_controller_checkpoint(
             + ", ".join(sorted(unexpected_payload_keys))
         )
     format_version = int(payload.get("format_version", 1))
-    if format_version not in {1, 2}:
+    if format_version not in {1, 2, 3}:
         raise ValueError(
             f"Unsupported emotion controller format_version: "
             f"{format_version!r}"
@@ -723,6 +811,7 @@ def load_emotion_controller_checkpoint(
         "rank",
         "max_log_odds_shift",
         "prefix_log_ratio_budget",
+        "steering_mode",
     }
     unexpected_config_keys = set(raw_config) - allowed_config_keys
     if unexpected_config_keys:
@@ -758,6 +847,12 @@ def load_emotion_controller_checkpoint(
         rank=int(config.get("rank", 8)),
         max_log_odds_shift=float(config.get("max_log_odds_shift", 0.35)),
         prefix_log_ratio_budget=float(config.get("prefix_log_ratio_budget", 2.0)),
+        steering_mode=str(
+            config.get(
+                "steering_mode",
+                "legacy_low_rank" if format_version < 3 else "hidden_direction",
+            )
+        ),
     )
     if "hidden_bias" not in state_dict:
         state_dict = dict(state_dict)
