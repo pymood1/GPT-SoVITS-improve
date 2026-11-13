@@ -748,6 +748,64 @@ audio 자체를 checkpoint에 embed하지는 않음.
 
 ---
 
+## 감정 라벨링/Adversarial Critic 현재 구현 상태
+
+관련 파일:
+
+- `tools/auto_emotion_sidecar.py` — v2 label 유지 + uncertainty/OOD/MAD diagnostics
+- `tools/build_emotion_review_set.py` — 정보량 높은 20~30개 검수 후보 자동 선택
+- `tools/emotion_label_refiner.py` — emotion2vec embedding 기반 grouped OOF Critic
+- `tools/evaluate_emotion_review.py` — 소량 human review로 raw/v2/critic/v3 비교
+- `tools/emotion_labeling_selftest.py` — 실제 audio 없이 synthetic smoke test
+
+중요:
+현재 `emotion_label_refiner.py`는 의도적으로 **Critic-only**다.
+Bounded Refiner G는 아직 구현하지 않는다.
+
+이유:
+Critic이 OOF에서 informative하다는 증거가 먼저 필요하다.
+
+Kaggle에서 감정 연구를 시작할 때 가장 먼저:
+
+~~~bash
+cd /kaggle/tmp/GPT-SoVITS
+python tools/emotion_labeling_selftest.py
+~~~
+
+모두 PASS하면 최신 sidecar를 생성한 뒤 Critic을 실행한다.
+
+Critic의 초기 진행 gate:
+
+~~~text
+OOF macro accuracy >= 35%
+AND
+OOF macro AUC >= 0.60
+~~~
+
+gate 실패:
+- G 구현 금지
+- seed quality / OOD / embedding geometry부터 조사
+
+gate 통과:
+- `ADVERSARIAL_EMOTION_REFINER_DESIGN.md`의 bounded residual G 단계로 진행 가능
+
+현재 state policy:
+
+~~~text
+high-confidence seed + OOF Critic 동의
+→ accepted_core
+
+seed 기준 미달 v2 label + final Critic 동의
+→ critic_confirmed_candidate
+
+Critic 불일치
+→ conflict
+~~~
+
+`critic_confirmed_candidate`는 자동 Controller target으로 사용하지 않는다.
+
+---
+
 ## 19. 현재 추천 실행 순서
 
 첫 Chrome/Kaggle 자동 실행에서 해야 할 일:
