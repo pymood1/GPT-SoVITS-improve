@@ -10,7 +10,6 @@ No GPT-S1 dataset or training is required. This verifies:
 
 from __future__ import annotations
 
-import copy
 import sys
 from pathlib import Path
 
@@ -121,7 +120,7 @@ def test_merge_equivalence(target: str) -> None:
         {
             key: value
             for key, value in module.state_dict().items()
-            if ".lora_" not in key
+            if "lora_" not in key
         },
         strict=True,
     )
