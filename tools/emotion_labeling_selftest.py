@@ -612,6 +612,7 @@ def test_threshold_calibrator() -> None:
         },
         min_coverage=0.50,
         min_accepted=4,
+        min_predicted_classes=2,
         top_n=5,
     )
     require(
