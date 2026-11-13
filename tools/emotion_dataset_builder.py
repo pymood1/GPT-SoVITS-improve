@@ -441,6 +441,15 @@ def build_dataset(args: argparse.Namespace) -> None:
             "emotion_training_policy_v3": metadata.get(
                 "emotion_training_policy_v3"
             ),
+            "emotion_human_label": metadata.get(
+                "emotion_human_label"
+            ),
+            "emotion_human_confidence": metadata.get(
+                "emotion_human_confidence"
+            ),
+            "emotion_human_secondary_label": metadata.get(
+                "emotion_human_secondary_label"
+            ),
             "transcript_source": metadata.get(
                 "transcript_source", "existing_list"
             ),
@@ -536,6 +545,25 @@ def build_dataset(args: argparse.Namespace) -> None:
             Counter(
                 item["emotion_intended"] or "unlabeled"
                 for item in records
+            )
+        ),
+        "emotion_label_states_v3": dict(
+            Counter(
+                str(item.get("emotion_label_state_v3") or "none")
+                for item in records
+            )
+        ),
+        "emotion_training_policies_v3": dict(
+            Counter(
+                str(item.get("emotion_training_policy_v3") or "none")
+                for item in records
+            )
+        ),
+        "human_reviewed_emotions": dict(
+            Counter(
+                str(item.get("emotion_human_label") or "none")
+                for item in records
+                if item.get("emotion_human_label")
             )
         ),
         "emotion_pair_usable": sum(
