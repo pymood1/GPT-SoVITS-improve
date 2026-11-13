@@ -631,3 +631,500 @@ GPT-SoVITS 전용 결과는 아니지만 방향 결정에 참고한다.
 - optional cross-utterance reference-conditioned objective
 
 이 문서의 1차 ablation 결과를 먼저 얻은 뒤 순서대로 구현한다.
+
+
+---
+
+## 15. 2026-11-13 추가 분석 — S1과 Emotion Controller를 같이 보면 더 명확해지는 점
+
+### Controller 학습은 이미 cross-utterance reference-conditioned 구조다
+
+현재 `tools/train_emotion_controller.py`의 controller 학습 데이터는 S1 fine-tuning보다 실제 inference 조건에 더 가깝다.
+
+`build_single_sample_batch()`는:
+
+~~~text
+fixed reference A의 phones + target B의 phones
+fixed reference A의 semantic + target B의 semantic
+fixed reference A의 BERT + target B의 BERT
+~~~
+
+를 하나의 S1 teacher-forcing sequence로 만든다.
+
+그리고 `prepare_controller_sample()`은 reference semantic 구간을 제외한 **target B hidden state만** controller 학습에 사용한다.
+
+즉 현재 controller는 이미:
+
+~~~text
+reference A
+    +
+different target B
+    ↓
+reference-conditioned target hidden
+    ↓
+emotion classifier/direction
+~~~
+
+을 보고 학습한다.
+
+반면 S1 fine-tuning은 기본적으로 한 utterance 안의 text/semantic next-token prediction만 학습한다.
+
+따라서 현재 구조의 비대칭은:
+
+~~~text
+S1 fine-tune:
+same-utterance autoregressive objective
+
+Controller:
+cross-utterance reference-conditioned hidden objective
+~~~
+
+다.
+
+이 비대칭 때문에 S1이 full fine-tuning으로 reference sensitivity를 잃은 뒤, Controller가 그 이미 변형된 hidden space에서 감정 방향을 다시 찾아야 하는 구조가 된다.
+
+### hidden_direction controller의 inference는 현재 context-independent다
+
+현재 `LowRankEmotionPreference.preference_scores()`의 `hidden_direction` mode는 inference 시 현재 `hidden_state` 값으로 preference를 바꾸지 않는다.
+
+개념적으로:
+
+~~~text
+learned hidden emotion direction
+        ↓
+normalized S1 readout에 projection
+        ↓
+emotion별 fixed vocabulary preference
+~~~
+
+이다.
+
+따라서 multi-tag가 잘 작동하는 현재 결과는 합리적이다. tag가 바뀌면 서로 다른 fixed semantic-token preference가 선택된다.
+
+이 설계의 장점:
+
+- inference가 안정적임.
+- 현재 hidden의 noise에 덜 민감함.
+- bounded tilt와 함께 사용하면 base S1 distribution을 완전히 덮지 않음.
+
+단점:
+
+- S1의 hidden/readout geometry가 fine-tuning으로 크게 이동하면 controller를 다시 학습해야 함.
+- reference마다 controller direction 자체가 적응하지는 않음.
+- emotion 의미 정렬은 controller training hidden geometry와 S1 readout geometry의 품질에 강하게 의존함.
+
+따라서 **S1의 hidden/readout 좌표계를 가능한 안정적으로 유지하는 것**이 controller에도 직접적인 이득이다.
+
+---
+
+## 16. 수정된 LoRA 우선순위 — QKV 전체보다 V-only부터 비교
+
+기존 계획의 "attention QKV + output LoRA"를 단일 정답으로 보지 않는다.
+
+reference retention이 주목적이라면 다음 가설이 더 직접적이다.
+
+### Attention에서 역할 분리
+
+self-attention에서:
+
+~~~text
+Q, K -> 어느 token/reference position을 얼마나 볼지 결정
+V    -> 선택된 token에서 어떤 정보를 전달할지 결정
+O    -> attention 결과를 hidden space로 다시 mixing
+~~~
+
+따라서 pretrained reference routing을 최대한 유지하려면 **Q/K를 고정하는 것이 유리할 가능성**이 있다.
+
+### Run E1 — V + output LoRA
+
+첫 번째 PEFT 후보:
+
+~~~text
+frozen:
+- Q projection
+- K projection
+- text embedding
+- audio semantic embedding
+- BERT projection
+- LayerNorm
+- final ar_predict_layer
+- FFN
+
+LoRA:
+- V projection chunk
+- attention out_proj
+~~~
+
+현재 implementation은 Q/K/V가 하나의 `self_attn.in_proj_weight`에 stacked되어 있으므로 custom parametrization에서 V row block에만 low-rank delta를 적용한다.
+
+512 hidden, rank=8, 24 layers 기준:
+
+~~~text
+V LoRA:
+24 * 8 * (512 + 512)
+= 196,608
+
+out_proj LoRA:
+24 * 8 * (512 + 512)
+= 196,608
+
+total
+= 393,216 parameters
+≈ 0.51% of 77.6M S1
+~~~
+
+이 모드는 attention score/routing의 Q/K를 그대로 보존하면서 content adaptation만 허용한다.
+
+### Run E2 — full QKV + output LoRA
+
+비교군:
+
+~~~text
+LoRA:
+- combined QKV
+- attention out_proj
+~~~
+
+rank=8 기준 약 589,824 parameters, 전체의 약 0.76%.
+
+E1보다 reference sensitivity가 낮고 speaker adaptation 차이가 작다면 V-only를 우선한다.
+
+### Run E3 — FFN-only LoRA
+
+추가 비교가 필요할 때만:
+
+~~~text
+LoRA:
+- linear1
+- linear2
+attention Q/K/V/O: completely frozen
+~~~
+
+rank=8 기준 약 983,040 parameters, 전체의 약 1.27%.
+
+attention routing을 완전히 보존한다는 장점이 있으나, speaker/prosody adaptation capacity가 부족할 수 있으므로 E1/E2 다음으로 둔다.
+
+### 중요한 공통 원칙
+
+모든 PEFT 후보에서 우선 다음은 freeze한다.
+
+~~~text
+ar_audio_embedding
+ar_text_embedding
+bert_proj
+LayerNorm
+ar_predict_layer
+~~~
+
+특히 `ar_audio_embedding`과 `ar_predict_layer`를 고정하면 semantic code의 input/output 좌표계를 보존한다.
+
+이는 S1 reference retention뿐 아니라 hidden-direction Controller가 readout에 direction을 projection하는 현재 구조에도 중요하다.
+
+---
+
+## 17. S1에 reference-conditioned objective를 직접 넣는 것이 LoRA보다 더 근본적인 개선일 수 있다
+
+LoRA는 **parameter overwrite 범위**를 줄인다.
+
+하지만 현재 S1 fine-tuning objective와 inference의 차이는 그대로 남는다.
+
+Controller에서 이미 검증된 batch 구성 코드를 S1 training 쪽에도 재사용하는 것이 가장 자연스럽다.
+
+### 새 S1 reference-conditioned batch
+
+same speaker에서:
+
+~~~text
+reference A
+target B
+A != B
+~~~
+
+를 선택한다.
+
+입력:
+
+~~~text
+text = reference_text_A + target_text_B
+semantic = reference_semantic_A + target_semantic_B
+~~~
+
+loss:
+
+~~~text
+reference semantic 구간:
+loss mask
+
+target B semantic 구간:
+CE / optional DPO
+~~~
+
+즉 reference A는 condition으로만 사용하고 B의 generation만 학습한다.
+
+이 방식은 Controller가 현재 hidden probe를 만들 때 쓰는 조건과 S1 학습 조건을 일치시킨다.
+
+### 권장 mixture
+
+모든 batch를 갑자기 paired objective로 바꾸지 않는다.
+
+초기 실험:
+
+~~~text
+50% current same-utterance S1 objective
+50% cross-utterance reference-conditioned objective
+~~~
+
+부터 시작한다.
+
+이유:
+
+- 기존 semantic LM 능력 유지
+- reference-conditioned behavior 강화
+- 새 objective 하나로 과적합되는 것 방지
+
+비율은 결과를 보고 조정한다.
+
+---
+
+## 18. 가장 유망한 추가 안전장치 — pretrained S1 representation retention
+
+PEFT만으로 forgetting이 0이 되는 것은 아니다.
+
+따라서 tuned S1과 frozen pretrained S1을 같은 reference-conditioned batch에 넣고 **controller가 실제로 사용하는 final hidden geometry를 약하게 보존**할 수 있다.
+
+### Hidden retention loss
+
+target 구간에서:
+
+~~~text
+h_base = frozen pretrained S1 hidden
+h_tuned = adapted S1 hidden
+
+L_hidden =
+1 - cosine(
+    normalize(h_tuned),
+    normalize(h_base)
+)
+~~~
+
+을 작은 weight로 추가한다.
+
+목표는 hidden을 완전히 동일하게 만드는 것이 아니라, pretrained coordinate system이 심하게 회전/붕괴하는 것을 막는 것이다.
+
+이 loss는 현재 Controller가 S1 hidden representation에서 emotion direction을 학습하기 때문에 특히 직접적인 의미가 있다.
+
+### Logit retention loss
+
+필요한 경우에만:
+
+~~~text
+L_KL =
+KL(
+    p_pretrained || p_tuned
+)
+~~~
+
+을 작은 weight로 추가한다.
+
+단, KL을 너무 세게 걸면 speaker adaptation 자체가 막힐 수 있으므로 **hidden retention을 먼저 실험**하고 KL은 2차 옵션으로 둔다.
+
+### 더 좋은 장기 형태 — relational reference retention
+
+alternate references A/B를 준비할 수 있으면 절대 hidden 자체보다:
+
+~~~text
+delta_base =
+h_base(reference A) - h_base(reference B)
+
+delta_tuned =
+h_tuned(reference A) - h_tuned(reference B)
+~~~
+
+의 방향/크기를 보존하는 것이 더 목적에 맞다.
+
+즉:
+
+> pretrained S1이 reference를 바꿨을 때 얼마나/어느 방향으로 반응했는지를 tuned S1도 유지하게 한다.
+
+이는 speaker adaptation을 허용하면서 reference sensitivity만 보존할 수 있는 더 직접적인 objective다.
+
+하지만 구현 복잡도가 증가하므로 fixed-reference hidden retention 이후에만 진행한다.
+
+---
+
+## 19. S1과 Controller는 joint training하지 않는 것을 기본으로 유지
+
+현재 단계에서는 S1 LoRA와 Emotion Controller를 동시에 업데이트하지 않는다.
+
+권장 순서:
+
+~~~text
+1. pretrained S1
+      ↓
+2. S1 adaptation
+   (LoRA / reference-conditioned / retention)
+      ↓
+3. S1 freeze
+      ↓
+4. representation probe
+      ↓
+5. Emotion Controller train
+      ↓
+6. grouped OOF
+      ↓
+7. inference listening test
+~~~
+
+이유:
+
+- joint training은 controller loss를 줄이기 위해 S1 hidden space 자체가 감정 label에 맞게 움직일 수 있음.
+- 그러면 S1 generality/reference sensitivity와 controller 성능을 분리해서 판단하기 어려움.
+- 현재 데이터 규모에서는 과적합 위험이 큼.
+
+S1 adaptation 방식이 안정된 뒤에만 joint/alternating training을 별도 연구 대상으로 고려한다.
+
+---
+
+## 20. Controller 쪽 추가 개선은 구조 변경보다 robustness validation이 우선
+
+현재 hidden-direction Controller는 실제 inference에서 tag 차이를 잘 만들고 multi-tag switching도 확인됨.
+
+따라서 지금 controller 구조를 다시 복잡하게 만드는 것은 우선순위가 낮다.
+
+대신 다음 validation을 추가하는 것이 더 가치 있다.
+
+### 20.1 Cross-S1 comparison
+
+각 S1 후보마다 Controller를 새로 학습하고:
+
+~~~text
+S1 representation probe
+Controller grouped OOF macro accuracy/AUC
+Controller direction cosine matrix
+multi-tag listening
+~~~
+
+을 같이 기록한다.
+
+좋은 S1은 단순 S1 loss가 낮은 모델이 아니라:
+
+~~~text
+reference sensitivity 유지
++
+emotion hidden separability 유지/향상
++
+controller OOF 유지/향상
+~~~
+
+을 동시에 만족해야 한다.
+
+### 20.2 Alternate-reference robustness
+
+현재 controller training은 speaker마다 fixed reference 하나를 사용한다.
+
+이는 emotion target 비교에는 좋은 통제 조건이지만 실제 사용에서는 다른 reference가 들어올 수 있다.
+
+따라서 최종 S1 후보가 정해진 뒤:
+
+~~~text
+same target text
+same emotion tag
+different references
+~~~
+
+를 넣고 tag 효과가 유지되는지 확인한다.
+
+초기에는 training을 multi-reference로 바꾸지 않는다.
+
+**fixed-reference train + alternate-reference evaluation**을 먼저 한다.
+
+문제가 확인될 때만 reference consistency regularization 또는 multi-reference training을 고려한다.
+
+---
+
+## 21. 수정된 최종 실험 매트릭스
+
+### Phase A — 현재 문제 재현
+
+~~~text
+A0: pretrained S1
+A1: full FT 5ep, DPO OFF
+A2: full FT 15ep, DPO OFF
+A3: full FT 15ep, DPO ON
+~~~
+
+### Phase B — PEFT
+
+~~~text
+B1: V + out LoRA r=8
+B2: QKV + out LoRA r=8
+B3: FFN-only LoRA r=8 (필요할 때)
+~~~
+
+embedding/readout/norm은 고정.
+
+### Phase C — objective
+
+가장 좋은 Phase B model에:
+
+~~~text
+C1: + 50% cross-utterance reference-conditioned batches
+C2: C1 + weak hidden-retention loss
+C3: C2 + weak logit KL (C2로 부족할 때만)
+~~~
+
+### Phase D — Controller
+
+각 유망 S1마다 새 Controller를 학습.
+
+기록:
+
+~~~text
+S1 reference retention
+S1 hidden emotion probe macro acc/AUC
+Controller grouped OOF macro acc/AUC
+tag direction separation
+single-tag listening
+multi-tag switching
+alternate-reference robustness
+speaker similarity
+CER/repetition
+~~~
+
+### 현재 가장 유망한 후보
+
+실험 전 가설상 우선순위는:
+
+~~~text
+V+out LoRA
++ cross-utterance reference-conditioned objective
++ weak hidden retention
+→ S1 freeze
+→ Controller 재학습
+~~~
+
+이다.
+
+다만 실제 기본값 승격은 반드시 A/B 결과를 본 뒤 결정한다.
+
+---
+
+## 22. 관련 연구에서 이번 수정 방향과 맞는 부분
+
+최근 speaker-adaptive TTS 연구에서도 다음 방향이 반복된다.
+
+- PEFT/LoRA를 이용해 작은 adaptation parameter만 업데이트.
+- 적은 target data에서 pretrained synthesis ability를 보존하기 위한 prior-preservation을 별도 objective로 사용.
+- LoRA만으로 adaptation이 항상 full FT와 동일하지 않으므로 guidance/보존 전략을 추가.
+
+이 프로젝트에서는 이를 그대로 복제하지 않고 S1 구조에 맞춰:
+
+~~~text
+PEFT
++
+reference-conditioned objective
++
+hidden/readout coordinate preservation
+~~~
+
+으로 최소화해서 적용한다.
