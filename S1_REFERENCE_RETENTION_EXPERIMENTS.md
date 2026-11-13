@@ -1128,3 +1128,75 @@ hidden/readout coordinate preservation
 ~~~
 
 으로 최소화해서 적용한다.
+
+
+---
+
+## 23. 추가된 비교 도구
+
+`tools/compare_s1_controller_space.py`를 추가했다.
+
+목적:
+
+- Emotion Controller가 실제로 학습하는 것과 동일한 fixed-reference -> target teacher-forcing 조건에서 S1 후보를 비교.
+- S1 hidden emotion probe를 동일한 grouped OOF 방식으로 계산.
+- 첫 번째 checkpoint를 baseline으로 두고 hidden/probability drift를 측정.
+- full fine-tuning이 어떤 parameter group을 가장 많이 바꿨는지 Q/K/V까지 분리해 측정.
+
+주요 출력:
+
+~~~text
+hidden emotion probe:
+- OOF macro accuracy
+- OOF macro AUC
+- OOF CE
+
+baseline drift:
+- target hidden cosine similarity
+- semantic probability JS divergence
+- top-k probability overlap
+
+parameter drift:
+- text_embedding
+- audio_embedding
+- bert_projection
+- position_alpha
+- attention_q
+- attention_k
+- attention_v
+- attention_out
+- ffn
+- layer_norm
+- semantic_readout
+~~~
+
+예시:
+
+~~~bash
+python tools/compare_s1_controller_space.py \
+  --s1 pretrained=/path/to/s1v3.ckpt \
+  --s1 full15=/path/to/Gilberta-e15.ckpt \
+  --feature-dir /path/to/features \
+  --metadata /path/to/canonical/metadata.jsonl \
+  --reference-map /path/to/reference_map.json \
+  --reference-prompt-cache /path/to/reference_prompts.pt \
+  --emotions happy,angry,disgusted,surprised \
+  --version v5dev \
+  --output /path/to/s1_space_comparison.json
+~~~
+
+첫 실행에서는 pretrained + 현재 full-FT 15ep 두 개만 비교한다.
+
+그 결과에서 특히:
+
+~~~text
+attention_q / attention_k drift
+audio_embedding drift
+semantic_readout drift
+hidden cosine
+hidden emotion probe
+~~~
+
+를 먼저 본다.
+
+만약 Q/K, embedding, readout까지 크게 이동하면서 hidden cosine과 reference behavior가 나빠진다면, V-only LoRA + frozen semantic coordinate 전략을 우선한다.
