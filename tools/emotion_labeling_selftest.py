@@ -29,6 +29,7 @@ from tools.emotion_label_refiner import (  # noqa: E402
     crossfit_refiner,
     fit_final_critic,
     fit_final_refiner,
+    materialize_training_sidecar,
 )
 from tools.evaluate_emotion_review import evaluate_system  # noqa: E402
 
@@ -435,6 +436,69 @@ def test_crossfit_refiner() -> None:
     )
 
 
+def test_training_sidecar_materialization() -> None:
+    rows = [
+        {
+            "wav": "core.wav",
+            "emotion_intended": "happy",
+            "emotion_label_state_v3": "accepted_core",
+            "emotion_v3_candidate": "happy",
+        },
+        {
+            "wav": "confirmed.wav",
+            "emotion_intended": "angry",
+            "emotion_label_state_v3": "refiner_confirmed_candidate",
+            "emotion_v3_candidate": "angry",
+        },
+        {
+            "wav": "neutral.wav",
+            "emotion_intended": "neutral",
+            "emotion_label_state_v3": "neutral_candidate",
+            "emotion_v3_candidate": None,
+        },
+        {
+            "wav": "conflict.wav",
+            "emotion_intended": "surprised",
+            "emotion_label_state_v3": "conflict",
+            "emotion_v3_candidate": None,
+        },
+    ]
+
+    core, counts = materialize_training_sidecar(
+        rows,
+        policy="core",
+    )
+    require(
+        core[0]["emotion_intended"] == "happy",
+        "accepted_core must remain a target",
+    )
+    require(
+        core[1]["emotion_intended"] is None,
+        "confirmed candidate must not enter core policy",
+    )
+    require(
+        core[2]["emotion_intended"] == "neutral",
+        "neutral_candidate must remain neutral",
+    )
+    require(
+        core[3]["emotion_intended"] is None,
+        "conflict must be excluded",
+    )
+    require(
+        counts.get("target:happy", 0) == 1,
+        "core training count mismatch",
+    )
+
+    confirmed, _ = materialize_training_sidecar(
+        rows,
+        policy="core+confirmed",
+    )
+    require(
+        confirmed[1]["emotion_intended"] == "angry",
+        "confirmed policy must include confirmed candidates",
+    )
+
+
 def test_review_evaluator() -> None:
     rows = [
         {
@@ -473,6 +537,7 @@ def main() -> int:
         test_review_selector,
         test_crossfit_critic,
         test_crossfit_refiner,
+        test_training_sidecar_materialization,
         test_review_evaluator,
     ]
     for test in tests:
