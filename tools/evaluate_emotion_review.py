@@ -342,6 +342,19 @@ def main() -> int:
                 )
             )
         if any(
+            row.get("emotion_refiner_label")
+            for row in reviewed
+        ):
+            systems.append(
+                (
+                    "bounded_refiner",
+                    lambda row: normalize_label(
+                        row.get("emotion_refiner_label")
+                    )
+                    or None,
+                )
+            )
+        if any(
             row.get("emotion_label_state_v3")
             for row in reviewed
         ):
@@ -395,7 +408,7 @@ def main() -> int:
                 (
                     "v3_selective may abstain. Compare selective accuracy/"
                     "precision together with coverage rather than accuracy "
-                    "alone."
+                    "alone. Critic/refiner standalone rows do not abstain."
                 ),
                 (
                     "Human labels are calibration evidence, not assumed "
