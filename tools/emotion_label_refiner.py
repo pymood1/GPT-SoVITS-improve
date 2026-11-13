@@ -907,11 +907,18 @@ def apply_critic_outputs(
         ):
             state = "ood"
         elif intended in emotion_set:
-            state = (
-                "accepted_core"
-                if label == intended
-                else "conflict"
-            )
+            if index in seed_position:
+                state = (
+                    "accepted_core"
+                    if label == intended
+                    else "conflict"
+                )
+            else:
+                state = (
+                    "critic_confirmed_candidate"
+                    if label == intended
+                    else "conflict"
+                )
         elif intended in {"neutral", "default"}:
             state = (
                 "neutral_candidate"
@@ -930,13 +937,19 @@ def apply_critic_outputs(
             if state == "accepted_core"
             else (
                 "candidate"
-                if state == "neutral_candidate"
+                if state in {
+                    "neutral_candidate",
+                    "critic_confirmed_candidate",
+                }
                 else "reject"
             )
         )
         row["emotion_v3_candidate"] = (
             intended
-            if state == "accepted_core"
+            if state in {
+                "accepted_core",
+                "critic_confirmed_candidate",
+            }
             else None
         )
         row["auto_emotion_refiner"] = "prototype_critic_oof_v1"
