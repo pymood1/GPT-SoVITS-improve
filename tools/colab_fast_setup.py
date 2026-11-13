@@ -534,6 +534,7 @@ run(
 # 6. Verify only in a NEW Python process.
 verify_script = r"""
 import importlib
+import inspect
 import sys
 import traceback
 
@@ -565,6 +566,13 @@ if failed:
     for label, tb in failed:
         print(f"\n[{label}]\n{tb}", file=sys.stderr)
     raise SystemExit(1)
+
+import gradio as gr
+if "duration" not in inspect.signature(gr.Error).parameters:
+    raise SystemExit("Gradio Error.duration API is unavailable")
+if "show_error" not in inspect.signature(gr.Blocks.launch).parameters:
+    raise SystemExit("Gradio Blocks.launch(show_error=...) is unavailable")
+print("[OK] Gradio persistent-error API")
 """
 
 verify = run([sys.executable, "-c", verify_script],
