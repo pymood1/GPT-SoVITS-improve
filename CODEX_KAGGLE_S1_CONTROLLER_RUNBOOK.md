@@ -17,6 +17,7 @@
 세부 연구 가설과 실험 배경은 먼저 다음 문서를 읽는다.
 
 - `S1_REFERENCE_RETENTION_EXPERIMENTS.md`
+- `RESEARCH_METHODOLOGY_HANDOFF.md` — 연구/디버깅/실험 설계 방법론과 판단 원칙
 
 현재 S1 비교 도구:
 
