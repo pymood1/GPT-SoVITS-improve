@@ -86,11 +86,17 @@ def uncertainty_score(row: dict[str, Any]) -> float:
         safe_float(row.get("emotion_relative_gap"), 0.0),
         0.0,
     )
+    relative_z_gap = max(
+        safe_float(row.get("emotion_relative_z_gap"), 0.0),
+        0.0,
+    )
     gap_certainty = 1.0 - math.exp(-relative_gap)
+    z_gap_certainty = 1.0 - math.exp(-relative_z_gap)
     return (
-        0.50 * entropy
-        + 0.30 * (1.0 - raw_margin)
-        + 0.20 * (1.0 - gap_certainty)
+        0.40 * entropy
+        + 0.25 * (1.0 - raw_margin)
+        + 0.15 * (1.0 - gap_certainty)
+        + 0.20 * (1.0 - z_gap_certainty)
     )
 
 
@@ -112,7 +118,17 @@ def anchor_score(row: dict[str, Any]) -> float:
         safe_float(row.get("emotion_relative_gap"), 0.0),
         0.0,
     )
+    relative_z = max(
+        safe_float(row.get("emotion_relative_z"), 0.0),
+        0.0,
+    )
+    relative_z_gap = max(
+        safe_float(row.get("emotion_relative_z_gap"), 0.0),
+        0.0,
+    )
     relative_certainty = 1.0 - math.exp(-relative_gap)
+    relative_z_strength = 1.0 - math.exp(-relative_z)
+    relative_z_certainty = 1.0 - math.exp(-relative_z_gap)
     relative_confidence = min(
         max(
             safe_float(
@@ -124,11 +140,13 @@ def anchor_score(row: dict[str, Any]) -> float:
         1.0,
     )
     return (
-        0.25 * (1.0 - entropy)
-        + 0.20 * raw_margin
-        + 0.20 * (1.0 - ood)
-        + 0.20 * relative_certainty
-        + 0.15 * relative_confidence
+        0.18 * (1.0 - entropy)
+        + 0.16 * raw_margin
+        + 0.16 * (1.0 - ood)
+        + 0.14 * relative_certainty
+        + 0.12 * relative_confidence
+        + 0.12 * relative_z_strength
+        + 0.12 * relative_z_certainty
     )
 
 
@@ -362,6 +380,15 @@ def select_review_rows(
                 ),
                 "emotion_relative_gap": row.get(
                     "emotion_relative_gap"
+                ),
+                "emotion_relative_z": row.get(
+                    "emotion_relative_z"
+                ),
+                "emotion_relative_z_gap": row.get(
+                    "emotion_relative_z_gap"
+                ),
+                "emotion_relative_z_top1": row.get(
+                    "emotion_relative_z_top1"
                 ),
                 "emotion_raw_scores": row.get(
                     "emotion_raw_scores",
