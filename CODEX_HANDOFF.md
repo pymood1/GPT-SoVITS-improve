@@ -1,6 +1,12 @@
 # Codex Development Handoff
 
-Updated: 2026-11-08
+Updated: 2026-11-14
+
+> **Active research continuation (2026-11-14):** Read
+> `CODEX_ACTIVE_RESEARCH_HANDOFF.md` first for the latest S1 reference-retention
+> experiments, Full FT vs LoRA evidence, listening observations, active TODOs,
+> and continue/stop rules. This document remains the broader runtime and
+> architecture reference.
 
 This document is the central development handoff for the GPT-SoVITS-improve fork.
 Read this file before making architectural changes. Then read EMOTION_V5.md and
