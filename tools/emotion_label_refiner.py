@@ -1190,6 +1190,10 @@ def crossfit_critic(
         float("nan"),
         dtype=torch.float32,
     )
+    prototype_oof_logits = torch.full_like(
+        oof_logits,
+        float("nan"),
+    )
 
     for fold_index, (train_local, val_local) in enumerate(folds):
         train_global = [
@@ -1219,6 +1223,26 @@ def crossfit_critic(
             pca_components,
         )
 
+        prototype_centers = initialize_prototypes(
+            train_features,
+            train_labels,
+            len(config.emotions),
+        )
+        with torch.no_grad():
+            prototype_logits = (
+                val_features
+                @ F.normalize(
+                    prototype_centers,
+                    dim=-1,
+                    eps=1e-6,
+                ).transpose(0, 1)
+            ) / max(config.temperature, 1e-4)
+        prototype_oof_logits.index_copy_(
+            0,
+            torch.tensor(val_local, dtype=torch.long),
+            prototype_logits,
+        )
+
         critic = train_critic(
             train_features,
             train_labels,
@@ -1236,6 +1260,10 @@ def crossfit_critic(
     if not bool(torch.isfinite(oof_logits).all()):
         raise CriticError(
             "critic cross-fit did not produce complete OOF logits"
+        )
+    if not bool(torch.isfinite(prototype_oof_logits).all()):
+        raise CriticError(
+            "prototype baseline did not produce complete OOF logits"
         )
 
     predictions = oof_logits.argmax(dim=-1)
@@ -1263,6 +1291,22 @@ def crossfit_critic(
         ),
         "oof_macro_auc": macro_auc(
             oof_logits,
+            labels,
+            len(config.emotions),
+        ),
+        "prototype_oof_ce": float(
+            F.cross_entropy(
+                prototype_oof_logits,
+                labels,
+            ).item()
+        ),
+        "prototype_oof_macro_accuracy": macro_accuracy(
+            prototype_oof_logits,
+            labels,
+            len(config.emotions),
+        ),
+        "prototype_oof_macro_auc": macro_auc(
+            prototype_oof_logits,
             labels,
             len(config.emotions),
         ),
