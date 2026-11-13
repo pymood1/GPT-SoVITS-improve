@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from pathlib import Path
 
 import torch
 
@@ -48,45 +49,52 @@ name2gpt_path = {
     ): "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt",
     i18n("不训练直接推v3底模！"): "GPT_SoVITS/pretrained_models/s1v3.ckpt",
 }
+def _artifact_root_path(name):
+    root = os.environ.get("GPT_SOVITS_OUTPUT_ROOT", "").strip()
+    if not root:
+        return name
+    return str((Path(root).expanduser() / name).resolve())
+
+
 SoVITS_weight_root = [
-    "SoVITS_weights",
-    "SoVITS_weights_v2",
-    "SoVITS_weights_v3",
-    "SoVITS_weights_v4",
-    "SoVITS_weights_v5dev",
-    "SoVITS_weights_v5turbo",
-    "SoVITS_weights_v2Pro",
-    "SoVITS_weights_v2ProPlus",
+    _artifact_root_path("SoVITS_weights"),
+    _artifact_root_path("SoVITS_weights_v2"),
+    _artifact_root_path("SoVITS_weights_v3"),
+    _artifact_root_path("SoVITS_weights_v4"),
+    _artifact_root_path("SoVITS_weights_v5dev"),
+    _artifact_root_path("SoVITS_weights_v5turbo"),
+    _artifact_root_path("SoVITS_weights_v2Pro"),
+    _artifact_root_path("SoVITS_weights_v2ProPlus"),
 ]
 GPT_weight_root = [
-    "GPT_weights",
-    "GPT_weights_v2",
-    "GPT_weights_v3",
-    "GPT_weights_v4",
-    "GPT_weights_v5dev",
-    "GPT_weights_v5turbo",
-    "GPT_weights_v2Pro",
-    "GPT_weights_v2ProPlus",
+    _artifact_root_path("GPT_weights"),
+    _artifact_root_path("GPT_weights_v2"),
+    _artifact_root_path("GPT_weights_v3"),
+    _artifact_root_path("GPT_weights_v4"),
+    _artifact_root_path("GPT_weights_v5dev"),
+    _artifact_root_path("GPT_weights_v5turbo"),
+    _artifact_root_path("GPT_weights_v2Pro"),
+    _artifact_root_path("GPT_weights_v2ProPlus"),
 ]
 SoVITS_weight_version2root = {
-    "v1": "SoVITS_weights",
-    "v2": "SoVITS_weights_v2",
-    "v3": "SoVITS_weights_v3",
-    "v4": "SoVITS_weights_v4",
-    "v5dev": "SoVITS_weights_v5dev",
-    "v5turbo": "SoVITS_weights_v5turbo",
-    "v2Pro": "SoVITS_weights_v2Pro",
-    "v2ProPlus": "SoVITS_weights_v2ProPlus",
+    "v1": _artifact_root_path("SoVITS_weights"),
+    "v2": _artifact_root_path("SoVITS_weights_v2"),
+    "v3": _artifact_root_path("SoVITS_weights_v3"),
+    "v4": _artifact_root_path("SoVITS_weights_v4"),
+    "v5dev": _artifact_root_path("SoVITS_weights_v5dev"),
+    "v5turbo": _artifact_root_path("SoVITS_weights_v5turbo"),
+    "v2Pro": _artifact_root_path("SoVITS_weights_v2Pro"),
+    "v2ProPlus": _artifact_root_path("SoVITS_weights_v2ProPlus"),
 }
 GPT_weight_version2root = {
-    "v1": "GPT_weights",
-    "v2": "GPT_weights_v2",
-    "v3": "GPT_weights_v3",
-    "v4": "GPT_weights_v4",
-    "v5dev": "GPT_weights_v5dev",
-    "v5turbo": "GPT_weights_v5turbo",
-    "v2Pro": "GPT_weights_v2Pro",
-    "v2ProPlus": "GPT_weights_v2ProPlus",
+    "v1": _artifact_root_path("GPT_weights"),
+    "v2": _artifact_root_path("GPT_weights_v2"),
+    "v3": _artifact_root_path("GPT_weights_v3"),
+    "v4": _artifact_root_path("GPT_weights_v4"),
+    "v5dev": _artifact_root_path("GPT_weights_v5dev"),
+    "v5turbo": _artifact_root_path("GPT_weights_v5turbo"),
+    "v2Pro": _artifact_root_path("GPT_weights_v2Pro"),
+    "v2ProPlus": _artifact_root_path("GPT_weights_v2ProPlus"),
 }
 
 
