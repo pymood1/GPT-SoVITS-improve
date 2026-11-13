@@ -170,9 +170,20 @@ class my_model_ckpt(ModelCheckpoint):
                 if save_compact_weights:
                     to_save_od = OrderedDict()
                     to_save_od["weight"] = OrderedDict()
-                    dictt = trainer.strategy._lightning_module.state_dict()
+                    lightning_module = (
+                        trainer.strategy._lightning_module
+                    )
+                    if hasattr(
+                        lightning_module,
+                        "inference_state_dict",
+                    ):
+                        dictt = lightning_module.inference_state_dict()
+                    else:
+                        dictt = lightning_module.state_dict()
                     for key in dictt:
-                        to_save_od["weight"][key] = dictt[key].half()
+                        to_save_od["weight"][key] = (
+                            dictt[key].detach().half().cpu()
+                        )
                     to_save_od["config"] = self.config
                     to_save_od["info"] = "GPT-e%s" % (trainer.current_epoch + 1)
 
