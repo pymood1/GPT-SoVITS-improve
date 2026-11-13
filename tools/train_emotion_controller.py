@@ -1172,11 +1172,6 @@ def run_controller_oof_cv(
                     "lr": hidden_lr,
                     "weight_decay": hidden_weight_decay,
                 },
-                {
-                    "params": [fold_controller.u_proj],
-                    "lr": lr,
-                    "weight_decay": weight_decay,
-                },
             ]
         )
 
@@ -1231,25 +1226,10 @@ def run_controller_oof_cv(
                 hidden_logits.unsqueeze(0), target
             )
 
+            # Hidden-direction controllers are trained only from the
+            # informative S1 hidden signal. Semantic likelihood is evaluated
+            # after fitting, but does not shape the classifier directions.
             semantic_loss = None
-            if float(prepared["coverage"]) >= min_support_coverage:
-                score_tensor = vectorized_sequence_relative_scores(
-                    controller=fold_controller,
-                    hidden=prepared_device["hidden"],
-                    base_probs=prepared_device["base_probs"],
-                    target_semantic=prepared_device["target_semantic"],
-                    valid_mask=prepared_device["valid_mask"],
-                    output_weight=output_weight,
-                    eos_id=eos_id,
-                    detach_conditioner=True,
-                )
-                if score_tensor is not None:
-                    semantic_loss = F.cross_entropy(
-                        (
-                            preference_beta * score_tensor
-                        ).unsqueeze(0),
-                        target,
-                    )
 
             loss = hidden_loss
             if semantic_loss is not None:
@@ -1350,9 +1330,16 @@ def run_controller_oof_cv(
         oof_logits[complete], labels_tensor[complete], class_count
     )
     random_ce = math.log(class_count)
+    chance_accuracy = 1.0 / class_count
+    macro_auc = metrics.get("macro_auc")
+    discrimination_pass = (
+        metrics["macro_accuracy"] >= chance_accuracy + 0.10
+        and macro_auc is not None
+        and macro_auc >= 0.60
+    )
     verdict = (
         "generalization_detected"
-        if metrics["balanced_ce"] < random_ce - 0.03
+        if discrimination_pass
         else "near_chance"
     )
 
@@ -1390,7 +1377,7 @@ def run_controller_oof_cv(
 
     return {
         "status": "ok",
-        "objective": "hidden_primary_semantic_aux",
+        "objective": "hidden_direction_discriminative",
         "samples": int(complete.sum().item()),
         "folds": len(folds),
         "training_steps_per_fold": steps,
@@ -1474,13 +1461,14 @@ def save_checkpoint(
                     "training_diagnosis",
                     None,
                 ),
-                "training_mode": "hidden_primary_decoupled_semantic_aux_v6_grouped_val",
+                "training_mode": "hidden_direction_discriminative_v7_grouped_val",
                 "validation_grouping": (
                     "connected(source_id,text_group_id,pair_group_id)"
                 ),
                 "version": args.version,
                 "text_features": args.text_features,
                 "neutral_is_base": True,
+                "steering_mode": controller.steering_mode,
             },
         )
         os.replace(temp_path, path)
@@ -1545,17 +1533,16 @@ def main() -> int:
     parser.add_argument(
         "--hidden-lr",
         type=float,
-        default=1e-2,
+        default=3e-3,
         help=(
-            "Learning rate for V/emotion_coeff/hidden_bias. "
-            "The diagnostic linear probe converged with a much larger LR "
-            "than the semantic steering path."
+            "Learning rate for the bounded hidden-direction classifier. "
+            "Kept conservative because controller training is per-sample."
         ),
     )
     parser.add_argument(
         "--hidden-weight-decay",
         type=float,
-        default=5e-2,
+        default=1e-2,
         help="Weight decay for the hidden-state classifier branch.",
     )
     parser.add_argument("--preference-beta", type=float, default=4.0)
@@ -1564,10 +1551,11 @@ def main() -> int:
         help="Scale for hidden-state primary emotion logits.",
     )
     parser.add_argument(
-        "--semantic-aux-weight", type=float, default=0.20,
+        "--semantic-aux-weight", type=float, default=0.0,
         help=(
-            "Weight of semantic-likelihood auxiliary CE; hidden-state "
-            "CE remains the primary objective."
+            "Legacy semantic-likelihood auxiliary weight. New "
+            "hidden-direction controllers keep this at 0 and use semantic "
+            "likelihood only as a diagnostic."
         ),
     )
     parser.add_argument("--top-k", type=int, default=15)
@@ -2317,11 +2305,6 @@ def main() -> int:
                 "lr": args.hidden_lr,
                 "weight_decay": args.hidden_weight_decay,
             },
-            {
-                "params": [controller.u_proj],
-                "lr": args.lr,
-                "weight_decay": args.weight_decay,
-            },
         ]
     )
 
@@ -2508,7 +2491,11 @@ def main() -> int:
 
         semantic_loss = None
         score_tensor = None
-        if coverage >= args.min_support_coverage:
+        if (
+            args.semantic_aux_weight > 0
+            and controller.steering_mode == "legacy_low_rank"
+            and coverage >= args.min_support_coverage
+        ):
             score_tensor = vectorized_sequence_relative_scores(
                 controller=controller,
                 hidden=prepared_device["hidden"],
@@ -2526,7 +2513,7 @@ def main() -> int:
                     ).unsqueeze(0),
                     target,
                 )
-        else:
+        elif coverage < args.min_support_coverage:
             skipped_low_coverage += 1
             coverage_skips_by_emotion[sampled_emotion] += 1
 
@@ -2552,7 +2539,11 @@ def main() -> int:
         loss.backward()
 
         if should_log_step:
-            grad_u_norm = controller.u_proj.grad.detach().norm()
+            grad_u_norm = (
+                controller.u_proj.grad.detach().norm()
+                if controller.u_proj.grad is not None
+                else torch.zeros((), device=device)
+            )
             grad_c_norm = (
                 controller.emotion_coeff.weight.grad.detach().norm()
                 if controller.emotion_coeff.weight.grad is not None
@@ -2923,9 +2914,17 @@ def main() -> int:
         else "hidden_holdout_fallback"
     )
     controller_signal = (
-        "generalization_detected"
-        if controller_eval_loss < random_ce - 0.03
-        else "near_chance"
+        str(controller_oof.get("verdict"))
+        if oof_available
+        else (
+            "generalization_detected"
+            if (
+                best_val_metrics is not None
+                and float(best_val_metrics.get("hidden_accuracy", 0.0))
+                >= (1.0 / len(emotion_names)) + 0.10
+            )
+            else "near_chance"
+        )
     )
     probe_verdict = representation_probe.get(
         "verdict", "unavailable"
@@ -2980,8 +2979,8 @@ def main() -> int:
         )
     elif training_passed:
         result_reason = (
-            f"{controller_eval_source} class-balanced hidden CE beat the "
-            "random ln(K) baseline by at least 0.03"
+            f"{controller_eval_source} hidden discrimination cleared "
+            "macro-accuracy chance+10pp and macro-AUC 0.60"
         )
         if semantic_oof_signal == "near_chance":
             result_reason += (
@@ -2995,8 +2994,8 @@ def main() -> int:
             )
     else:
         result_reason = (
-            f"{controller_eval_source} hidden CE stayed near the "
-            f"random ln(K) baseline; likely_bottleneck={likely_bottleneck}"
+            f"{controller_eval_source} hidden discrimination stayed weak; "
+            f"likely_bottleneck={likely_bottleneck}"
         )
 
     training_sampling_by_emotion = {}
@@ -3044,17 +3043,18 @@ def main() -> int:
         "text_verdict": text_verdict,
         "text_matches_hidden": text_matches_hidden,
         "semantic_oof_signal": semantic_oof_signal,
-        "objective": "hidden_primary_semantic_aux",
+        "objective": "hidden_direction_discriminative",
         "hidden_beta": args.hidden_beta,
         "semantic_aux_weight": args.semantic_aux_weight,
         "hidden_lr": args.hidden_lr,
         "hidden_weight_decay": args.hidden_weight_decay,
         "likely_bottleneck": likely_bottleneck,
         "rule": (
-            "PASS when class-balanced hidden-space controller OOF CE "
-            "beats ln(K) by at least 0.03. If OOF is unavailable, fall "
-            "back to best hidden-space held-out CE. Semantic likelihood "
-            "is auxiliary/diagnostic and cannot veto a hidden-primary PASS."
+            "PASS when grouped OOF hidden discrimination reaches at least "
+            "chance+10 percentage points macro accuracy and macro AUC 0.60. "
+            "Raw CE is retained as a calibration diagnostic, not a promotion "
+            "gate. Semantic likelihood is diagnostic only for the new "
+            "hidden-direction steering mode."
         ),
     }
     args.training_diagnosis = training_diagnosis
