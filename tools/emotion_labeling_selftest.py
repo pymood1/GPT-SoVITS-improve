@@ -536,6 +536,7 @@ def test_training_sidecar_materialization() -> None:
         {
             "wav": "conflict.wav",
             "emotion_intended": "surprised",
+            "emotion": "surprised",
             "emotion_label_state_v3": "conflict",
             "emotion_v3_candidate": None,
         },
@@ -560,6 +561,10 @@ def test_training_sidecar_materialization() -> None:
     require(
         core[3]["emotion_intended"] is None,
         "conflict must be excluded",
+    )
+    require(
+        core[3]["emotion"] is None,
+        "legacy emotion fallback must also be cleared",
     )
     require(
         counts.get("target:happy", 0) == 1,
