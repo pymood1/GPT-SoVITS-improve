@@ -1780,14 +1780,20 @@ def materialize_training_sidecar(
 
         if state in allowed_states and candidate not in NON_TARGET:
             row["emotion_intended"] = candidate
+            if "emotion" in row:
+                row["emotion"] = candidate
             row["emotion_is_default"] = False
             counts[f"target:{candidate}"] += 1
         elif state == "neutral_candidate":
             row["emotion_intended"] = "neutral"
+            if "emotion" in row:
+                row["emotion"] = "neutral"
             row["emotion_is_default"] = True
             counts["neutral"] += 1
         else:
             row["emotion_intended"] = None
+            if "emotion" in row:
+                row["emotion"] = None
             row["emotion_is_default"] = False
             counts[f"excluded:{state or 'unknown'}"] += 1
 
