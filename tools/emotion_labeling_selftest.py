@@ -30,6 +30,7 @@ from tools.emotion_label_refiner import (  # noqa: E402
     fit_final_critic,
     fit_final_refiner,
     materialize_training_sidecar,
+    select_seed_indices,
 )
 from tools.evaluate_emotion_review import evaluate_system  # noqa: E402
 
@@ -436,6 +437,81 @@ def test_crossfit_refiner() -> None:
     )
 
 
+def test_reviewed_seed_override() -> None:
+    rows, embeddings = synthetic_critic_problem()
+    rows[0]["emotion_intended"] = "neutral"
+    rows[0]["_seed_label_override"] = "happy"
+    rows[0]["_seed_source"] = "human_review"
+
+    seeds, active = select_seed_indices(
+        rows,
+        ("happy", "angry", "disgusted", "surprised"),
+        max_ood=0.35,
+        max_entropy=0.80,
+        min_raw_margin=0.0,
+        min_relative_score=0.0,
+        min_relative_confidence=0.0,
+        min_relative_gap=0.0,
+        min_relative_z=0.0,
+        min_relative_z_gap=0.0,
+        min_seed_per_class=3,
+    )
+    require(
+        0 in seeds,
+        "high-confidence reviewed seed override was not selected",
+    )
+    require(
+        "happy" in active,
+        "reviewed happy seed class disappeared",
+    )
+
+    config = CriticConfig(
+        emotions=active,
+        pca_dim=8,
+        rank=2,
+        temperature=0.20,
+        ranking_margin=0.20,
+        steps=100,
+        learning_rate=3e-3,
+        seed=777,
+        max_folds=4,
+    )
+    oof_logits, _, _ = crossfit_critic(
+        rows,
+        embeddings,
+        seeds,
+        config=config,
+    )
+    final_result = fit_final_critic(
+        embeddings,
+        seeds,
+        rows,
+        config=config,
+    )
+    output_rows, _ = apply_critic_outputs(
+        rows,
+        seed_indices=seeds,
+        oof_logits=oof_logits,
+        final_logits=final_result["all_logits"],
+        emotions=active,
+        reject_ood=0.50,
+        max_neutral_entropy=0.65,
+    )
+    require(
+        output_rows[0]["emotion_intended"] == "neutral",
+        "human anchor must not overwrite baseline emotion_intended",
+    )
+    require(
+        output_rows[0]["emotion_v3_candidate"] == "happy",
+        "reviewed seed candidate must use the human anchor label",
+    )
+    require(
+        output_rows[0]["emotion_label_state_v3"]
+        == "accepted_core",
+        "reviewed seed should be evaluated against its anchor label",
+    )
+
+
 def test_training_sidecar_materialization() -> None:
     rows = [
         {
@@ -537,6 +613,7 @@ def main() -> int:
         test_review_selector,
         test_crossfit_critic,
         test_crossfit_refiner,
+        test_reviewed_seed_override,
         test_training_sidecar_materialization,
         test_review_evaluator,
     ]
