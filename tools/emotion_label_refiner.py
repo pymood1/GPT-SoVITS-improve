@@ -192,6 +192,61 @@ def load_sidecar(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def seed_label_for_row(row: dict[str, Any]) -> str:
+    override = normalize_label(row.get("_seed_label_override"))
+    if override:
+        return override
+    return normalize_label(row.get("emotion_intended"))
+
+
+def apply_human_review_seeds(
+    rows: list[dict[str, Any]],
+    review_path: Path | None,
+    *,
+    accepted_confidences: set[str],
+) -> int:
+    """Use reviewed labels as seed anchors without overwriting auto labels."""
+    if review_path is None:
+        return 0
+
+    review_rows = load_sidecar(review_path)
+    review_map = {
+        str(row.get("wav") or ""): row
+        for row in review_rows
+        if str(row.get("wav") or "")
+    }
+    applied = 0
+    for row in rows:
+        review = review_map.get(str(row.get("wav") or ""))
+        if review is None:
+            continue
+
+        human_label = normalize_label(
+            review.get("human_emotion")
+        )
+        confidence = normalize_label(
+            review.get("human_confidence")
+        )
+        row["emotion_human_label"] = human_label or None
+        row["emotion_human_confidence"] = confidence or None
+        row["emotion_human_secondary_label"] = (
+            normalize_label(
+                review.get("human_secondary_emotion")
+            )
+            or None
+        )
+        if (
+            human_label
+            and human_label not in NON_TARGET
+            and confidence in accepted_confidences
+        ):
+            row["_seed_label_override"] = human_label
+            row["_seed_source"] = "human_review"
+            applied += 1
+
+    return applied
+
+
 def sidecar_by_wav(
     rows: Sequence[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -422,10 +477,13 @@ def select_seed_indices(
     provisional: list[int] = []
 
     for index, row in enumerate(rows):
-        label = normalize_label(row.get("emotion_intended"))
+        label = seed_label_for_row(row)
         if label not in requested_set:
             continue
         if row.get("emotion_prediction_error"):
+            continue
+        if normalize_label(row.get("_seed_source")) == "human_review":
+            provisional.append(index)
             continue
         if normalize_label(row.get("emotion_raw_top1")) in {
             "other",
@@ -472,7 +530,7 @@ def select_seed_indices(
         provisional.append(index)
 
     counts = Counter(
-        normalize_label(rows[index].get("emotion_intended"))
+        seed_label_for_row(rows[index])
         for index in provisional
     )
     active = tuple(
@@ -490,8 +548,7 @@ def select_seed_indices(
     selected = [
         index
         for index in provisional
-        if normalize_label(rows[index].get("emotion_intended"))
-        in active_set
+        if seed_label_for_row(rows[index]) in active_set
     ]
     return selected, active
 
@@ -734,11 +791,7 @@ def seed_labels_and_groups(
     }
     labels = torch.tensor(
         [
-            emotion_to_id[
-                normalize_label(
-                    rows[index].get("emotion_intended")
-                )
-            ]
+            emotion_to_id[seed_label_for_row(rows[index])]
             for index in seed_indices
         ],
         dtype=torch.long,
@@ -1149,11 +1202,7 @@ def fit_final_refiner(
     }
     labels = torch.tensor(
         [
-            emotion_to_id[
-                normalize_label(
-                    rows[index].get("emotion_intended")
-                )
-            ]
+            emotion_to_id[seed_label_for_row(rows[index])]
             for index in seed_indices
         ],
         dtype=torch.long,
@@ -1369,11 +1418,7 @@ def fit_final_critic(
     }
     labels = torch.tensor(
         [
-            emotion_to_id[
-                normalize_label(
-                    rows[index].get("emotion_intended")
-                )
-            ]
+            emotion_to_id[seed_label_for_row(rows[index])]
             for index in seed_indices
         ],
         dtype=torch.long,
@@ -1807,6 +1852,18 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", required=True)
     parser.add_argument("--sidecar", required=True)
+    parser.add_argument(
+        "--review",
+        help=(
+            "Optional review JSONL. High-confidence reviewed non-neutral "
+            "labels become seed anchors without overwriting emotion_intended."
+        ),
+    )
+    parser.add_argument(
+        "--human-seed-confidences",
+        default="high",
+        help="Comma-separated human confidence values accepted as seed anchors",
+    )
     parser.add_argument("--prediction-cache")
     parser.add_argument("--embedding-cache", required=True)
     parser.add_argument("--output", required=True)
@@ -2020,6 +2077,11 @@ def main() -> int:
 
         list_path = Path(args.list).expanduser().resolve()
         sidecar_path = Path(args.sidecar).expanduser().resolve()
+        review_path = (
+            Path(args.review).expanduser().resolve()
+            if args.review
+            else None
+        )
         wav_root = (
             Path(args.wav_root).expanduser().resolve()
             if args.wav_root
@@ -2052,6 +2114,27 @@ def main() -> int:
             prediction_cache_path=prediction_cache_path,
             model_name=args.model,
         )
+        human_seed_confidences = {
+            normalize_label(value)
+            for value in args.human_seed_confidences.split(",")
+            if normalize_label(value)
+        }
+        if not human_seed_confidences:
+            raise CriticError(
+                "--human-seed-confidences must contain at least one value"
+            )
+        human_seed_count = apply_human_review_seeds(
+            rows,
+            review_path,
+            accepted_confidences=human_seed_confidences,
+        )
+        if human_seed_count:
+            print(
+                f"[human seeds] applied={human_seed_count} "
+                f"confidences={sorted(human_seed_confidences)}",
+                flush=True,
+            )
+
         embeddings = ensure_embeddings(
             rows,
             model_name=args.model,
@@ -2087,9 +2170,7 @@ def main() -> int:
         )
 
         seed_counts = Counter(
-            normalize_label(
-                rows[index].get("emotion_intended")
-            )
+            seed_label_for_row(rows[index])
             for index in seeds
         )
         print(
@@ -2237,6 +2318,10 @@ def main() -> int:
             "embedding_dim": int(embeddings.shape[1]),
             "seed_samples": len(seeds),
             "seed_counts": dict(sorted(seed_counts.items())),
+            "human_seed_count": human_seed_count,
+            "human_seed_confidences": sorted(
+                human_seed_confidences
+            ),
             "active_emotions": list(config.emotions),
             "state_counts": state_counts,
             "training_sidecar": (
