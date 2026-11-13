@@ -1655,3 +1655,269 @@ review selector/evaluator의 core function도 synthetic input에서 기대 결�
 단:
 현재 환경에서는 GitHub DNS가 차단되어 **repo 전체를 clone한 상태의 실제 self-test 파일 실행은 못 했다**.
 따라서 Kaggle에서 위 self-test를 첫 runtime gate로 실행한다.
+
+
+---
+
+# 38. Bounded Refiner G 실제 구현 완료
+
+파일:
+`tools/emotion_label_refiner.py`
+
+commits:
+- `ffd03f6d1f120094367f72b3db8131e9b5617812` — bounded residual G 구현
+- `dad40093d38540d75cd44cb76d2d372ccff97f65` — G 자체 OOF gate 추가
+- `8b994c2fb38c11766d401769a4ceb3b3903d3cf1` — Controller용 파생 training sidecar materialization
+- `41a7f4f2d427fd54073cda22962d439e7b3de7b3` / `1dea8991b27a280343282fc53fb6c0b568e9a186` — canonical metadata에 refiner/policy field 보존
+
+기본 모드는 여전히:
+
+~~~text
+--mode critic
+~~~
+
+이다.
+
+Refiner는 명시적으로:
+
+~~~text
+--mode refiner
+~~~
+
+를 주어야 실행된다.
+
+그리고 실행 순서 자체에 두 개의 자동 gate가 있다.
+
+~~~text
+Critic OOF
+  ↓
+macro accuracy >= 0.35
+macro AUC >= 0.60
+  ↓ pass
+Bounded Refiner G OOF
+  ↓
+macro accuracy >= 0.35
+macro AUC >= 0.60
+  ↓ pass
+final G fit / output
+~~~
+
+둘 중 하나라도 실패하면 refiner 결과를 만들지 않고 FATAL로 중단한다.
+
+## 실제 G 구조
+
+`ResidualEmotionRefiner`:
+
+~~~text
+compact evidence features
+  ↓
+Linear(input, 32)
+SiLU
+Dropout(0.10)
+Linear(32, 16)
+SiLU
+Linear(16, K)
+tanh
+  ↓
+bounded delta
+  ↓
+teacher logits + delta
+~~~
+
+마지막 layer는 zero-init.
+
+따라서 학습 전에는:
+
+~~~text
+refiner == frozen teacher
+~~~
+
+이다.
+
+기본:
+- delta_max = 1.0
+- steps = 300
+- lr = 2e-3
+- teacher KL weight = 0.35
+- critic JS weight = 0.50
+
+## G 입력
+
+active class 기준:
+
+- conditional teacher log-probabilities
+- speaker-relative CLR scores
+- speaker-relative robust MAD z-scores
+- entropy
+- raw top1-top2 margin
+- OOD mass
+- relative gap
+- robust-z gap
+- relative confidence
+
+1024-d embedding은 G에 직접 넣지 않는다.
+
+embedding geometry는 Critic 전용으로 남겨 evidence source를 분리하고,
+작은 dataset에서 G가 audio embedding을 외우기 어렵게 한다.
+
+## G loss
+
+~~~text
+L =
+balanced seed CE
++ 0.35 * teacher retention KL
++ 0.50 * critic consensus JS
+~~~
+
+Critic과 Teacher는 G update에서 stop-gradient evidence로 사용된다.
+
+---
+
+# 39. Refiner state policy
+
+Refiner mode의 conservative state:
+
+~~~text
+high-confidence seed
++ OOF Critic agrees
++ OOF G agrees
++ both margins pass
+→ accepted_core
+~~~
+
+~~~text
+기존 v2 target이지만 seed 기준 미달
++ final Critic/G agreement
+→ refiner_confirmed_candidate
+~~~
+
+~~~text
+neutral/ambiguous
++ low OOD
++ Critic/G strong consensus
+→ rescued_candidate
+~~~
+
+그 외:
+- conflict
+- ambiguous
+- OOD
+- failed
+- neutral_candidate
+
+중요:
+`refiner_confirmed_candidate`와 `rescued_candidate`는 자동 Controller target이 아니다.
+
+---
+
+# 40. Controller용 파생 sidecar
+
+baseline `emotion_intended`를 refiner가 직접 overwrite하지 않는다.
+
+대신 `--training-sidecar`를 명시하면 별도 파생 JSONL을 만든다.
+
+정책:
+
+## core (기본)
+
+~~~text
+accepted_core
+→ emotion_intended 유지
+
+neutral_candidate
+→ neutral
+
+그 외
+→ emotion_intended = null
+~~~
+
+가장 보수적.
+
+## core+confirmed
+
+추가로:
+- critic_confirmed_candidate
+- refiner_confirmed_candidate
+
+를 target으로 허용.
+
+## all-candidates
+
+추가로:
+- rescued_candidate
+
+까지 허용.
+
+첫 실험에서는 반드시 `core`부터 사용한다.
+
+예:
+
+~~~bash
+python tools/emotion_label_refiner.py \
+  --mode refiner \
+  --list /kaggle/input/datasets/pymood1/endfield/training.list \
+  --wav-root /kaggle/input/datasets/pymood1/endfield/datas \
+  --sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl \
+  --prediction-cache /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar.jsonl.predictions.jsonl \
+  --embedding-cache /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_embeddings.pt \
+  --output /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar_v3_refiner.jsonl \
+  --artifact /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_refiner.pt \
+  --training-sidecar /kaggle/tmp/emotion_opt/emotion_dataset_01/emotion_sidecar_v3_core_training.jsonl \
+  --training-policy core \
+  --model iic/emotion2vec_plus_large \
+  --device cuda:0 \
+  --emotions happy,angry,disgusted,surprised
+~~~
+
+이 command는 Critic gate부터 다시 실행한다.
+Critic이 약하면 G로 진행하지 않는다.
+
+---
+
+# 41. Self-test 확장
+
+`tools/emotion_labeling_selftest.py`
+
+commit:
+`16891f35a8bc0c59f127e71c0d5267afbdb478f3`
+
+추가:
+- bounded Refiner grouped OOF
+- final refiner
+- Critic+G consensus state path
+
+training-sidecar materialization test:
+`1bd22f451da61d870b300e9c4f8fea446dfa4f61`
+
+review evaluator도 bounded refiner standalone 비교 지원:
+`8baec95cb7b4f2e5684660b1896a83f03e3d196f`
+
+첫 Kaggle gate는 계속:
+
+~~~bash
+python tools/emotion_labeling_selftest.py
+~~~
+
+이다.
+
+---
+
+# 42. 현재 runtime 검증 수준
+
+확인된 것:
+
+- 핵심 Critic 수학은 synthetic separable data에서 OOF macro acc/AUC 1.0.
+- bounded Refiner draft의 같은 synthetic path도 macro acc/AUC 1.0을 확인.
+- review selector/evaluator core logic도 synthetic 입력에서 기대값 확인.
+- 현재 committed source는 GitHub 정적 검토를 반복 수행.
+
+아직 확인하지 않은 것:
+
+- 실제 Kaggle + FunASR `extract_embedding=True`
+- 실제 102-sample embedding geometry
+- 실제 seed count가 각 class에서 얼마나 남는지
+- 실제 Critic OOF
+- 실제 G OOF
+- v3 core sidecar로 재학습한 Controller의 OOF/청감
+
+따라서 실제 dataset에서 gate를 통과하기 전에는 v3를 default로 승격하지 않는다.
