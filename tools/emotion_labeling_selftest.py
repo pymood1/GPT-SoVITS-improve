@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.auto_emotion_sidecar import prediction_diagnostics  # noqa: E402
+from tools.calibrate_emotion_seed_thresholds import calibrate  # noqa: E402
 from tools.build_emotion_review_set import select_review_rows  # noqa: E402
 from tools.emotion_label_refiner import (  # noqa: E402
     CriticConfig,
@@ -575,6 +576,54 @@ def test_training_sidecar_materialization() -> None:
     )
 
 
+def test_threshold_calibrator() -> None:
+    rows = []
+    labels = ("happy", "angry")
+    for label in labels:
+        for index in range(4):
+            rows.append(
+                {
+                    "human_emotion": label,
+                    "emotion_intended": label,
+                    "emotion_raw_top1": label,
+                    "emotion_ood_mass": 0.05,
+                    "emotion_entropy": 0.20,
+                    "emotion_top1_margin": 0.60,
+                    "emotion_relative_score": 0.80,
+                    "emotion_relative_confidence": 0.70,
+                    "emotion_relative_gap": 0.50,
+                    "emotion_relative_z": 1.5,
+                    "emotion_relative_z_gap": 0.70,
+                }
+            )
+
+    report = calibrate(
+        rows,
+        emotions=labels,
+        grids={
+            "max_ood": (0.10, 0.30),
+            "max_entropy": (0.40, 0.80),
+            "min_raw_margin": (0.10,),
+            "min_relative_score": (0.25,),
+            "min_relative_confidence": (0.35,),
+            "min_relative_gap": (0.10,),
+            "min_relative_z": (0.50,),
+            "min_relative_z_gap": (0.25,),
+        },
+        min_coverage=0.50,
+        min_accepted=4,
+        top_n=5,
+    )
+    require(
+        report["best"]["selective_accuracy"] == 1.0,
+        "synthetic threshold calibration should be perfect",
+    )
+    require(
+        "--seed-max-ood" in report["recommended_cli"],
+        "calibrator did not emit seed CLI recommendation",
+    )
+
+
 def test_review_evaluator() -> None:
     rows = [
         {
@@ -615,6 +664,7 @@ def main() -> int:
         test_crossfit_refiner,
         test_reviewed_seed_override,
         test_training_sidecar_materialization,
+        test_threshold_calibrator,
         test_review_evaluator,
     ]
     for test in tests:
