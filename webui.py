@@ -796,11 +796,39 @@ def _emotion_dataset_slug(dataset_id):
 
 
 def _emotion_output_dir(dataset_id):
+    work_root = os.environ.get(
+        "GPT_SOVITS_EMOTION_WORK_ROOT",
+        "",
+    ).strip()
+    if work_root:
+        return (
+            Path(work_root).expanduser()
+            / _emotion_dataset_slug(dataset_id)
+        ).resolve()
     return (
         Path(now_dir)
         / "output"
         / "emotion_opt"
         / _emotion_dataset_slug(dataset_id)
+    ).resolve()
+
+
+def _emotion_controller_default_path(dataset_id):
+    dataset_slug = _emotion_dataset_slug(dataset_id)
+    output_root = os.environ.get(
+        "GPT_SOVITS_OUTPUT_ROOT",
+        "",
+    ).strip()
+    if output_root:
+        return (
+            Path(output_root).expanduser()
+            / "emotion_controllers"
+            / dataset_slug
+            / f"{dataset_slug}_emotion_controller.pt"
+        ).resolve()
+    return (
+        _emotion_output_dir(dataset_id)
+        / f"{dataset_slug}_emotion_controller.pt"
     ).resolve()
 
 
@@ -1128,8 +1156,7 @@ def run_emotion_training_pipeline(
         controller_output_text = _clean_user_path(controller_output)
         if not controller_output_text:
             controller_output_text = str(
-                emotion_output_dir
-                / f"{dataset_slug}_emotion_controller.pt"
+                _emotion_controller_default_path(dataset_id)
             )
 
         dataset_dir = Path(dataset_dir_text).expanduser().resolve()
