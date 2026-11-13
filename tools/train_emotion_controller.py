@@ -1430,6 +1430,11 @@ def save_checkpoint(
                     if args.reference_prompt_cache
                     else None
                 ),
+                "inference_references": getattr(
+                    args,
+                    "inference_references",
+                    [],
+                ),
                 "top_k": args.top_k,
                 "top_p": args.top_p,
                 "temperature": args.temperature,
@@ -1775,6 +1780,55 @@ def main() -> int:
     reference_map = load_reference_map(
         Path(args.reference_map).resolve(),
         store,
+    )
+
+    # Persist the exact fixed references used by controller training so the
+    # inference UI can reuse the same audio/text/language without depending on
+    # the temporary canonical dataset path. Prefer the original dataset audio
+    # path because Kaggle /kaggle/input survives while /kaggle/tmp does not.
+    inference_references = []
+    for speaker_uid, reference_name in reference_map.items():
+        reference_meta = store.require_item(reference_name)
+        original_path_text = str(
+            reference_meta.get("original_path") or ""
+        ).strip()
+        canonical_path = (
+            metadata_path.parent / "wav" / reference_name
+        ).resolve()
+        original_path = (
+            Path(original_path_text).expanduser()
+            if original_path_text
+            else None
+        )
+        if original_path is not None and original_path.is_file():
+            audio_path = original_path.resolve()
+        elif canonical_path.is_file():
+            audio_path = canonical_path
+        else:
+            raise TrainingDataError(
+                "Controller reference audio not found for "
+                f"{reference_name!r}"
+            )
+
+        inference_references.append(
+            {
+                "speaker_uid": speaker_uid,
+                "canonical_wav": reference_name,
+                "audio_path": str(audio_path),
+                "original_path": original_path_text or None,
+                "text": str(reference_meta.get("text") or ""),
+                "language": str(
+                    reference_meta.get("language") or ""
+                ).lower(),
+            }
+        )
+    args.inference_references = inference_references
+    print(
+        "[reference] inference reuse: "
+        + ", ".join(
+            f"{item['speaker_uid']}={item['canonical_wav']}"
+            for item in inference_references
+        )
     )
     # The emotion controller is tied to the semantic tokenizer used by
     # 6-name2semantic.tsv, so S2 provenance is mandatory even when the optional
