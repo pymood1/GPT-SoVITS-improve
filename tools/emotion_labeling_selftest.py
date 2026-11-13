@@ -228,6 +228,25 @@ def synthetic_critic_problem() -> tuple[
                 + 0.12 * torch.randn(dim)
             )
             embeddings.append(embedding)
+            raw_scores = {
+                name: (0.82 if name == emotion else 0.04)
+                for name in emotions
+            }
+            raw_scores.update(
+                {
+                    "neutral": 0.04,
+                    "other": 0.01,
+                    "unknown": 0.01,
+                }
+            )
+            relative_scores = {
+                name: (1.20 if name == emotion else -0.30)
+                for name in emotions
+            }
+            relative_z_scores = {
+                name: (2.00 if name == emotion else -0.50)
+                for name in emotions
+            }
             rows.append(
                 {
                     "wav": (
@@ -235,8 +254,18 @@ def synthetic_critic_problem() -> tuple[
                     ),
                     "emotion_intended": emotion,
                     "emotion_raw_top1": emotion,
+                    "emotion_raw_top2": "neutral",
+                    "emotion_raw_scores": raw_scores,
                     "emotion_ood_mass": 0.02,
                     "emotion_entropy": 0.20,
+                    "emotion_top1_margin": 0.78,
+                    "emotion_relative_scores": relative_scores,
+                    "emotion_relative_score": 1.20,
+                    "emotion_relative_confidence": 0.78,
+                    "emotion_relative_gap": 1.50,
+                    "emotion_relative_z_scores": relative_z_scores,
+                    "emotion_relative_z": 2.00,
+                    "emotion_relative_z_gap": 2.50,
                     "_text_group_id": (
                         f"{emotion}:synthetic:{sample_id}"
                     ),
