@@ -1731,6 +1731,16 @@ def make_parser() -> argparse.ArgumentParser:
         default=0.60,
     )
     parser.add_argument(
+        "--refiner-min-macro-accuracy",
+        type=float,
+        default=0.35,
+    )
+    parser.add_argument(
+        "--refiner-min-macro-auc",
+        type=float,
+        default=0.60,
+    )
+    parser.add_argument(
         "--refiner-min-critic-margin",
         type=float,
         default=0.15,
@@ -1779,6 +1789,8 @@ def validate_args(args: argparse.Namespace) -> None:
         "max_neutral_entropy",
         "refiner_min_critic_macro_accuracy",
         "refiner_min_critic_macro_auc",
+        "refiner_min_macro_accuracy",
+        "refiner_min_macro_auc",
         "refiner_min_critic_margin",
         "refiner_min_refiner_margin",
     ):
@@ -1946,6 +1958,17 @@ def main() -> int:
                     refiner_config=refiner_config,
                 )
             )
+            if not critic_gate_passed(
+                refiner_metrics,
+                min_macro_accuracy=args.refiner_min_macro_accuracy,
+                min_macro_auc=args.refiner_min_macro_auc,
+            ):
+                raise CriticError(
+                    "bounded refiner blocked: refiner OOF gate failed "
+                    f"(macro_accuracy="
+                    f"{refiner_metrics.get('oof_macro_accuracy')}, "
+                    f"macro_auc={refiner_metrics.get('oof_macro_auc')})"
+                )
             refiner_result = fit_final_refiner(
                 rows,
                 seeds,
