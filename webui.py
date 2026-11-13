@@ -2881,6 +2881,9 @@ def open1Bb(
     save_every_epoch,
     gpu_numbers,
     pretrained_s1,
+    s1_adapter,
+    s1_lora_rank,
+    s1_lora_alpha,
     pretrained_s2G_path,
     use_multilingual_bert,
     multilingual_bert_model,
@@ -2920,6 +2923,32 @@ def open1Bb(
             {"__type__": "update"},
         )
         return
+
+    s1_adapter = str(s1_adapter or "full").strip().lower()
+    if s1_adapter not in {
+        "full",
+        "lora_v_o",
+        "lora_qkv_o",
+    }:
+        raise gr.Error(
+            f"지원하지 않는 GPT/S1 학습 방식입니다: {s1_adapter}",
+            duration=None,
+        )
+    try:
+        s1_lora_rank = int(s1_lora_rank)
+        s1_lora_alpha = float(s1_lora_alpha)
+    except (TypeError, ValueError) as exc:
+        raise gr.Error(
+            f"S1 LoRA 설정이 올바르지 않습니다: {exc}",
+            duration=None,
+        ) from exc
+    if s1_adapter != "full" and (
+        s1_lora_rank <= 0 or s1_lora_alpha <= 0
+    ):
+        raise gr.Error(
+            "S1 LoRA rank/alpha는 양수여야 합니다.",
+            duration=None,
+        )
 
     s1_dir = Path(exp_root) / exp_name
     artifact_error = _training_artifact_error(
@@ -3073,6 +3102,13 @@ def open1Bb(
         ),
         "s1_config_signature": quick_path_signature(config_path),
         "if_dpo": bool(if_dpo),
+        "s1_adapter": s1_adapter,
+        "s1_lora_rank": (
+            s1_lora_rank if s1_adapter != "full" else None
+        ),
+        "s1_lora_alpha": (
+            s1_lora_alpha if s1_adapter != "full" else None
+        ),
     }
     resume_reset = prepare_training_resume_state(
         s1_dir / f"training_resume_s1_{version}.json",
@@ -3116,6 +3152,9 @@ def open1Bb(
     data["train"]["if_save_every_weights"] = if_save_every_weights
     data["train"]["if_save_latest"] = if_save_latest
     data["train"]["if_dpo"] = if_dpo
+    data["train"]["s1_adapter"] = s1_adapter
+    data["train"]["s1_lora_rank"] = s1_lora_rank
+    data["train"]["s1_lora_alpha"] = s1_lora_alpha
     data["train"]["half_weights_save_dir"] = GPT_weight_version2root[version]
     data["train"]["exp_name"] = exp_name
     data["text_features"] = expected_text_features
@@ -3256,6 +3295,9 @@ def run_gpt_then_sovits(
     save_every_epoch_gpt,
     gpu_numbers_gpt,
     pretrained_s1,
+    s1_adapter,
+    s1_lora_rank,
+    s1_lora_alpha,
     use_multilingual_bert,
     multilingual_bert_model,
     version,
@@ -3290,6 +3332,9 @@ def run_gpt_then_sovits(
         save_every_epoch_gpt,
         gpu_numbers_gpt,
         pretrained_s1,
+        s1_adapter,
+        s1_lora_rank,
+        s1_lora_alpha,
         pretrained_s2G,
         use_multilingual_bert,
         multilingual_bert_model,
@@ -5860,6 +5905,33 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         interactive=True,
                                         show_label=True,
                                     )
+                                with gr.Row():
+                                    s1_adapter = gr.Dropdown(
+                                        label="GPT/S1 학습 방식",
+                                        choices=[
+                                            ("Full fine-tuning (기존 baseline)", "full"),
+                                            ("V + Attention Out LoRA (reference 보존 우선)", "lora_v_o"),
+                                            ("QKV + Attention Out LoRA (비교군)", "lora_qkv_o"),
+                                        ],
+                                        value="full",
+                                        interactive=True,
+                                    )
+                                    s1_lora_rank = gr.Slider(
+                                        minimum=2,
+                                        maximum=64,
+                                        step=2,
+                                        value=8,
+                                        label="S1 LoRA rank (LoRA에서만 사용)",
+                                        interactive=True,
+                                    )
+                                    s1_lora_alpha = gr.Slider(
+                                        minimum=1,
+                                        maximum=64,
+                                        step=1,
+                                        value=16,
+                                        label="S1 LoRA alpha (LoRA에서만 사용)",
+                                        interactive=True,
+                                    )
                             with gr.Column():
                                 with gr.Column():
                                     if_save_latest1Bb = gr.Checkbox(
@@ -6127,6 +6199,9 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         save_every_epoch1Bb,
                         gpu_numbers1Bb,
                         pretrained_s1,
+                        s1_adapter,
+                        s1_lora_rank,
+                        s1_lora_alpha,
                         use_multilingual_bert,
                         multilingual_bert_model,
                         version_checkbox,
@@ -6197,6 +6272,9 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         save_every_epoch1Bb,
                         gpu_numbers1Bb,
                         pretrained_s1,
+                        s1_adapter,
+                        s1_lora_rank,
+                        s1_lora_alpha,
                         pretrained_s2G,
                         use_multilingual_bert,
                         multilingual_bert_model,
