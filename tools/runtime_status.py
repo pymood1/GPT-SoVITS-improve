@@ -300,7 +300,10 @@ def merge_activities(
         "activities": active,
     }
     if progress_values:
-        merged["progress"] = sum(progress_values) / len(progress_values)
+        # Parallel completion is gated by the slowest active task. Using the
+        # minimum also prevents the dashboard from moving backwards when the
+        # faster task finishes and clears its status slot.
+        merged["progress"] = min(progress_values)
     return merged
 
 
