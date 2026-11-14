@@ -8,6 +8,7 @@ trainer so the WebUI can run the pipeline without duplicating model logic.
 from __future__ import annotations
 
 import json
+import os
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -18,6 +19,64 @@ import yaml
 
 class EmotionPipelineError(RuntimeError):
     pass
+
+
+def is_managed_finetuned_gpt(gpt_checkpoint: Path) -> bool:
+    """Return whether a checkpoint is one of this WebUI's exported GPT weights."""
+    checkpoint = Path(gpt_checkpoint).expanduser()
+    return checkpoint.parent.name.startswith("GPT_weights")
+
+
+def paired_controller_path(
+    gpt_checkpoint: Path,
+    output_root: Path | None = None,
+) -> Path:
+    """Return the deterministic controller path paired with one GPT checkpoint.
+
+    Keep controllers outside GPT_weights so upstream model discovery continues
+    to see only GPT checkpoints. The parent weight-directory name is retained
+    to avoid collisions between V5dev/V5turbo or other managed weight roots.
+    """
+    checkpoint = Path(gpt_checkpoint).expanduser().resolve()
+
+    if output_root is None:
+        configured_root = os.environ.get(
+            "GPT_SOVITS_OUTPUT_ROOT",
+            "",
+        ).strip()
+        if configured_root:
+            root = Path(configured_root).expanduser().resolve()
+        elif checkpoint.parent.name.startswith("GPT_weights"):
+            root = checkpoint.parent.parent
+        else:
+            root = checkpoint.parent
+    else:
+        root = Path(output_root).expanduser().resolve()
+
+    namespace = (
+        checkpoint.parent.name
+        if checkpoint.parent.name.startswith("GPT_weights")
+        else "external"
+    )
+    return (
+        root
+        / "emotion_controllers"
+        / "paired"
+        / namespace
+        / f"{checkpoint.stem}_emotion_controller.pt"
+    )
+
+
+def paired_controller_for_gpt(
+    gpt_checkpoint: Path,
+    output_root: Path | None = None,
+) -> Path | None:
+    """Return an existing controller paired with the GPT checkpoint."""
+    candidate = paired_controller_path(
+        gpt_checkpoint,
+        output_root=output_root,
+    )
+    return candidate if candidate.is_file() else None
 
 
 def controller_artifact_paths(final_output: Path) -> dict[str, Path]:

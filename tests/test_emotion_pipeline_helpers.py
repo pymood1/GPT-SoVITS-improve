@@ -10,11 +10,14 @@ from tools.emotion_training_pipeline import (
     controller_artifact_paths,
     create_reference_map,
     detect_pair_emotions,
+    is_managed_finetuned_gpt,
+    latest_gpt_checkpoint_for_experiment,
+    paired_controller_for_gpt,
+    paired_controller_path,
     split_train_validation_samples,
     stratified_group_kfold_indices,
     stratified_kfold_indices,
     update_early_stop_state,
-    latest_gpt_checkpoint_for_experiment,
 )
 from tools.run_emotion_v5_preprocess import (
     PreprocessError,
@@ -459,6 +462,141 @@ class ControllerPromotionIntegrationTests(unittest.TestCase):
         pass_pos = block.index("latest_emotion_controller_path =")
         fail_pos = block.index('failed_output = controller_artifacts["failed"]')
         self.assertLess(pass_pos, fail_pos)
+
+
+class GptControllerPairingTests(unittest.TestCase):
+    def test_managed_gpt_uses_deterministic_paired_controller_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            weight_root = root / "GPT_weights_v5dev"
+            weight_root.mkdir()
+            checkpoint = weight_root / "demo-e15.ckpt"
+            checkpoint.write_bytes(b"gpt")
+
+            expected = (
+                root
+                / "emotion_controllers"
+                / "paired"
+                / "GPT_weights_v5dev"
+                / "demo-e15_emotion_controller.pt"
+            )
+            self.assertTrue(
+                is_managed_finetuned_gpt(checkpoint)
+            )
+            self.assertEqual(
+                paired_controller_path(
+                    checkpoint,
+                    output_root=root,
+                ),
+                expected,
+            )
+            self.assertIsNone(
+                paired_controller_for_gpt(
+                    checkpoint,
+                    output_root=root,
+                )
+            )
+
+            expected.parent.mkdir(parents=True)
+            expected.write_bytes(b"controller")
+            self.assertEqual(
+                paired_controller_for_gpt(
+                    checkpoint,
+                    output_root=root,
+                ),
+                expected,
+            )
+
+    def test_pretrained_checkpoint_is_not_managed_finetune(self):
+        checkpoint = Path(
+            "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+        )
+        self.assertFalse(
+            is_managed_finetuned_gpt(checkpoint)
+        )
+
+    def test_webui_pairs_controller_with_gpt_training_and_inference(self):
+        root = Path(__file__).resolve().parents[1]
+        webui = (root / "webui.py").read_text(encoding="utf-8")
+        train_start = webui.index("def open1Bb(")
+        train_end = webui.index("def close1Bb(", train_start)
+        train_block = webui[train_start:train_end]
+
+        self.assertIn(
+            "controller_output = paired_controller_path(gpt_checkpoint)",
+            train_block,
+        )
+        self.assertIn(
+            "run_emotion_training_pipeline(",
+            train_block,
+        )
+        self.assertIn(
+            "auto_create_sidecar=True",
+            train_block,
+        )
+
+        infer_start = webui.index("def change_tts_inference(")
+        infer_end = webui.index("def close_tts_inference(", infer_start)
+        infer_block = webui[infer_start:infer_end]
+        self.assertIn(
+            "paired_controller_for_gpt(",
+            infer_block,
+        )
+        self.assertNotIn(
+            "latest_emotion_controller_path",
+            infer_block,
+        )
+
+    def test_inference_webui_requires_pair_for_managed_gpt_switch(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (
+            root / "GPT_SoVITS" / "inference_webui.py"
+        ).read_text(encoding="utf-8")
+        start = source.index("def change_gpt_weights_webui(")
+        end = source.index(
+            'os.environ["HF_ENDPOINT"]',
+            start,
+        )
+        block = source[start:end]
+
+        self.assertIn(
+            "_paired_controller_for_gpt_path(",
+            block,
+        )
+        self.assertIn(
+            "is_managed_finetuned_gpt(",
+            block,
+        )
+        self.assertIn(
+            "대응 Emotion Controller가 필수",
+            block,
+        )
+        preflight_pos = block.index(
+            "_validate_controller_identity("
+        )
+        switch_pos = block.index(
+            "change_gpt_weights(resolved_gpt_path)"
+        )
+        self.assertLess(preflight_pos, switch_pos)
+
+    def test_sovits_switch_preflights_managed_pair(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (
+            root / "GPT_SoVITS" / "inference_webui.py"
+        ).read_text(encoding="utf-8")
+        start = source.index("def change_sovits_weights(")
+        end = source.index(
+            "\n\ntry:\n    next(change_sovits_weights",
+            start,
+        )
+        block = source[start:end]
+        preflight_pos = block.index(
+            "_validate_controller_identity("
+        )
+        clear_pos = block.index(
+            "current_t2s_model.model.clear_emotion_controller()"
+        )
+        self.assertLess(preflight_pos, clear_pos)
 
 
 class GptCheckpointSelectionTests(unittest.TestCase):

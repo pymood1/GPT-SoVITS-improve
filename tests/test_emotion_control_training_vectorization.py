@@ -85,12 +85,13 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
         return torch.stack(values)
 
 
-    def test_simplex_init_is_centered_and_zero_effect(self):
+    def test_legacy_simplex_init_is_centered_and_zero_effect(self):
         torch.manual_seed(1234)
         controller = LowRankEmotionPreference(
             hidden_dim=16,
             num_emotions=4,
             rank=8,
+            steering_mode="legacy_low_rank",
         )
         coeff = controller.emotion_coeff.weight.detach()
 
@@ -132,13 +133,14 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
                 atol=0.0,
             )
 
-    def test_simplex_init_gives_u_proj_first_step_gradient(self):
+    def test_legacy_simplex_init_gives_u_proj_first_step_gradient(self):
         torch.manual_seed(4321)
         controller = LowRankEmotionPreference(
             hidden_dim=16,
             num_emotions=4,
             rank=8,
             prefix_log_ratio_budget=2.0,
+            steering_mode="legacy_low_rank",
         )
         time_steps = 17
         vocab_size = 31
@@ -190,6 +192,68 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
             rtol=0.0,
             atol=0.0,
         )
+
+    def test_hidden_direction_default_trains_active_direction_parameters(self):
+        torch.manual_seed(20261114)
+        controller = LowRankEmotionPreference(
+            hidden_dim=16,
+            num_emotions=4,
+            rank=8,
+            prefix_log_ratio_budget=2.0,
+        )
+        self.assertEqual(
+            controller.steering_mode,
+            "hidden_direction",
+        )
+
+        time_steps = 17
+        vocab_size = 31
+        hidden = torch.randn(time_steps, 16)
+        output_weight = torch.randn(vocab_size, 16)
+        logits = torch.randn(time_steps, vocab_size)
+        top_values, top_indices = torch.topk(logits, 8, dim=-1)
+        base_probs = torch.zeros_like(logits)
+        base_probs.scatter_(
+            1,
+            top_indices,
+            torch.softmax(top_values, dim=-1),
+        )
+
+        scores = vectorized_sequence_relative_scores(
+            controller=controller,
+            hidden=hidden,
+            base_probs=base_probs,
+            target_semantic=top_indices[:, 0],
+            valid_mask=torch.ones(time_steps, dtype=torch.bool),
+            output_weight=output_weight,
+            eos_id=vocab_size - 1,
+        )
+        self.assertIsNotNone(scores)
+        self.assertGreater(
+            float(scores.detach().abs().max()),
+            1e-8,
+        )
+
+        loss = F.cross_entropy(
+            4.0 * scores.unsqueeze(0),
+            torch.tensor([2], dtype=torch.long),
+        )
+        loss.backward()
+
+        self.assertIsNone(controller.u_proj.grad)
+        self.assertIsNotNone(controller.v_proj.grad)
+        self.assertGreater(
+            float(controller.v_proj.grad.norm()),
+            1e-8,
+        )
+        self.assertIsNotNone(
+            controller.emotion_coeff.weight.grad
+        )
+        self.assertGreater(
+            float(controller.emotion_coeff.weight.grad.norm()),
+            1e-8,
+        )
+
 
     def test_single_non_eos_support_has_zero_training_effect(self):
         torch.manual_seed(20261112)
@@ -264,7 +328,11 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
         )
         legacy_loss.backward()
         legacy_gradients = {
-            name: parameter.grad.detach().clone()
+            name: (
+                None
+                if parameter.grad is None
+                else parameter.grad.detach().clone()
+            )
             for name, parameter in controller.named_parameters()
         }
 
@@ -286,9 +354,20 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
         vectorized_loss.backward()
 
         for name, parameter in controller.named_parameters():
+            expected = legacy_gradients[name]
+            if expected is None:
+                self.assertIsNone(
+                    parameter.grad,
+                    msg=f"unexpected gradient for {name}",
+                )
+                continue
+            self.assertIsNotNone(
+                parameter.grad,
+                msg=f"missing gradient for {name}",
+            )
             torch.testing.assert_close(
                 parameter.grad,
-                legacy_gradients[name],
+                expected,
                 rtol=2e-5,
                 atol=2e-6,
             )

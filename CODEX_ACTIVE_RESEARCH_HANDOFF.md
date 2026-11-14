@@ -49,6 +49,54 @@ The WebUI one-click experiment is a development harness, not a product feature.
 Remove `DEV_EXPERIMENT_PRESET.yaml`, `tools/dev_experiment_harness.py`, and the
 temporary WebUI controls after the final training direction is selected.
 
+## GPT / Emotion Controller pairing invariant
+
+Managed V5dev GPT fine-tunes now treat the Emotion Controller as part of the
+same logical model bundle.
+
+Flow:
+
+    GPT/S1 training
+        -> exported GPT checkpoint
+        -> refresh/create emotion sidecar (reuse prediction cache)
+        -> Controller training against that exact GPT checkpoint
+        -> Controller validation PASS
+        -> GPT training is reported complete
+
+Controller outputs use a deterministic path derived from the GPT checkpoint:
+
+    <output-root>/
+      GPT_weights_v5dev/<name>.ckpt
+      emotion_controllers/paired/GPT_weights_v5dev/
+        <name>_emotion_controller.pt
+
+Rules:
+
+- a managed V5dev GPT is not considered ready until its paired Controller passes;
+- inference resolves the Controller from the selected GPT, not from a global
+  latest-controller fallback;
+- legacy dev-experiment manifests remain a read-only compatibility fallback for
+  older experiment outputs;
+- changing SoVITS clears the active Controller and then revalidates/reloads the
+  GPT-paired Controller against the new S2 provenance;
+- pretrained/base GPT checkpoints may still run without a Controller;
+- the temporary dev one-click harness disables the normal post-GPT Controller
+  hook because it snapshots each S1 case first, then trains the Controller
+  against that snapshot using the same deterministic pairing path.
+
+This follows the upstream GPT-SoVITS separation of concerns: s1_train.py still
+only trains S1; orchestration and artifact pairing remain in webui.py and small
+helper functions.
+
+Validation still required after merge:
+
+- repository syntax/unit CI;
+- one Kaggle V5dev GPT training run proving automatic sidecar/controller
+  creation and PASS promotion;
+- inference startup and GPT switching proving exact paired auto-load;
+- SoVITS switching proving paired Controller revalidation/reload;
+- listening validation remains separate from structural correctness.
+
 
 ## 0. Operating rule for Codex
 
