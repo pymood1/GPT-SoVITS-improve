@@ -8,6 +8,7 @@ from tools.auto_emotion_sidecar import assign_speaker_relative_labels
 from tools.emotion_dataset_builder import parse_list_line, sidecar_for
 from tools.emotion_training_pipeline import (
     controller_artifact_paths,
+    controller_artifact_result,
     create_reference_map,
     detect_pair_emotions,
     is_managed_finetuned_gpt,
@@ -519,6 +520,28 @@ class GptControllerPairingTests(unittest.TestCase):
                 paired,
             )
 
+    def test_controller_artifact_result_prefers_promoted_then_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            final = Path(tmp) / "controller.pt"
+            paths = controller_artifact_paths(final)
+
+            self.assertEqual(
+                controller_artifact_result(final),
+                ("missing", None),
+            )
+
+            paths["failed"].write_text("failed", encoding="utf-8")
+            self.assertEqual(
+                controller_artifact_result(final),
+                ("failed", paths["failed"]),
+            )
+
+            paths["final"].write_text("pass", encoding="utf-8")
+            self.assertEqual(
+                controller_artifact_result(final),
+                ("pass", paths["final"]),
+            )
+
     def test_controller_artifact_cleanup_reuses_path_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             final = Path(tmp) / "controller.pt"
@@ -602,6 +625,14 @@ class GptControllerPairingTests(unittest.TestCase):
             "auto_create_sidecar=True",
             train_block,
         )
+        self.assertIn(
+            "controller_version=version",
+            train_block,
+        )
+        self.assertIn(
+            "controller_artifact_result(",
+            train_block,
+        )
 
         helper_start = webui.index(
             "def _paired_controller_training_job("
@@ -621,6 +652,14 @@ class GptControllerPairingTests(unittest.TestCase):
         )
         self.assertIn(
             "run_emotion_training_pipeline(",
+            helper_block,
+        )
+        self.assertIn(
+            "controller_version=controller_version",
+            helper_block,
+        )
+        self.assertIn(
+            "return controller_output, stream",
             helper_block,
         )
         self.assertIn(
@@ -659,6 +698,56 @@ class GptControllerPairingTests(unittest.TestCase):
         self.assertNotIn(
             "run_emotion_training_pipeline(",
             dev_block,
+        )
+        self.assertIn(
+            "controller_artifact_result(",
+            dev_block,
+        )
+
+    def test_manual_controller_ui_passes_selected_version_positionally(self):
+        root = Path(__file__).resolve().parents[1]
+        webui = (root / "webui.py").read_text(encoding="utf-8")
+
+        signature_start = webui.index(
+            "def run_emotion_training_pipeline("
+        )
+        signature_end = webui.index(
+            "):",
+            signature_start,
+        )
+        signature = webui[signature_start:signature_end]
+        self.assertLess(
+            signature.index('controller_version="v5dev"'),
+            signature.index("auto_create_sidecar=False"),
+        )
+
+        click_start = webui.index("emotion_run.click(")
+        click_end = webui.index(
+            "\n\n                    emotion_stop.click(",
+            click_start,
+        )
+        click_block = webui[click_start:click_end]
+        self.assertIn("version_checkbox", click_block)
+
+        pipeline_start = webui.index(
+            "def run_emotion_training_pipeline("
+        )
+        pipeline_end = webui.index(
+            "\n\nprocess_name_subfix",
+            pipeline_start,
+        )
+        pipeline_block = webui[pipeline_start:pipeline_end]
+        self.assertIn(
+            "pretrained_sovits_name.get(controller_version)",
+            pipeline_block,
+        )
+        self.assertIn(
+            'Path(GPT_weight_version2root[controller_version])',
+            pipeline_block,
+        )
+        self.assertIn(
+            '"--version",\n            controller_version,',
+            pipeline_block,
         )
 
     def test_inference_webui_requires_pair_for_managed_gpt_switch(self):
