@@ -750,7 +750,24 @@ class GptControllerPairingTests(unittest.TestCase):
             pipeline_block,
         )
         self.assertIn(
-            'Path(GPT_weight_version2root[controller_version])',
+            "_resolve_repo_path(\n"
+            "                GPT_weight_version2root[controller_version]",
+            pipeline_block,
+        )
+        self.assertIn(
+            "s1_checkpoint = _resolve_repo_path(",
+            pipeline_block,
+        )
+        self.assertIn(
+            "s2_checkpoint = _resolve_repo_path(",
+            pipeline_block,
+        )
+        self.assertIn(
+            "bert_dir = _resolve_repo_path(",
+            pipeline_block,
+        )
+        self.assertIn(
+            "cnhubert_dir = _resolve_repo_path(",
             pipeline_block,
         )
         self.assertIn(

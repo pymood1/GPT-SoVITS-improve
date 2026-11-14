@@ -1249,9 +1249,16 @@ def run_emotion_training_pipeline(
         experiment_name = str(experiment_name or "").strip()
 
         if not s1_checkpoint_path:
-            auto_checkpoint = latest_gpt_checkpoint_for_experiment(
-                Path(GPT_weight_version2root[controller_version]),
-                experiment_name,
+            weight_root = _resolve_repo_path(
+                GPT_weight_version2root[controller_version]
+            )
+            auto_checkpoint = (
+                latest_gpt_checkpoint_for_experiment(
+                    weight_root,
+                    experiment_name,
+                )
+                if weight_root is not None
+                else None
             )
             if auto_checkpoint is not None:
                 s1_checkpoint_path = str(auto_checkpoint)
@@ -1275,9 +1282,9 @@ def run_emotion_training_pipeline(
             s1_checkpoint_path,
         )
 
-        s1_checkpoint = Path(
+        s1_checkpoint = _resolve_repo_path(
             s1_checkpoint_path
-        ).expanduser().resolve()
+        )
 
         s2_checkpoint_text = str(
             pretrained_sovits_name.get(controller_version) or ""
@@ -1287,15 +1294,15 @@ def run_emotion_training_pipeline(
                 "선택한 V5 버전의 pretrained SoVITS/S2 경로가 없습니다: "
                 f"{controller_version}"
             )
-        s2_checkpoint = Path(
+        s2_checkpoint = _resolve_repo_path(
             s2_checkpoint_text
-        ).expanduser().resolve()
-        bert_dir = Path(
+        )
+        bert_dir = _resolve_repo_path(
             default_bert_path
-        ).resolve()
-        cnhubert_dir = Path(
+        )
+        cnhubert_dir = _resolve_repo_path(
             default_cnhubert_path
-        ).resolve()
+        )
 
         for required_path, label in (
             (s1_checkpoint, f"{controller_version} S1"),
@@ -1303,7 +1310,7 @@ def run_emotion_training_pipeline(
             (bert_dir, "BERT"),
             (cnhubert_dir, "CNHuBERT"),
         ):
-            if not required_path.exists():
+            if required_path is None or not required_path.exists():
                 raise EmotionPipelineError(
                     f"{label} path not found: {required_path}"
                 )
