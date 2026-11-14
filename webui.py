@@ -2931,6 +2931,52 @@ def close1Ba():
     )
 
 
+def _paired_controller_training_job(
+    *,
+    gpt_checkpoint,
+    source_list,
+    wav_root,
+    sidecar_path,
+    dataset_id,
+    experiment_name,
+    emotion_names="",
+    steps=500,
+    gpu_number="0",
+    reuse_dataset=True,
+    output_root=None,
+    auto_create_sidecar=False,
+):
+    """Prepare one GPT-paired Controller job using the existing pipeline."""
+    checkpoint = Path(gpt_checkpoint).expanduser().resolve()
+    controller_output = paired_controller_path(
+        checkpoint,
+        output_root=output_root,
+    )
+    controller_output.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    remove_controller_artifacts(controller_output)
+    artifacts = controller_artifact_paths(controller_output)
+    stream = run_emotion_training_pipeline(
+        source_list,
+        wav_root,
+        sidecar_path,
+        dataset_id,
+        "",
+        "",
+        str(controller_output),
+        experiment_name,
+        str(checkpoint),
+        emotion_names,
+        int(steps),
+        str(gpu_number),
+        bool(reuse_dataset),
+        auto_create_sidecar=bool(auto_create_sidecar),
+    )
+    return controller_output, artifacts, stream
+
+
 p_train_GPT = None
 gpt_auto_controller_active = False
 process_name_gpt = i18n("GPT训练")
@@ -3362,19 +3408,6 @@ def open1Bb(
             )
             return
 
-        controller_output = paired_controller_path(gpt_checkpoint)
-        controller_artifacts = controller_artifact_paths(
-            controller_output
-        )
-        try:
-            remove_controller_artifacts(controller_output)
-        except OSError as exc:
-            raise gr.Error(
-                "이전 paired Controller 산출물을 정리하지 못했습니다: "
-                + str(exc),
-                duration=None,
-            ) from exc
-
         gpu_tokens = [
             token.strip()
             for token in re.split(r"[-,]", str(gpu_numbers or ""))
@@ -3386,24 +3419,34 @@ def open1Bb(
             else "0"
         )
 
+        try:
+            (
+                controller_output,
+                controller_artifacts,
+                controller_stream,
+            ) = _paired_controller_training_job(
+                gpt_checkpoint=gpt_checkpoint,
+                source_list=inp_text,
+                wav_root=inp_wav_dir,
+                sidecar_path=str(
+                    _emotion_sidecar_default_path(exp_name)
+                ),
+                dataset_id=exp_name,
+                experiment_name=exp_name,
+                gpu_number=controller_gpu,
+                reuse_dataset=True,
+                auto_create_sidecar=True,
+            )
+        except OSError as exc:
+            raise gr.Error(
+                "이전 paired Controller 산출물을 정리하지 못했습니다: "
+                + str(exc),
+                duration=None,
+            ) from exc
+
         gpt_auto_controller_active = True
         try:
-            for controller_status in run_emotion_training_pipeline(
-                inp_text,
-                inp_wav_dir,
-                str(_emotion_sidecar_default_path(exp_name)),
-                exp_name,
-                "",
-                "",
-                str(controller_output),
-                exp_name,
-                str(gpt_checkpoint),
-                "",
-                500,
-                controller_gpu,
-                True,
-                auto_create_sidecar=True,
-            ):
+            for controller_status in controller_stream:
                 yield (
                     process_info(process_name_gpt, "opened")
                     + "\n\n"
@@ -5463,38 +5506,35 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 root = dev_output_root(
                     Path(GPT_weight_version2root["v5dev"])
                 )
-                controller_output = paired_controller_path(
-                    snapshot,
-                    output_root=root,
-                )
-                controller_output.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
-                )
-                artifacts = controller_artifact_paths(controller_output)
-                remove_controller_artifacts(controller_output)
-
                 controller_gpu = str(
                     controller_cfg.get("gpu") or "auto"
                 ).strip().lower()
                 if controller_gpu == "auto":
                     controller_gpu = gpu
 
-                for controller_status in run_emotion_training_pipeline(
-                    source_list,
-                    wav_root,
-                    sidecar_path,
-                    dataset_id,
-                    "",
-                    "",
-                    str(controller_output),
-                    experiment_name,
-                    str(snapshot),
-                    str(controller_cfg.get("emotion_names") or ""),
-                    int(controller_cfg.get("steps", 500)),
-                    controller_gpu,
-                    bool(controller_cfg.get("reuse_dataset", True)),
-                ):
+                (
+                    controller_output,
+                    artifacts,
+                    controller_stream,
+                ) = _paired_controller_training_job(
+                    gpt_checkpoint=snapshot,
+                    source_list=source_list,
+                    wav_root=wav_root,
+                    sidecar_path=sidecar_path,
+                    dataset_id=dataset_id,
+                    experiment_name=experiment_name,
+                    emotion_names=str(
+                        controller_cfg.get("emotion_names") or ""
+                    ),
+                    steps=int(controller_cfg.get("steps", 500)),
+                    gpu_number=controller_gpu,
+                    reuse_dataset=bool(
+                        controller_cfg.get("reuse_dataset", True)
+                    ),
+                    output_root=root,
+                )
+
+                for controller_status in controller_stream:
                     if dev_experiment_cancel_requested:
                         return
                     yield (
@@ -5508,7 +5548,6 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                         {"__type__": "update"},
                     )
 
-                artifacts = controller_artifact_paths(controller_output)
                 if artifacts["final"].is_file():
                     case_result["controller"] = str(artifacts["final"])
                     case_result["controller_gate"] = "pass"
