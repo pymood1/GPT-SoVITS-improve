@@ -30,6 +30,17 @@ def supports_paired_controller(version: str | None) -> bool:
     return normalized in PAIRED_CONTROLLER_VERSIONS
 
 
+def managed_gpt_version(gpt_checkpoint: Path) -> str | None:
+    """Infer the managed GPT version from its standard weight-root directory."""
+    checkpoint = Path(gpt_checkpoint).expanduser()
+    parent_name = checkpoint.parent.name
+    prefix = "GPT_weights_"
+    if parent_name.startswith(prefix):
+        version = parent_name[len(prefix):].strip().lower()
+        return version or None
+    return None
+
+
 def is_managed_finetuned_gpt(gpt_checkpoint: Path) -> bool:
     """Return whether a checkpoint is one of this WebUI's exported GPT weights."""
     checkpoint = Path(gpt_checkpoint).expanduser()
@@ -116,11 +127,16 @@ def resolve_controller_for_gpt(
 
 def requires_paired_controller(
     gpt_checkpoint: Path,
-    version: str | None,
+    version: str | None = None,
 ) -> bool:
     """Return whether a selected GPT must have its deterministic controller."""
+    effective_version = (
+        str(version).strip().lower()
+        if version not in [None, ""]
+        else managed_gpt_version(gpt_checkpoint)
+    )
     return (
-        supports_paired_controller(version)
+        supports_paired_controller(effective_version)
         and is_managed_finetuned_gpt(gpt_checkpoint)
     )
 
