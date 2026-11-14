@@ -1159,6 +1159,7 @@ def run_emotion_training_pipeline(
     gpu_number,
     reuse_dataset,
     auto_create_sidecar=False,
+    controller_version="v5dev",
 ):
     global p_emotion_training
     global latest_emotion_controller_path
@@ -1171,6 +1172,15 @@ def run_emotion_training_pipeline(
 
     try:
         dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
+        controller_version = str(
+            controller_version or "v5dev"
+        ).strip().lower()
+        if controller_version not in {"v5dev", "v5turbo"}:
+            raise EmotionPipelineError(
+                "감정 Controller pipeline은 V5dev/V5turbo만 지원합니다: "
+                f"{controller_version!r}"
+            )
+
         dataset_slug = _emotion_dataset_slug(dataset_id)
         emotion_output_dir = _emotion_output_dir(dataset_id)
 
@@ -1209,7 +1219,10 @@ def run_emotion_training_pipeline(
         train_list = dataset_dir / "train.list"
         reference_map_path = dataset_dir / "reference_map.json"
         reference_prompt_path = dataset_dir / "reference_prompts.pt"
-        tts_config_path = dataset_dir / "tts_infer_emotion_v5dev.yaml"
+        tts_config_path = (
+            dataset_dir
+            / f"tts_infer_emotion_{controller_version}.yaml"
+        )
 
         s1_checkpoint_path = _clean_user_path(
             s1_checkpoint_path
@@ -1218,7 +1231,7 @@ def run_emotion_training_pipeline(
 
         if not s1_checkpoint_path:
             auto_checkpoint = latest_gpt_checkpoint_for_experiment(
-                Path(GPT_weight_version2root["v5dev"]),
+                Path(GPT_weight_version2root[controller_version]),
                 experiment_name,
             )
             if auto_checkpoint is not None:
@@ -1229,7 +1242,7 @@ def run_emotion_training_pipeline(
                 )
             else:
                 s1_checkpoint_path = (
-                    pretrained_gpt_name.get("v5dev")
+                    pretrained_gpt_name.get(controller_version)
                     or "GPT_SoVITS/pretrained_models/s1v3.ckpt"
                 )
                 log_lines.append(
@@ -1247,10 +1260,17 @@ def run_emotion_training_pipeline(
             s1_checkpoint_path
         ).expanduser().resolve()
 
+        s2_checkpoint_text = str(
+            pretrained_sovits_name.get(controller_version) or ""
+        ).strip()
+        if not s2_checkpoint_text:
+            raise EmotionPipelineError(
+                "선택한 V5 버전의 pretrained SoVITS/S2 경로가 없습니다: "
+                f"{controller_version}"
+            )
         s2_checkpoint = Path(
-            "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/"
-            "s2Gv5dev.pth"
-        ).resolve()
+            s2_checkpoint_text
+        ).expanduser().resolve()
         bert_dir = Path(
             "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
         ).resolve()
@@ -1259,8 +1279,8 @@ def run_emotion_training_pipeline(
         ).resolve()
 
         for required_path, label in (
-            (s1_checkpoint, "V5dev S1"),
-            (s2_checkpoint, "V5dev S2"),
+            (s1_checkpoint, f"{controller_version} S1"),
+            (s2_checkpoint, f"{controller_version} S2"),
             (bert_dir, "BERT"),
             (cnhubert_dir, "CNHuBERT"),
         ):
@@ -1543,7 +1563,7 @@ def run_emotion_training_pipeline(
             "--s1-checkpoint",
             str(s1_checkpoint),
             "--version",
-            "v5dev",
+            controller_version,
             "--gpu",
             gpu_number,
         ]
@@ -1551,7 +1571,7 @@ def run_emotion_training_pipeline(
         for status in _stream_emotion_command(
             preprocess_cmd,
             log_lines,
-            "3/5 V5dev 전처리",
+            f"3/5 {controller_version} 전처리",
         ):
             yield status
 
@@ -1588,7 +1608,7 @@ def run_emotion_training_pipeline(
 
         write_v5_tts_config(
             tts_config_path,
-            version="v5dev",
+            version=controller_version,
             s1_checkpoint=s1_checkpoint,
             s2_checkpoint=s2_checkpoint,
             bert_dir=bert_dir,
@@ -1667,7 +1687,7 @@ def run_emotion_training_pipeline(
             "--steps",
             str(steps),
             "--version",
-            "v5dev",
+            controller_version,
             "--device",
             "cuda" if torch.cuda.is_available() else "cpu",
         ]
@@ -2945,6 +2965,7 @@ def _paired_controller_training_job(
     reuse_dataset=True,
     output_root=None,
     auto_create_sidecar=False,
+    controller_version="v5dev",
 ):
     """Prepare one GPT-paired Controller job using the existing pipeline."""
     checkpoint = Path(gpt_checkpoint).expanduser().resolve()
@@ -2973,6 +2994,7 @@ def _paired_controller_training_job(
         str(gpu_number),
         bool(reuse_dataset),
         auto_create_sidecar=bool(auto_create_sidecar),
+        controller_version=controller_version,
     )
     return controller_output, artifacts, stream
 
@@ -3436,6 +3458,7 @@ def open1Bb(
                 gpu_number=controller_gpu,
                 reuse_dataset=True,
                 auto_create_sidecar=True,
+                controller_version=version,
             )
         except OSError as exc:
             raise gr.Error(
@@ -5532,6 +5555,7 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                         controller_cfg.get("reuse_dataset", True)
                     ),
                     output_root=root,
+                    controller_version="v5dev",
                 )
 
                 for controller_status in controller_stream:
@@ -6790,6 +6814,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             emotion_steps,
                             emotion_gpu,
                             emotion_reuse_dataset,
+                            version_checkbox,
                         ],
                         [emotion_status],
                     )
