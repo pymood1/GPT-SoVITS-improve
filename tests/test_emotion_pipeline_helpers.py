@@ -571,6 +571,33 @@ class GptControllerPairingTests(unittest.TestCase):
             "대응 Emotion Controller가 필수",
             block,
         )
+        preflight_pos = block.index(
+            "_validate_controller_identity("
+        )
+        switch_pos = block.index(
+            "change_gpt_weights(resolved_gpt_path)"
+        )
+        self.assertLess(preflight_pos, switch_pos)
+
+    def test_sovits_switch_preflights_managed_pair(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (
+            root / "GPT_SoVITS" / "inference_webui.py"
+        ).read_text(encoding="utf-8")
+        start = source.index("def change_sovits_weights(")
+        end = source.index(
+            "\n\ntry:\n    next(change_sovits_weights",
+            start,
+        )
+        block = source[start:end]
+        preflight_pos = block.index(
+            "_validate_controller_identity("
+        )
+        clear_pos = block.index(
+            "current_t2s_model.model.clear_emotion_controller()"
+        )
+        self.assertLess(preflight_pos, clear_pos)
+
 
 class GptCheckpointSelectionTests(unittest.TestCase):
     def test_latest_checkpoint_is_selected_for_exact_experiment(self):
