@@ -3267,6 +3267,19 @@ def open1Bb(
         str(tmp_config_path),
     ]
     print("[GPT train]", " ".join(repr(x) for x in cmd))
+
+    previous_gpt_checkpoint = None
+    previous_gpt_signature = None
+    if version == "v5dev" and train_paired_controller:
+        previous_gpt_checkpoint = latest_gpt_checkpoint_for_experiment(
+            Path(GPT_weight_version2root[version]),
+            exp_name,
+        )
+        if previous_gpt_checkpoint is not None:
+            previous_gpt_signature = _file_signature(
+                previous_gpt_checkpoint
+            )
+
     gpt_train_cancel_requested = False
 
     try:
@@ -3330,7 +3343,38 @@ def open1Bb(
             )
             return
 
+        if (
+            previous_gpt_checkpoint is not None
+            and gpt_checkpoint.resolve()
+            == previous_gpt_checkpoint.resolve()
+            and _file_signature(gpt_checkpoint)
+            == previous_gpt_signature
+        ):
+            yield (
+                process_info(process_name_gpt, "failed")
+                + ": 이번 GPT/S1 학습에서 새 export가 생성되지 않았습니다.",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+
         controller_output = paired_controller_path(gpt_checkpoint)
+        controller_artifacts = controller_artifact_paths(
+            controller_output
+        )
+        for stale_path in controller_artifacts.values():
+            try:
+                if stale_path.exists():
+                    stale_path.unlink()
+            except OSError as exc:
+                raise gr.Error(
+                    "이전 paired Controller 산출물을 정리하지 못했습니다: "
+                    + str(exc),
+                    duration=None,
+                ) from exc
+
         gpu_tokens = [
             token.strip()
             for token in re.split(r"[-,]", str(gpu_numbers or ""))
@@ -3372,9 +3416,6 @@ def open1Bb(
         finally:
             gpt_auto_controller_active = False
 
-        controller_artifacts = controller_artifact_paths(
-            controller_output
-        )
         if not controller_artifacts["final"].is_file():
             yield (
                 process_info(process_name_gpt, "failed")
