@@ -742,6 +742,14 @@ class GptControllerPairingTests(unittest.TestCase):
             pipeline_block,
         )
         self.assertIn(
+            "_emotion_controller_default_path(",
+            pipeline_block,
+        )
+        self.assertIn(
+            "controller_version,",
+            pipeline_block,
+        )
+        self.assertIn(
             'Path(GPT_weight_version2root[controller_version])',
             pipeline_block,
         )
