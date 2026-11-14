@@ -1158,8 +1158,8 @@ def run_emotion_training_pipeline(
     steps,
     gpu_number,
     reuse_dataset,
-    auto_create_sidecar=False,
     controller_version="v5dev",
+    auto_create_sidecar=False,
 ):
     global p_emotion_training
     global latest_emotion_controller_path
@@ -6743,8 +6743,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 ),
                                 value="",
                                 placeholder=(
-                                    "비우면 GPT_weights_v5dev/<현재 실험명>-e*.ckpt "
-                                    "중 최신 epoch 자동 선택"
+                                    "비우면 선택한 V5 버전의 GPT_weights_*에서 "
+                                    "현재 실험명의 최신 epoch 자동 선택"
                                 ),
                                 interactive=True,
                             )
@@ -6774,10 +6774,9 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
 
                         gr.Markdown(
                             (
-                                "**S2 semantic 기준:** "
-                                "`GPT_SoVITS/pretrained_models/"
-                                "gsv-v5-pretrained/s2Gv5dev.pth`  "
-                                "(V5dev LoRA도 이 base token 공간을 사용)"
+                                "**S2 semantic 기준:** 현재 선택한 V5 버전의 "
+                                "공식 pretrained SoVITS/S2를 사용합니다. "
+                                "LoRA 모델도 해당 버전의 base token 공간을 기준으로 합니다."
                             )
                         )
 
@@ -6793,7 +6792,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
 
                         emotion_status = gr.Markdown(
                             value=(
-                                "1A 감정 데이터 확인 → V5dev feature 전처리 → "
+                                "1A 감정 데이터 확인 → 선택한 V5 feature 전처리 → "
                                 "reference prompt 생성 → controller 학습"
                             )
                         )
