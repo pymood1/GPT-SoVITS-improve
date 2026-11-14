@@ -2979,7 +2979,6 @@ def _paired_controller_training_job(
         exist_ok=True,
     )
     remove_controller_artifacts(controller_output)
-    artifacts = controller_artifact_paths(controller_output)
     stream = run_emotion_training_pipeline(
         source_list,
         wav_root,
@@ -2997,7 +2996,7 @@ def _paired_controller_training_job(
         auto_create_sidecar=bool(auto_create_sidecar),
         controller_version=controller_version,
     )
-    return controller_output, artifacts, stream
+    return controller_output, stream
 
 
 p_train_GPT = None
@@ -3445,7 +3444,6 @@ def open1Bb(
         try:
             (
                 controller_output,
-                controller_artifacts,
                 controller_stream,
             ) = _paired_controller_training_job(
                 gpt_checkpoint=gpt_checkpoint,
@@ -5541,7 +5539,6 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
 
                 (
                     controller_output,
-                    artifacts,
                     controller_stream,
                 ) = _paired_controller_training_job(
                     gpt_checkpoint=snapshot,
