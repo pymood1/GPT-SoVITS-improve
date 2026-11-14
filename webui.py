@@ -5078,6 +5078,13 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
     cnhubert_dir = (
         "GPT_SoVITS/pretrained_models/chinese-hubert-base"
     )
+    root = dev_output_root(Path(GPT_weight_version2root["v5dev"]))
+    manifest_path = (
+        root
+        / "dev_experiments"
+        / f"{experiment_name}__{preset_id}"
+        / "manifest.json"
+    )
     multilingual_bert = bool(preprocess.get("multilingual_bert", True))
     multilingual_model = str(
         preprocess.get("multilingual_bert_model")
@@ -5338,20 +5345,33 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                     )
 
             results.append(case_result)
+            dev_write_manifest(
+                manifest_path,
+                {
+                    "preset_id": preset_id,
+                    "experiment_name": experiment_name,
+                    "version": "v5dev",
+                    "complete": False,
+                    "source_list": source_list,
+                    "wav_root": wav_root,
+                    "fixed_sovits": pretrained_s2,
+                    "results": results,
+                    "listening_validation": {
+                        "performed_by_user": True,
+                        "same_reference": True,
+                        "same_text": True,
+                        "same_sovits": True,
+                    },
+                },
+            )
 
-        root = dev_output_root(Path(GPT_weight_version2root["v5dev"]))
-        manifest_path = (
-            root
-            / "dev_experiments"
-            / f"{experiment_name}__{preset_id}"
-            / "manifest.json"
-        )
         dev_write_manifest(
             manifest_path,
             {
                 "preset_id": preset_id,
                 "experiment_name": experiment_name,
                 "version": "v5dev",
+                "complete": True,
                 "source_list": source_list,
                 "wav_root": wav_root,
                 "fixed_sovits": pretrained_s2,
