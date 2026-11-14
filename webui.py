@@ -263,6 +263,8 @@ def fix_gpu_numbers(inputs):
 
 
 from config import (
+    bert_path as default_bert_path,
+    cnhubert_path as default_cnhubert_path,
     name2gpt_path,
     name2sovits_path,
     pretrained_gpt_name,
@@ -274,8 +276,8 @@ def check_pretrained_is_exist(version):
     pretrained_model_list = (
         pretrained_sovits_name[version],
         pretrained_gpt_name[version],
-        "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
-        "GPT_SoVITS/pretrained_models/chinese-hubert-base",
+        default_bert_path,
+        default_cnhubert_path,
     )
     if version not in v3v4set:
         pretrained_model_list += (pretrained_sovits_name[version].replace("s2G", "s2D"),)
@@ -1289,10 +1291,10 @@ def run_emotion_training_pipeline(
             s2_checkpoint_text
         ).expanduser().resolve()
         bert_dir = Path(
-            "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+            default_bert_path
         ).resolve()
         cnhubert_dir = Path(
-            "GPT_SoVITS/pretrained_models/chinese-hubert-base"
+            default_cnhubert_path
         ).resolve()
 
         for required_path, label in (
@@ -5329,18 +5331,10 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
     sidecar_path = ""
     results = []
 
-    pretrained_s1 = "GPT_SoVITS/pretrained_models/s1v3.ckpt"
-    pretrained_s2 = (
-        "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/"
-        "s2Gv5dev.pth"
-    )
-    bert_dir = (
-        "GPT_SoVITS/pretrained_models/"
-        "chinese-roberta-wwm-ext-large"
-    )
-    cnhubert_dir = (
-        "GPT_SoVITS/pretrained_models/chinese-hubert-base"
-    )
+    pretrained_s1 = pretrained_gpt_name["v5dev"]
+    pretrained_s2 = pretrained_sovits_name["v5dev"]
+    bert_dir = default_bert_path
+    cnhubert_dir = default_cnhubert_path
     root = dev_output_root(Path(GPT_weight_version2root["v5dev"]))
     manifest_path = (
         root
@@ -6153,7 +6147,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 bert_pretrained_dir = gr.Textbox(
                                     label=i18n("预训练中文BERT模型路径"),
-                                    value="GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
+                                    value=default_bert_path,
                                     interactive=False,
                                     lines=2,
                                 )
@@ -6200,7 +6194,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 cnhubert_base_dir = gr.Textbox(
                                     label=i18n("预训练SSL模型路径"),
-                                    value="GPT_SoVITS/pretrained_models/chinese-hubert-base",
+                                    value=default_cnhubert_path,
                                     interactive=False,
                                     lines=2,
                                 )
