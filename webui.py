@@ -109,8 +109,11 @@ from tools.emotion_training_pipeline import (
     create_reference_map,
     detect_pair_emotions,
     format_dataset_summary,
+    is_managed_finetuned_gpt,
     latest_feature_build,
     latest_gpt_checkpoint_for_experiment,
+    paired_controller_for_gpt,
+    paired_controller_path,
     validate_emotion_dataset,
     write_v5_tts_config,
 )
@@ -1153,6 +1156,7 @@ def run_emotion_training_pipeline(
     steps,
     gpu_number,
     reuse_dataset,
+    auto_create_sidecar=False,
 ):
     global p_emotion_training
     global latest_emotion_controller_path
@@ -1338,6 +1342,42 @@ def run_emotion_training_pipeline(
         sidecar_file = Path(
             sidecar_path
         ).expanduser().resolve()
+        if not sidecar_file.is_file() and auto_create_sidecar:
+            sidecar_file.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            sidecar_cmd = [
+                python_exec,
+                "-u",
+                "tools/auto_emotion_sidecar.py",
+                "--list",
+                source_list,
+                "--output",
+                str(sidecar_file),
+                "--model",
+                "iic/emotion2vec_plus_large",
+                "--min-confidence",
+                "0.35",
+                "--device",
+                "cuda:0" if torch.cuda.is_available() else "cpu",
+            ]
+            if wav_root:
+                sidecar_cmd.extend(
+                    [
+                        "--wav-root",
+                        wav_root,
+                    ]
+                )
+
+            for status in _stream_emotion_command(
+                sidecar_cmd,
+                log_lines,
+                "0/5 감정 sidecar 자동 생성",
+                cuda_visible_devices=gpu_number,
+            ):
+                yield status
+
         if not sidecar_file.is_file():
             raise EmotionPipelineError(
                 "감정 sidecar JSONL을 찾지 못했습니다: "
@@ -2018,35 +2058,37 @@ def change_tts_inference(
     bert_path = str(resolved["BERT"][0])
     cnhubert_base_path = str(resolved["CNHuBERT"][0])
 
-    dev_controller = dev_controller_for_gpt(
-        dev_output_root(Path(GPT_weight_version2root["v5dev"])),
-        Path(gpt_path),
+    controller_path = paired_controller_for_gpt(
+        Path(gpt_path)
     )
-    if dev_controller is not None:
-        controller_text = str(dev_controller)
-    else:
-        controller_text = _clean_user_path(
-            latest_emotion_controller_path
+    if controller_path is None:
+        controller_path = dev_controller_for_gpt(
+            dev_output_root(Path(GPT_weight_version2root["v5dev"])),
+            Path(gpt_path),
         )
-    controller_path = (
-        _resolve_repo_path(controller_text)
-        if controller_text
-        else None
-    )
 
-    if controller_text and (
-        controller_path is None
-        or not controller_path.is_file()
-    ):
+    controller_required = (
+        version == "v5dev"
+        and is_managed_finetuned_gpt(Path(gpt_path))
+    )
+    if controller_required and controller_path is None:
+        expected_controller = paired_controller_path(
+            Path(gpt_path)
+        )
         yield (
             "### TTS 추론 시작 실패\n\n"
-            f"감정 controller 파일이 없습니다: {controller_path}",
+            "학습된 V5dev GPT/S1에는 대응 Emotion Controller가 "
+            "필수입니다.\n\n"
+            f"예상 경로: {expected_controller}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
         )
         return
 
-    controller_available = controller_path is not None
+    controller_available = (
+        controller_path is not None
+        and controller_path.is_file()
+    )
 
     script_path = (
         "GPT_SoVITS/inference_webui.py"
@@ -2888,6 +2930,7 @@ def close1Ba():
 
 
 p_train_GPT = None
+gpt_auto_controller_active = False
 process_name_gpt = i18n("GPT训练")
 
 
@@ -2911,9 +2954,12 @@ def open1Bb(
     pretrained_s2G_path,
     use_multilingual_bert,
     multilingual_bert_model,
+    train_paired_controller=True,
 ):
     global p_train_GPT
     global gpt_train_cancel_requested
+    global gpt_auto_controller_active
+    global latest_emotion_controller_path
 
     if _preprocessing_process_running():
         yield (
@@ -3172,6 +3218,14 @@ def open1Bb(
     data["train"]["batch_size"] = batch_size
     data["train"]["epochs"] = total_epoch
     data["pretrained_s1"] = pretrained_s1
+
+    if version == "v5dev" and train_paired_controller:
+        if_save_every_weights = True
+        save_every_epoch = min(
+            max(1, int(save_every_epoch)),
+            max(1, int(total_epoch)),
+        )
+
     data["train"]["save_every_n_epoch"] = save_every_epoch
     data["train"]["if_save_every_weights"] = if_save_every_weights
     data["train"]["if_save_latest"] = if_save_latest
@@ -3260,6 +3314,85 @@ def open1Bb(
         )
         return
 
+    if version == "v5dev" and train_paired_controller:
+        gpt_checkpoint = latest_gpt_checkpoint_for_experiment(
+            Path(GPT_weight_version2root[version]),
+            exp_name,
+        )
+        if gpt_checkpoint is None or not gpt_checkpoint.is_file():
+            yield (
+                process_info(process_name_gpt, "failed")
+                + ": Controller와 묶을 GPT/S1 export를 찾지 못했습니다.",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+
+        controller_output = paired_controller_path(gpt_checkpoint)
+        gpu_tokens = [
+            token.strip()
+            for token in re.split(r"[-,]", str(gpu_numbers or ""))
+            if token.strip()
+        ]
+        controller_gpu = (
+            str(fix_gpu_number(gpu_tokens[0]))
+            if gpu_tokens
+            else "0"
+        )
+
+        gpt_auto_controller_active = True
+        try:
+            for controller_status in run_emotion_training_pipeline(
+                inp_text,
+                inp_wav_dir,
+                str(_emotion_sidecar_default_path(exp_name)),
+                exp_name,
+                "",
+                "",
+                str(controller_output),
+                exp_name,
+                str(gpt_checkpoint),
+                "",
+                500,
+                controller_gpu,
+                True,
+                auto_create_sidecar=True,
+            ):
+                yield (
+                    process_info(process_name_gpt, "opened")
+                    + "\n\n"
+                    + str(controller_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    {"__type__": "update"},
+                    {"__type__": "update"},
+                )
+        finally:
+            gpt_auto_controller_active = False
+
+        controller_artifacts = controller_artifact_paths(
+            controller_output
+        )
+        if not controller_artifacts["final"].is_file():
+            yield (
+                process_info(process_name_gpt, "failed")
+                + ": GPT/S1 학습은 끝났지만 대응 Controller가 PASS하지 못했습니다.",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+            return
+
+        latest_emotion_controller_path = str(
+            controller_artifacts["final"]
+        )
+        os.environ["emotion_controller_path"] = (
+            latest_emotion_controller_path
+        )
+
     SoVITS_dropdown_update, GPT_dropdown_update = change_choices()
     yield (
         process_info(process_name_gpt, "finish"),
@@ -3273,8 +3406,13 @@ def open1Bb(
 def close1Bb():
     global p_train_GPT
     global gpt_train_cancel_requested
+    global gpt_auto_controller_active
 
     gpt_train_cancel_requested = True
+
+    if gpt_auto_controller_active:
+        stop_emotion_training()
+        gpt_auto_controller_active = False
 
     if (
         p_train_GPT is not None
@@ -5234,6 +5372,7 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 pretrained_s2,
                 multilingual_bert,
                 multilingual_model,
+                False,
             ):
                 if dev_experiment_cancel_requested:
                     return
@@ -5283,15 +5422,13 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 root = dev_output_root(
                     Path(GPT_weight_version2root["v5dev"])
                 )
-                controller_dir = (
-                    root
-                    / "emotion_controllers"
-                    / f"{experiment_name}__{preset_id}"
+                controller_output = paired_controller_path(
+                    snapshot,
+                    output_root=root,
                 )
-                controller_dir.mkdir(parents=True, exist_ok=True)
-                controller_output = (
-                    controller_dir
-                    / f"{case_id}_emotion_controller.pt"
+                controller_output.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
                 )
                 artifacts = controller_artifact_paths(controller_output)
                 for path in artifacts.values():
