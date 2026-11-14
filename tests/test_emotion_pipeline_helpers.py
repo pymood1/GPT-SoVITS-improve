@@ -602,6 +602,14 @@ class GptControllerPairingTests(unittest.TestCase):
             "auto_create_sidecar=True",
             train_block,
         )
+        self.assertIn(
+            "supports_paired_controller(version)",
+            train_block,
+        )
+        self.assertNotIn(
+            'version == "v5dev"',
+            train_block,
+        )
 
         infer_start = webui.index("def change_tts_inference(")
         infer_end = webui.index("def close_tts_inference(", infer_start)
@@ -646,6 +654,23 @@ class GptControllerPairingTests(unittest.TestCase):
             "change_gpt_weights(resolved_gpt_path)"
         )
         self.assertLess(preflight_pos, switch_pos)
+
+        load_start = source.index(
+            "def load_emotion_controller_webui("
+        )
+        load_end = source.index(
+            "def unload_emotion_controller_webui(",
+            load_start,
+        )
+        load_block = source[load_start:load_end]
+        self.assertIn(
+            "_load_validated_controller_checkpoint(",
+            load_block,
+        )
+        self.assertNotIn(
+            "expected_s1_hash =",
+            load_block,
+        )
 
     def test_sovits_switch_preflights_managed_pair(self):
         root = Path(__file__).resolve().parents[1]
