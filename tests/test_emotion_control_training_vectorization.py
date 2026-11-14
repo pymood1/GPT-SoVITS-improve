@@ -193,6 +193,68 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
             atol=0.0,
         )
 
+    def test_hidden_direction_default_trains_active_direction_parameters(self):
+        torch.manual_seed(20261114)
+        controller = LowRankEmotionPreference(
+            hidden_dim=16,
+            num_emotions=4,
+            rank=8,
+            prefix_log_ratio_budget=2.0,
+        )
+        self.assertEqual(
+            controller.steering_mode,
+            "hidden_direction",
+        )
+
+        time_steps = 17
+        vocab_size = 31
+        hidden = torch.randn(time_steps, 16)
+        output_weight = torch.randn(vocab_size, 16)
+        logits = torch.randn(time_steps, vocab_size)
+        top_values, top_indices = torch.topk(logits, 8, dim=-1)
+        base_probs = torch.zeros_like(logits)
+        base_probs.scatter_(
+            1,
+            top_indices,
+            torch.softmax(top_values, dim=-1),
+        )
+
+        scores = vectorized_sequence_relative_scores(
+            controller=controller,
+            hidden=hidden,
+            base_probs=base_probs,
+            target_semantic=top_indices[:, 0],
+            valid_mask=torch.ones(time_steps, dtype=torch.bool),
+            output_weight=output_weight,
+            eos_id=vocab_size - 1,
+        )
+        self.assertIsNotNone(scores)
+        self.assertGreater(
+            float(scores.detach().abs().max()),
+            1e-8,
+        )
+
+        loss = F.cross_entropy(
+            4.0 * scores.unsqueeze(0),
+            torch.tensor([2], dtype=torch.long),
+        )
+        loss.backward()
+
+        self.assertIsNone(controller.u_proj.grad)
+        self.assertIsNotNone(controller.v_proj.grad)
+        self.assertGreater(
+            float(controller.v_proj.grad.norm()),
+            1e-8,
+        )
+        self.assertIsNotNone(
+            controller.emotion_coeff.weight.grad
+        )
+        self.assertGreater(
+            float(controller.emotion_coeff.weight.grad.norm()),
+            1e-8,
+        )
+
+
     def test_single_non_eos_support_has_zero_training_effect(self):
         torch.manual_seed(20261112)
         controller = LowRankEmotionPreference(
