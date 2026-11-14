@@ -178,6 +178,18 @@ def remove_controller_artifacts(final_output: Path) -> list[Path]:
     return removed
 
 
+def controller_artifact_result(
+    final_output: Path,
+) -> tuple[str, Path | None]:
+    """Return the promoted Controller gate state and selected artifact path."""
+    paths = controller_artifact_paths(final_output)
+    if paths["final"].is_file():
+        return "pass", paths["final"]
+    if paths["failed"].is_file():
+        return "failed", paths["failed"]
+    return "missing", None
+
+
 def latest_gpt_checkpoint_for_experiment(
     weight_root: Path,
     experiment_name: str,
