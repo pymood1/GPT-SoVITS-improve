@@ -843,21 +843,34 @@ def _emotion_sidecar_default_path(dataset_id):
     ).resolve()
 
 
-def _emotion_controller_default_path(dataset_id):
+def _emotion_controller_default_path(
+    dataset_id,
+    controller_version="v5dev",
+):
     dataset_slug = _emotion_dataset_slug(dataset_id)
+    normalized_version = str(
+        controller_version or "v5dev"
+    ).strip().lower()
+
     output_root = os.environ.get(
         "GPT_SOVITS_OUTPUT_ROOT",
         "",
     ).strip()
+
     if output_root:
-        return (
+        base_dir = (
             Path(output_root).expanduser()
             / "emotion_controllers"
             / dataset_slug
-            / f"{dataset_slug}_emotion_controller.pt"
-        ).resolve()
+        )
+    else:
+        base_dir = _emotion_output_dir(dataset_id)
+
+    if normalized_version != "v5dev":
+        base_dir = base_dir / normalized_version
+
     return (
-        _emotion_output_dir(dataset_id)
+        base_dir
         / f"{dataset_slug}_emotion_controller.pt"
     ).resolve()
 
@@ -1196,7 +1209,10 @@ def run_emotion_training_pipeline(
         controller_output_text = _clean_user_path(controller_output)
         if not controller_output_text:
             controller_output_text = str(
-                _emotion_controller_default_path(dataset_id)
+                _emotion_controller_default_path(
+                    dataset_id,
+                    controller_version,
+                )
             )
 
         dataset_dir = Path(dataset_dir_text).expanduser().resolve()
