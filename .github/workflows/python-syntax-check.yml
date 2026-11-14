@@ -240,7 +240,7 @@ jobs:
               reference = sequential_score(emotion_id)
               ref_grad = torch.autograd.grad(
                   reference,
-                  controller.u_proj,
+                  controller.v_proj,
                   retain_graph=False,
               )[0]
 
@@ -256,7 +256,7 @@ jobs:
               )
               vec_grad = torch.autograd.grad(
                   vectorized,
-                  controller.u_proj,
+                  controller.v_proj,
                   retain_graph=False,
               )[0]
 
