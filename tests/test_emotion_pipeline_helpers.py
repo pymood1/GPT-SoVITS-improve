@@ -591,16 +591,37 @@ class GptControllerPairingTests(unittest.TestCase):
         train_block = webui[train_start:train_end]
 
         self.assertIn(
-            "controller_output = paired_controller_path(gpt_checkpoint)",
+            "_paired_controller_training_job(",
             train_block,
         )
-        self.assertIn(
+        self.assertNotIn(
             "run_emotion_training_pipeline(",
             train_block,
         )
         self.assertIn(
             "auto_create_sidecar=True",
             train_block,
+        )
+
+        helper_start = webui.index(
+            "def _paired_controller_training_job("
+        )
+        helper_end = webui.index(
+            "\np_train_GPT = None",
+            helper_start,
+        )
+        helper_block = webui[helper_start:helper_end]
+        self.assertIn(
+            "controller_output = paired_controller_path(",
+            helper_block,
+        )
+        self.assertIn(
+            "remove_controller_artifacts(controller_output)",
+            helper_block,
+        )
+        self.assertIn(
+            "run_emotion_training_pipeline(",
+            helper_block,
         )
         self.assertIn(
             "supports_paired_controller(version)",
@@ -621,6 +642,23 @@ class GptControllerPairingTests(unittest.TestCase):
         self.assertNotIn(
             "latest_emotion_controller_path",
             infer_block,
+        )
+
+        dev_start = webui.index(
+            "def run_dev_one_click_experiment("
+        )
+        dev_end = webui.index(
+            "\n\ndef ",
+            dev_start + 10,
+        )
+        dev_block = webui[dev_start:dev_end]
+        self.assertIn(
+            "_paired_controller_training_job(",
+            dev_block,
+        )
+        self.assertNotIn(
+            "run_emotion_training_pipeline(",
+            dev_block,
         )
 
     def test_inference_webui_requires_pair_for_managed_gpt_switch(self):
