@@ -109,11 +109,13 @@ from tools.emotion_training_pipeline import (
     create_reference_map,
     detect_pair_emotions,
     format_dataset_summary,
-    is_managed_finetuned_gpt,
     latest_feature_build,
     latest_gpt_checkpoint_for_experiment,
-    paired_controller_for_gpt,
     paired_controller_path,
+    remove_controller_artifacts,
+    requires_paired_controller,
+    resolve_controller_for_gpt,
+    supports_paired_controller,
     validate_emotion_dataset,
     write_v5_tts_config,
 )
@@ -2058,18 +2060,18 @@ def change_tts_inference(
     bert_path = str(resolved["BERT"][0])
     cnhubert_base_path = str(resolved["CNHuBERT"][0])
 
-    controller_path = paired_controller_for_gpt(
-        Path(gpt_path)
+    legacy_controller = dev_controller_for_gpt(
+        dev_output_root(Path(gpt_path).parent),
+        Path(gpt_path),
     )
-    if controller_path is None:
-        controller_path = dev_controller_for_gpt(
-            dev_output_root(Path(GPT_weight_version2root["v5dev"])),
-            Path(gpt_path),
-        )
+    controller_path = resolve_controller_for_gpt(
+        Path(gpt_path),
+        fallback=legacy_controller,
+    )
 
-    controller_required = (
-        version == "v5dev"
-        and is_managed_finetuned_gpt(Path(gpt_path))
+    controller_required = requires_paired_controller(
+        Path(gpt_path),
+        version,
     )
     if controller_required and controller_path is None:
         expected_controller = paired_controller_path(
@@ -3219,7 +3221,7 @@ def open1Bb(
     data["train"]["epochs"] = total_epoch
     data["pretrained_s1"] = pretrained_s1
 
-    if version == "v5dev" and train_paired_controller:
+    if supports_paired_controller(version) and train_paired_controller:
         if_save_every_weights = True
         save_every_epoch = min(
             max(1, int(save_every_epoch)),
@@ -3270,7 +3272,7 @@ def open1Bb(
 
     previous_gpt_checkpoint = None
     previous_gpt_signature = None
-    if version == "v5dev" and train_paired_controller:
+    if supports_paired_controller(version) and train_paired_controller:
         previous_gpt_checkpoint = latest_gpt_checkpoint_for_experiment(
             Path(GPT_weight_version2root[version]),
             exp_name,
@@ -3327,7 +3329,7 @@ def open1Bb(
         )
         return
 
-    if version == "v5dev" and train_paired_controller:
+    if supports_paired_controller(version) and train_paired_controller:
         gpt_checkpoint = latest_gpt_checkpoint_for_experiment(
             Path(GPT_weight_version2root[version]),
             exp_name,
@@ -3364,16 +3366,14 @@ def open1Bb(
         controller_artifacts = controller_artifact_paths(
             controller_output
         )
-        for stale_path in controller_artifacts.values():
-            try:
-                if stale_path.exists():
-                    stale_path.unlink()
-            except OSError as exc:
-                raise gr.Error(
-                    "이전 paired Controller 산출물을 정리하지 못했습니다: "
-                    + str(exc),
-                    duration=None,
-                ) from exc
+        try:
+            remove_controller_artifacts(controller_output)
+        except OSError as exc:
+            raise gr.Error(
+                "이전 paired Controller 산출물을 정리하지 못했습니다: "
+                + str(exc),
+                duration=None,
+            ) from exc
 
         gpu_tokens = [
             token.strip()
@@ -5472,9 +5472,7 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                     exist_ok=True,
                 )
                 artifacts = controller_artifact_paths(controller_output)
-                for path in artifacts.values():
-                    if path.exists():
-                        path.unlink()
+                remove_controller_artifacts(controller_output)
 
                 controller_gpu = str(
                     controller_cfg.get("gpu") or "auto"

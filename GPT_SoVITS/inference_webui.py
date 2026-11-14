@@ -133,9 +133,9 @@ from text.multilingual_bert import (
 )
 
 from tools.emotion_training_pipeline import (
-    is_managed_finetuned_gpt,
-    paired_controller_for_gpt,
     paired_controller_path,
+    requires_paired_controller,
+    resolve_controller_for_gpt,
 )
 from tools.dev_experiment_harness import (
     controller_for_gpt as dev_controller_for_gpt,
@@ -321,13 +321,13 @@ def _paired_controller_for_gpt_path(gpt_path):
         return None
 
     resolved = Path(str(gpt_path)).expanduser().resolve()
-    paired = paired_controller_for_gpt(resolved)
-    if paired is not None:
-        return paired
-
-    return dev_controller_for_gpt(
+    legacy_controller = dev_controller_for_gpt(
         dev_output_root(resolved.parent),
         resolved,
+    )
+    return resolve_controller_for_gpt(
+        resolved,
+        fallback=legacy_controller,
     )
 
 
@@ -353,11 +353,12 @@ def _controller_semantic_s2_hash_path(sovits_path):
     return resolved_sovits, target_model_version
 
 
-def _validate_controller_identity(
+def _load_validated_controller_checkpoint(
     controller_path,
     gpt_path,
     sovits_path,
 ):
+    """Load one controller and validate its S1/S2 provenance in one place."""
     if controller_path in [None, ""]:
         raise gr.Error(i18n("请选择情感控制器文件"))
     if gpt_path in [None, ""]:
@@ -365,7 +366,7 @@ def _validate_controller_identity(
     if sovits_path in [None, ""]:
         raise gr.Error(i18n("当前 SoVITS 模型路径不可用"))
 
-    _controller, metadata = load_emotion_controller_checkpoint(
+    controller, metadata = load_emotion_controller_checkpoint(
         str(controller_path),
         map_location="cpu",
     )
@@ -384,6 +385,11 @@ def _validate_controller_identity(
     s2_hash_path, target_model_version = (
         _controller_semantic_s2_hash_path(sovits_path)
     )
+    if target_model_version not in V5_VERSIONS:
+        raise gr.Error(
+            i18n("情感控制器目前仅支持 V5dev/V5turbo 模型")
+        )
+
     expected_version = extra.get("version")
     if (
         expected_version
@@ -406,6 +412,19 @@ def _validate_controller_identity(
             i18n("控制器与当前 V5 SoVITS/S2 权重不匹配，已拒绝加载")
         )
 
+    return controller, metadata
+
+
+def _validate_controller_identity(
+    controller_path,
+    gpt_path,
+    sovits_path,
+):
+    _controller, metadata = _load_validated_controller_checkpoint(
+        controller_path,
+        gpt_path,
+        sovits_path,
+    )
     return metadata
 
 
@@ -420,41 +439,11 @@ def load_emotion_controller_webui(controller_path):
     if hasattr(controller_path, "name"):
         controller_path = controller_path.name
     controller_path = str(controller_path)
-    if model_version not in V5_VERSIONS:
-        raise gr.Error(i18n("情感控制器目前仅支持 V5dev/V5turbo 模型"))
-
-    controller, metadata = load_emotion_controller_checkpoint(
-        controller_path, map_location="cpu"
+    controller, metadata = _load_validated_controller_checkpoint(
+        controller_path,
+        gpt_path_global,
+        sovits_path_global,
     )
-    expected_s1_hash = metadata.get("extra", {}).get("s1_sha256")
-    if not expected_s1_hash:
-        raise gr.Error(i18n("控制器缺少 S1 哈希，请使用当前训练器重新生成"))
-    if gpt_path_global in [None, ""]:
-        raise gr.Error(i18n("当前 GPT 模型路径不可用"))
-    if sha256_file(gpt_path_global) != expected_s1_hash:
-        raise gr.Error(i18n("控制器与当前 GPT/S1 权重不匹配，已拒绝加载"))
-    extra = metadata.get("extra", {})
-    expected_version = extra.get("version")
-    if expected_version and expected_version != model_version:
-        raise gr.Error(
-            i18n("控制器 V5 版本与当前模型不匹配，已拒绝加载")
-        )
-    expected_s2_hash = (
-        extra.get("semantic_s2_sha256")
-        or extra.get("s2_sha256")
-    )
-    if not expected_s2_hash:
-        raise gr.Error(i18n("控制器缺少 S2 哈希，请使用当前训练器重新生成"))
-    if sovits_path_global in [None, ""]:
-        raise gr.Error(i18n("当前 SoVITS 模型路径不可用"))
-
-    s2_hash_path = sovits_path_global
-
-    if if_lora_v3 and model_version in V5_VERSIONS:
-        s2_hash_path = pretrained_sovits_name[model_version]
-
-    if sha256_file(s2_hash_path) != expected_s2_hash:
-        raise gr.Error(i18n("控制器与当前 V5 SoVITS/S2 权重不匹配，已拒绝加载"))
     if controller.hidden_dim != t2s_model.model.model_dim:
         raise gr.Error(i18n("控制器 hidden_dim 与当前 GPT 模型不匹配"))
 
@@ -806,7 +795,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         )
         if (
             paired_for_active_gpt is not None
-            and is_managed_finetuned_gpt(
+            and requires_paired_controller(
                 Path(gpt_path_global)
             )
         ):
@@ -962,7 +951,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
     if (
         controller_to_reload is None
         and previous_controller_path
-        and not is_managed_finetuned_gpt(Path(gpt_path_global))
+        and not requires_paired_controller(Path(gpt_path_global))
         and os.path.isfile(previous_controller_path)
     ):
         controller_to_reload = Path(previous_controller_path)
@@ -977,7 +966,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         except Exception as exc:
             if (
                 gpt_path_global not in [None, ""]
-                and is_managed_finetuned_gpt(Path(gpt_path_global))
+                and requires_paired_controller(Path(gpt_path_global))
             ):
                 raise gr.Error(
                     "SoVITS 전환 후 대응 Controller 재로드에 실패했습니다: "
@@ -990,7 +979,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
             )
     elif (
         gpt_path_global not in [None, ""]
-        and is_managed_finetuned_gpt(Path(gpt_path_global))
+        and requires_paired_controller(Path(gpt_path_global))
     ):
         emotion_status_update = (
             "학습된 GPT/S1에 대응하는 Emotion Controller가 없습니다: "
@@ -1086,7 +1075,7 @@ if paired_initial_controller is not None:
         paired_initial_controller
     )
 elif (
-    not is_managed_finetuned_gpt(Path(gpt_path_global))
+    not requires_paired_controller(Path(gpt_path_global))
     and default_emotion_controller_path
     and os.path.isfile(default_emotion_controller_path)
 ):
@@ -1114,7 +1103,7 @@ if initial_emotion_controller_path:
             + ": "
             + str(exc)
         )
-elif is_managed_finetuned_gpt(Path(gpt_path_global)):
+elif requires_paired_controller(Path(gpt_path_global)):
     initial_emotion_status = (
         "학습된 GPT/S1에 대응하는 Emotion Controller가 없습니다: "
         + str(paired_controller_path(Path(gpt_path_global)))
@@ -1131,7 +1120,7 @@ def change_gpt_weights_webui(gpt_path):
     )
 
     if (
-        is_managed_finetuned_gpt(Path(resolved_gpt_path))
+        requires_paired_controller(Path(resolved_gpt_path))
         and paired_controller is None
     ):
         raise gr.Error(

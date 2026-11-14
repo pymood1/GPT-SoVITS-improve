@@ -12,11 +12,16 @@ from tools.emotion_training_pipeline import (
     detect_pair_emotions,
     is_managed_finetuned_gpt,
     latest_gpt_checkpoint_for_experiment,
+    managed_gpt_version,
     paired_controller_for_gpt,
     paired_controller_path,
+    remove_controller_artifacts,
+    requires_paired_controller,
+    resolve_controller_for_gpt,
     split_train_validation_samples,
     stratified_group_kfold_indices,
     stratified_kfold_indices,
+    supports_paired_controller,
     update_early_stop_state,
 )
 from tools.run_emotion_v5_preprocess import (
@@ -465,6 +470,69 @@ class ControllerPromotionIntegrationTests(unittest.TestCase):
 
 
 class GptControllerPairingTests(unittest.TestCase):
+    def test_pairing_capability_is_version_scoped(self):
+        v5 = Path("/tmp/GPT_weights_v5dev/demo-e15.ckpt")
+        v2 = Path("/tmp/GPT_weights_v2/demo-e15.ckpt")
+        base = Path("GPT_SoVITS/pretrained_models/s1v3.ckpt")
+
+        self.assertEqual(managed_gpt_version(v5), "v5dev")
+        self.assertEqual(managed_gpt_version(v2), "v2")
+        self.assertIsNone(managed_gpt_version(base))
+
+        self.assertTrue(supports_paired_controller("v5dev"))
+        self.assertFalse(supports_paired_controller("v2"))
+        self.assertTrue(requires_paired_controller(v5))
+        self.assertFalse(requires_paired_controller(v2))
+        self.assertFalse(requires_paired_controller(base))
+
+    def test_controller_resolver_prefers_managed_pair_then_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            weight_root = root / "GPT_weights_v5dev"
+            weight_root.mkdir()
+            checkpoint = weight_root / "demo-e15.ckpt"
+            checkpoint.write_bytes(b"gpt")
+
+            fallback = root / "legacy-controller.pt"
+            fallback.write_bytes(b"legacy")
+            self.assertEqual(
+                resolve_controller_for_gpt(
+                    checkpoint,
+                    output_root=root,
+                    fallback=fallback,
+                ),
+                fallback.resolve(),
+            )
+
+            paired = paired_controller_path(
+                checkpoint,
+                output_root=root,
+            )
+            paired.parent.mkdir(parents=True)
+            paired.write_bytes(b"paired")
+            self.assertEqual(
+                resolve_controller_for_gpt(
+                    checkpoint,
+                    output_root=root,
+                    fallback=fallback,
+                ),
+                paired,
+            )
+
+    def test_controller_artifact_cleanup_reuses_path_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            final = Path(tmp) / "controller.pt"
+            paths = controller_artifact_paths(final)
+            for path in paths.values():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("x", encoding="utf-8")
+
+            removed = remove_controller_artifacts(final)
+            self.assertEqual(set(removed), set(paths.values()))
+            self.assertTrue(
+                all(not path.exists() for path in paths.values())
+            )
+
     def test_managed_gpt_uses_deterministic_paired_controller_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -534,12 +602,20 @@ class GptControllerPairingTests(unittest.TestCase):
             "auto_create_sidecar=True",
             train_block,
         )
+        self.assertIn(
+            "supports_paired_controller(version)",
+            train_block,
+        )
+        self.assertNotIn(
+            'version == "v5dev"',
+            train_block,
+        )
 
         infer_start = webui.index("def change_tts_inference(")
         infer_end = webui.index("def close_tts_inference(", infer_start)
         infer_block = webui[infer_start:infer_end]
         self.assertIn(
-            "paired_controller_for_gpt(",
+            "resolve_controller_for_gpt(",
             infer_block,
         )
         self.assertNotIn(
@@ -564,7 +640,7 @@ class GptControllerPairingTests(unittest.TestCase):
             block,
         )
         self.assertIn(
-            "is_managed_finetuned_gpt(",
+            "requires_paired_controller(",
             block,
         )
         self.assertIn(
@@ -578,6 +654,23 @@ class GptControllerPairingTests(unittest.TestCase):
             "change_gpt_weights(resolved_gpt_path)"
         )
         self.assertLess(preflight_pos, switch_pos)
+
+        load_start = source.index(
+            "def load_emotion_controller_webui("
+        )
+        load_end = source.index(
+            "def unload_emotion_controller_webui(",
+            load_start,
+        )
+        load_block = source[load_start:load_end]
+        self.assertIn(
+            "_load_validated_controller_checkpoint(",
+            load_block,
+        )
+        self.assertNotIn(
+            "expected_s1_hash =",
+            load_block,
+        )
 
     def test_sovits_switch_preflights_managed_pair(self):
         root = Path(__file__).resolve().parents[1]

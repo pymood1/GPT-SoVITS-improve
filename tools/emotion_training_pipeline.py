@@ -21,6 +21,26 @@ class EmotionPipelineError(RuntimeError):
     pass
 
 
+PAIRED_CONTROLLER_VERSIONS = frozenset({"v5dev"})
+
+
+def supports_paired_controller(version: str | None) -> bool:
+    """Return whether this S1 version participates in managed controller pairing."""
+    normalized = str(version or "").strip().lower()
+    return normalized in PAIRED_CONTROLLER_VERSIONS
+
+
+def managed_gpt_version(gpt_checkpoint: Path) -> str | None:
+    """Infer the managed GPT version from its standard weight-root directory."""
+    checkpoint = Path(gpt_checkpoint).expanduser()
+    parent_name = checkpoint.parent.name
+    prefix = "GPT_weights_"
+    if parent_name.startswith(prefix):
+        version = parent_name[len(prefix):].strip().lower()
+        return version or None
+    return None
+
+
 def is_managed_finetuned_gpt(gpt_checkpoint: Path) -> bool:
     """Return whether a checkpoint is one of this WebUI's exported GPT weights."""
     checkpoint = Path(gpt_checkpoint).expanduser()
@@ -79,6 +99,48 @@ def paired_controller_for_gpt(
     return candidate if candidate.is_file() else None
 
 
+def resolve_controller_for_gpt(
+    gpt_checkpoint: Path,
+    *,
+    output_root: Path | None = None,
+    fallback: Path | None = None,
+) -> Path | None:
+    """Resolve a managed controller first, then an explicit legacy fallback.
+
+    The caller owns fallback discovery. This keeps the normal pairing helper
+    independent from temporary development harnesses while giving every UI the
+    same precedence rule.
+    """
+    paired = paired_controller_for_gpt(
+        gpt_checkpoint,
+        output_root=output_root,
+    )
+    if paired is not None:
+        return paired
+
+    if fallback is None:
+        return None
+
+    candidate = Path(fallback).expanduser().resolve()
+    return candidate if candidate.is_file() else None
+
+
+def requires_paired_controller(
+    gpt_checkpoint: Path,
+    version: str | None = None,
+) -> bool:
+    """Return whether a selected GPT must have its deterministic controller."""
+    effective_version = (
+        str(version).strip().lower()
+        if version not in [None, ""]
+        else managed_gpt_version(gpt_checkpoint)
+    )
+    return (
+        supports_paired_controller(effective_version)
+        and is_managed_finetuned_gpt(gpt_checkpoint)
+    )
+
+
 def controller_artifact_paths(final_output: Path) -> dict[str, Path]:
     final_path = Path(final_output)
     candidate = final_path.with_name(
@@ -104,6 +166,16 @@ def controller_artifact_paths(final_output: Path) -> dict[str, Path]:
         "final_diagnostics": final_diagnostics,
         "failed_diagnostics": failed_diagnostics,
     }
+
+
+def remove_controller_artifacts(final_output: Path) -> list[Path]:
+    """Delete all promoted/candidate/failed artifacts for one controller output."""
+    removed = []
+    for path in controller_artifact_paths(final_output).values():
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    return removed
 
 
 def latest_gpt_checkpoint_for_experiment(
