@@ -133,9 +133,9 @@ from text.multilingual_bert import (
 )
 
 from tools.emotion_training_pipeline import (
-    is_managed_finetuned_gpt,
-    paired_controller_for_gpt,
     paired_controller_path,
+    requires_paired_controller,
+    resolve_controller_for_gpt,
 )
 from tools.dev_experiment_harness import (
     controller_for_gpt as dev_controller_for_gpt,
@@ -321,13 +321,13 @@ def _paired_controller_for_gpt_path(gpt_path):
         return None
 
     resolved = Path(str(gpt_path)).expanduser().resolve()
-    paired = paired_controller_for_gpt(resolved)
-    if paired is not None:
-        return paired
-
-    return dev_controller_for_gpt(
+    legacy_controller = dev_controller_for_gpt(
         dev_output_root(resolved.parent),
         resolved,
+    )
+    return resolve_controller_for_gpt(
+        resolved,
+        fallback=legacy_controller,
     )
 
 
@@ -806,7 +806,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         )
         if (
             paired_for_active_gpt is not None
-            and is_managed_finetuned_gpt(
+            and requires_paired_controller(
                 Path(gpt_path_global)
             )
         ):
@@ -962,7 +962,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
     if (
         controller_to_reload is None
         and previous_controller_path
-        and not is_managed_finetuned_gpt(Path(gpt_path_global))
+        and not requires_paired_controller(Path(gpt_path_global))
         and os.path.isfile(previous_controller_path)
     ):
         controller_to_reload = Path(previous_controller_path)
@@ -977,7 +977,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         except Exception as exc:
             if (
                 gpt_path_global not in [None, ""]
-                and is_managed_finetuned_gpt(Path(gpt_path_global))
+                and requires_paired_controller(Path(gpt_path_global))
             ):
                 raise gr.Error(
                     "SoVITS 전환 후 대응 Controller 재로드에 실패했습니다: "
@@ -990,7 +990,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
             )
     elif (
         gpt_path_global not in [None, ""]
-        and is_managed_finetuned_gpt(Path(gpt_path_global))
+        and requires_paired_controller(Path(gpt_path_global))
     ):
         emotion_status_update = (
             "학습된 GPT/S1에 대응하는 Emotion Controller가 없습니다: "
@@ -1086,7 +1086,7 @@ if paired_initial_controller is not None:
         paired_initial_controller
     )
 elif (
-    not is_managed_finetuned_gpt(Path(gpt_path_global))
+    not requires_paired_controller(Path(gpt_path_global))
     and default_emotion_controller_path
     and os.path.isfile(default_emotion_controller_path)
 ):
@@ -1114,7 +1114,7 @@ if initial_emotion_controller_path:
             + ": "
             + str(exc)
         )
-elif is_managed_finetuned_gpt(Path(gpt_path_global)):
+elif requires_paired_controller(Path(gpt_path_global)):
     initial_emotion_status = (
         "학습된 GPT/S1에 대응하는 Emotion Controller가 없습니다: "
         + str(paired_controller_path(Path(gpt_path_global)))
@@ -1131,7 +1131,7 @@ def change_gpt_weights_webui(gpt_path):
     )
 
     if (
-        is_managed_finetuned_gpt(Path(resolved_gpt_path))
+        requires_paired_controller(Path(resolved_gpt_path))
         and paired_controller is None
     ):
         raise gr.Error(
