@@ -106,6 +106,7 @@ from tools import my_utils
 from tools.emotion_training_pipeline import (
     EmotionPipelineError,
     controller_artifact_paths,
+    controller_artifact_result,
     create_reference_map,
     detect_pair_emotions,
     format_dataset_summary,
@@ -842,21 +843,34 @@ def _emotion_sidecar_default_path(dataset_id):
     ).resolve()
 
 
-def _emotion_controller_default_path(dataset_id):
+def _emotion_controller_default_path(
+    dataset_id,
+    controller_version="v5dev",
+):
     dataset_slug = _emotion_dataset_slug(dataset_id)
+    normalized_version = str(
+        controller_version or "v5dev"
+    ).strip().lower()
+
     output_root = os.environ.get(
         "GPT_SOVITS_OUTPUT_ROOT",
         "",
     ).strip()
+
     if output_root:
-        return (
+        base_dir = (
             Path(output_root).expanduser()
             / "emotion_controllers"
             / dataset_slug
-            / f"{dataset_slug}_emotion_controller.pt"
-        ).resolve()
+        )
+    else:
+        base_dir = _emotion_output_dir(dataset_id)
+
+    if normalized_version != "v5dev":
+        base_dir = base_dir / normalized_version
+
     return (
-        _emotion_output_dir(dataset_id)
+        base_dir
         / f"{dataset_slug}_emotion_controller.pt"
     ).resolve()
 
@@ -1158,6 +1172,7 @@ def run_emotion_training_pipeline(
     steps,
     gpu_number,
     reuse_dataset,
+    controller_version="v5dev",
     auto_create_sidecar=False,
 ):
     global p_emotion_training
@@ -1171,6 +1186,15 @@ def run_emotion_training_pipeline(
 
     try:
         dataset_id = str(dataset_id or "").strip() or "emotion_dataset_01"
+        controller_version = str(
+            controller_version or "v5dev"
+        ).strip().lower()
+        if controller_version not in {"v5dev", "v5turbo"}:
+            raise EmotionPipelineError(
+                "감정 Controller pipeline은 V5dev/V5turbo만 지원합니다: "
+                f"{controller_version!r}"
+            )
+
         dataset_slug = _emotion_dataset_slug(dataset_id)
         emotion_output_dir = _emotion_output_dir(dataset_id)
 
@@ -1185,7 +1209,10 @@ def run_emotion_training_pipeline(
         controller_output_text = _clean_user_path(controller_output)
         if not controller_output_text:
             controller_output_text = str(
-                _emotion_controller_default_path(dataset_id)
+                _emotion_controller_default_path(
+                    dataset_id,
+                    controller_version,
+                )
             )
 
         dataset_dir = Path(dataset_dir_text).expanduser().resolve()
@@ -1209,7 +1236,10 @@ def run_emotion_training_pipeline(
         train_list = dataset_dir / "train.list"
         reference_map_path = dataset_dir / "reference_map.json"
         reference_prompt_path = dataset_dir / "reference_prompts.pt"
-        tts_config_path = dataset_dir / "tts_infer_emotion_v5dev.yaml"
+        tts_config_path = (
+            dataset_dir
+            / f"tts_infer_emotion_{controller_version}.yaml"
+        )
 
         s1_checkpoint_path = _clean_user_path(
             s1_checkpoint_path
@@ -1218,7 +1248,7 @@ def run_emotion_training_pipeline(
 
         if not s1_checkpoint_path:
             auto_checkpoint = latest_gpt_checkpoint_for_experiment(
-                Path(GPT_weight_version2root["v5dev"]),
+                Path(GPT_weight_version2root[controller_version]),
                 experiment_name,
             )
             if auto_checkpoint is not None:
@@ -1229,7 +1259,7 @@ def run_emotion_training_pipeline(
                 )
             else:
                 s1_checkpoint_path = (
-                    pretrained_gpt_name.get("v5dev")
+                    pretrained_gpt_name.get(controller_version)
                     or "GPT_SoVITS/pretrained_models/s1v3.ckpt"
                 )
                 log_lines.append(
@@ -1247,10 +1277,17 @@ def run_emotion_training_pipeline(
             s1_checkpoint_path
         ).expanduser().resolve()
 
+        s2_checkpoint_text = str(
+            pretrained_sovits_name.get(controller_version) or ""
+        ).strip()
+        if not s2_checkpoint_text:
+            raise EmotionPipelineError(
+                "선택한 V5 버전의 pretrained SoVITS/S2 경로가 없습니다: "
+                f"{controller_version}"
+            )
         s2_checkpoint = Path(
-            "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/"
-            "s2Gv5dev.pth"
-        ).resolve()
+            s2_checkpoint_text
+        ).expanduser().resolve()
         bert_dir = Path(
             "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
         ).resolve()
@@ -1259,8 +1296,8 @@ def run_emotion_training_pipeline(
         ).resolve()
 
         for required_path, label in (
-            (s1_checkpoint, "V5dev S1"),
-            (s2_checkpoint, "V5dev S2"),
+            (s1_checkpoint, f"{controller_version} S1"),
+            (s2_checkpoint, f"{controller_version} S2"),
             (bert_dir, "BERT"),
             (cnhubert_dir, "CNHuBERT"),
         ):
@@ -1543,7 +1580,7 @@ def run_emotion_training_pipeline(
             "--s1-checkpoint",
             str(s1_checkpoint),
             "--version",
-            "v5dev",
+            controller_version,
             "--gpu",
             gpu_number,
         ]
@@ -1551,7 +1588,7 @@ def run_emotion_training_pipeline(
         for status in _stream_emotion_command(
             preprocess_cmd,
             log_lines,
-            "3/5 V5dev 전처리",
+            f"3/5 {controller_version} 전처리",
         ):
             yield status
 
@@ -1588,7 +1625,7 @@ def run_emotion_training_pipeline(
 
         write_v5_tts_config(
             tts_config_path,
-            version="v5dev",
+            version=controller_version,
             s1_checkpoint=s1_checkpoint,
             s2_checkpoint=s2_checkpoint,
             bert_dir=bert_dir,
@@ -1667,7 +1704,7 @@ def run_emotion_training_pipeline(
             "--steps",
             str(steps),
             "--version",
-            "v5dev",
+            controller_version,
             "--device",
             "cuda" if torch.cuda.is_available() else "cpu",
         ]
@@ -2931,6 +2968,53 @@ def close1Ba():
     )
 
 
+def _paired_controller_training_job(
+    *,
+    gpt_checkpoint,
+    source_list,
+    wav_root,
+    sidecar_path,
+    dataset_id,
+    experiment_name,
+    emotion_names="",
+    steps=500,
+    gpu_number="0",
+    reuse_dataset=True,
+    output_root=None,
+    auto_create_sidecar=False,
+    controller_version="v5dev",
+):
+    """Prepare one GPT-paired Controller job using the existing pipeline."""
+    checkpoint = Path(gpt_checkpoint).expanduser().resolve()
+    controller_output = paired_controller_path(
+        checkpoint,
+        output_root=output_root,
+    )
+    controller_output.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    remove_controller_artifacts(controller_output)
+    stream = run_emotion_training_pipeline(
+        source_list,
+        wav_root,
+        sidecar_path,
+        dataset_id,
+        "",
+        "",
+        str(controller_output),
+        experiment_name,
+        str(checkpoint),
+        emotion_names,
+        int(steps),
+        str(gpu_number),
+        bool(reuse_dataset),
+        auto_create_sidecar=bool(auto_create_sidecar),
+        controller_version=controller_version,
+    )
+    return controller_output, stream
+
+
 p_train_GPT = None
 gpt_auto_controller_active = False
 process_name_gpt = i18n("GPT训练")
@@ -3362,19 +3446,6 @@ def open1Bb(
             )
             return
 
-        controller_output = paired_controller_path(gpt_checkpoint)
-        controller_artifacts = controller_artifact_paths(
-            controller_output
-        )
-        try:
-            remove_controller_artifacts(controller_output)
-        except OSError as exc:
-            raise gr.Error(
-                "이전 paired Controller 산출물을 정리하지 못했습니다: "
-                + str(exc),
-                duration=None,
-            ) from exc
-
         gpu_tokens = [
             token.strip()
             for token in re.split(r"[-,]", str(gpu_numbers or ""))
@@ -3386,24 +3457,34 @@ def open1Bb(
             else "0"
         )
 
+        try:
+            (
+                controller_output,
+                controller_stream,
+            ) = _paired_controller_training_job(
+                gpt_checkpoint=gpt_checkpoint,
+                source_list=inp_text,
+                wav_root=inp_wav_dir,
+                sidecar_path=str(
+                    _emotion_sidecar_default_path(exp_name)
+                ),
+                dataset_id=exp_name,
+                experiment_name=exp_name,
+                gpu_number=controller_gpu,
+                reuse_dataset=True,
+                auto_create_sidecar=True,
+                controller_version=version,
+            )
+        except OSError as exc:
+            raise gr.Error(
+                "이전 paired Controller 산출물을 정리하지 못했습니다: "
+                + str(exc),
+                duration=None,
+            ) from exc
+
         gpt_auto_controller_active = True
         try:
-            for controller_status in run_emotion_training_pipeline(
-                inp_text,
-                inp_wav_dir,
-                str(_emotion_sidecar_default_path(exp_name)),
-                exp_name,
-                "",
-                "",
-                str(controller_output),
-                exp_name,
-                str(gpt_checkpoint),
-                "",
-                500,
-                controller_gpu,
-                True,
-                auto_create_sidecar=True,
-            ):
+            for controller_status in controller_stream:
                 yield (
                     process_info(process_name_gpt, "opened")
                     + "\n\n"
@@ -3416,7 +3497,10 @@ def open1Bb(
         finally:
             gpt_auto_controller_active = False
 
-        if not controller_artifacts["final"].is_file():
+        controller_gate, controller_path = controller_artifact_result(
+            controller_output
+        )
+        if controller_gate != "pass" or controller_path is None:
             yield (
                 process_info(process_name_gpt, "failed")
                 + ": GPT/S1 학습은 끝났지만 대응 Controller가 PASS하지 못했습니다.",
@@ -3428,7 +3512,7 @@ def open1Bb(
             return
 
         latest_emotion_controller_path = str(
-            controller_artifacts["final"]
+            controller_path
         )
         os.environ["emotion_controller_path"] = (
             latest_emotion_controller_path
@@ -5463,38 +5547,35 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 root = dev_output_root(
                     Path(GPT_weight_version2root["v5dev"])
                 )
-                controller_output = paired_controller_path(
-                    snapshot,
-                    output_root=root,
-                )
-                controller_output.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
-                )
-                artifacts = controller_artifact_paths(controller_output)
-                remove_controller_artifacts(controller_output)
-
                 controller_gpu = str(
                     controller_cfg.get("gpu") or "auto"
                 ).strip().lower()
                 if controller_gpu == "auto":
                     controller_gpu = gpu
 
-                for controller_status in run_emotion_training_pipeline(
-                    source_list,
-                    wav_root,
-                    sidecar_path,
-                    dataset_id,
-                    "",
-                    "",
-                    str(controller_output),
-                    experiment_name,
-                    str(snapshot),
-                    str(controller_cfg.get("emotion_names") or ""),
-                    int(controller_cfg.get("steps", 500)),
-                    controller_gpu,
-                    bool(controller_cfg.get("reuse_dataset", True)),
-                ):
+                (
+                    controller_output,
+                    controller_stream,
+                ) = _paired_controller_training_job(
+                    gpt_checkpoint=snapshot,
+                    source_list=source_list,
+                    wav_root=wav_root,
+                    sidecar_path=sidecar_path,
+                    dataset_id=dataset_id,
+                    experiment_name=experiment_name,
+                    emotion_names=str(
+                        controller_cfg.get("emotion_names") or ""
+                    ),
+                    steps=int(controller_cfg.get("steps", 500)),
+                    gpu_number=controller_gpu,
+                    reuse_dataset=bool(
+                        controller_cfg.get("reuse_dataset", True)
+                    ),
+                    output_root=root,
+                    controller_version="v5dev",
+                )
+
+                for controller_status in controller_stream:
                     if dev_experiment_cancel_requested:
                         return
                     yield (
@@ -5508,17 +5589,15 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                         {"__type__": "update"},
                     )
 
-                artifacts = controller_artifact_paths(controller_output)
-                if artifacts["final"].is_file():
-                    case_result["controller"] = str(artifacts["final"])
-                    case_result["controller_gate"] = "pass"
-                elif artifacts["failed"].is_file():
-                    case_result["controller"] = str(artifacts["failed"])
-                    case_result["controller_gate"] = "failed"
-                else:
+                controller_gate, controller_path = (
+                    controller_artifact_result(controller_output)
+                )
+                if controller_path is None:
                     raise RuntimeError(
                         f"Controller 산출물이 없습니다: {label}"
                     )
+                case_result["controller"] = str(controller_path)
+                case_result["controller_gate"] = controller_gate
 
             results.append(case_result)
             dev_write_manifest(
@@ -6680,8 +6759,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                                 ),
                                 value="",
                                 placeholder=(
-                                    "비우면 GPT_weights_v5dev/<현재 실험명>-e*.ckpt "
-                                    "중 최신 epoch 자동 선택"
+                                    "비우면 선택한 V5 버전의 GPT_weights_*에서 "
+                                    "현재 실험명의 최신 epoch 자동 선택"
                                 ),
                                 interactive=True,
                             )
@@ -6711,10 +6790,9 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
 
                         gr.Markdown(
                             (
-                                "**S2 semantic 기준:** "
-                                "`GPT_SoVITS/pretrained_models/"
-                                "gsv-v5-pretrained/s2Gv5dev.pth`  "
-                                "(V5dev LoRA도 이 base token 공간을 사용)"
+                                "**S2 semantic 기준:** 현재 선택한 V5 버전의 "
+                                "공식 pretrained SoVITS/S2를 사용합니다. "
+                                "LoRA 모델도 해당 버전의 base token 공간을 기준으로 합니다."
                             )
                         )
 
@@ -6730,7 +6808,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
 
                         emotion_status = gr.Markdown(
                             value=(
-                                "1A 감정 데이터 확인 → V5dev feature 전처리 → "
+                                "1A 감정 데이터 확인 → 선택한 V5 feature 전처리 → "
                                 "reference prompt 생성 → controller 학습"
                             )
                         )
@@ -6751,6 +6829,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             emotion_steps,
                             emotion_gpu,
                             emotion_reuse_dataset,
+                            version_checkbox,
                         ],
                         [emotion_status],
                     )
