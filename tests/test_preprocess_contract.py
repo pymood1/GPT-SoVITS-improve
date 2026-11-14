@@ -679,7 +679,7 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             trainer,
         )
         self.assertIn(
-            "excluded low-support controller classes",
+            "excluded low-sample controller classes",
             trainer,
         )
         promotion_block = trainer[
