@@ -1342,7 +1342,7 @@ def run_emotion_training_pipeline(
         sidecar_file = Path(
             sidecar_path
         ).expanduser().resolve()
-        if not sidecar_file.is_file() and auto_create_sidecar:
+        if auto_create_sidecar:
             sidecar_file.parent.mkdir(
                 parents=True,
                 exist_ok=True,
