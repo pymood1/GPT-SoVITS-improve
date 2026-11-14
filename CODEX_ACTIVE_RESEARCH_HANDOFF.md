@@ -58,7 +58,7 @@ Flow:
 
     GPT/S1 training
         -> exported GPT checkpoint
-        -> automatic emotion sidecar if missing
+        -> refresh/create emotion sidecar (reuse prediction cache)
         -> Controller training against that exact GPT checkpoint
         -> Controller validation PASS
         -> GPT training is reported complete
