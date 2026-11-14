@@ -153,6 +153,49 @@ def output_root(gpt_weight_root: Path) -> Path:
     return Path(gpt_weight_root).resolve().parent
 
 
+def controller_for_gpt(
+    root: Path,
+    gpt_checkpoint: Path,
+) -> Path | None:
+    """Return the dev controller paired with one generated GPT checkpoint."""
+    root = Path(root)
+    try:
+        target = Path(gpt_checkpoint).expanduser().resolve()
+    except OSError:
+        return None
+
+    manifest_root = root / "dev_experiments"
+    if not manifest_root.is_dir():
+        return None
+
+    for manifest_path in manifest_root.glob("*/manifest.json"):
+        try:
+            payload = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        for item in payload.get("results") or []:
+            try:
+                candidate = Path(
+                    str(item.get("gpt_checkpoint") or "")
+                ).expanduser().resolve()
+            except OSError:
+                continue
+            if candidate != target:
+                continue
+
+            controller = str(item.get("controller") or "").strip()
+            if not controller:
+                return None
+            controller_path = Path(controller).expanduser().resolve()
+            if controller_path.is_file():
+                return controller_path
+            return None
+
+    return None
+
 def write_manifest(path: Path, payload: dict) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
