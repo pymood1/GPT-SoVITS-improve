@@ -31,6 +31,14 @@ except ImportError:
 
 jieba_backend.setLogLevel(logging.CRITICAL)
 
+# Some Kaggle/Python 3.13 images can retain the legacy `jieba` package next
+# to `jieba-py`. Legacy posseg.cut() references this module global even when
+# paddle mode is disabled, and certain mixed installs leave it undefined.
+# Seed the harmless default explicitly so Chinese G2P cannot crash with
+# NameError: check_paddle_install.
+if not hasattr(psg, "check_paddle_install"):
+    psg.check_paddle_install = {"is_paddle_installed": False}
+
 # is_g2pw_str = os.environ.get("is_g2pw", "True")##默认开启
 # is_g2pw = False#True if is_g2pw_str.lower() == 'true' else False
 is_g2pw = True  # True if is_g2pw_str.lower() == 'true' else False

@@ -132,6 +132,10 @@ from text.multilingual_bert import (
     checkpoint_multilingual_bert_config,
 )
 
+from tools.dev_experiment_harness import (
+    controller_for_gpt as dev_controller_for_gpt,
+    output_root as dev_output_root,
+)
 from tools.assets import css, js, top_html
 from tools.i18n.i18n import I18nAuto, scan_language_list
 
@@ -173,6 +177,26 @@ dict_language_v2 = {
     i18n("多语种混合(粤语)"): "auto_yue",  # 多语种启动切分识别语种
 }
 dict_language = dict_language_v1 if version == "v1" else dict_language_v2
+
+
+def _default_language_choice():
+    locale = str(language or "").strip().lower()
+    preferred = None
+    if locale.startswith("ko"):
+        preferred = "all_ko"
+    elif locale.startswith("ja"):
+        preferred = "all_ja"
+    elif locale.startswith("en"):
+        preferred = "en"
+    elif locale.startswith("zh"):
+        preferred = "all_zh"
+
+    if preferred is not None:
+        for label, value in dict_language.items():
+            if value == preferred:
+                return label
+
+    return next(iter(dict_language.keys()), i18n("中文"))
 
 tokenizer = AutoTokenizer.from_pretrained(bert_path)
 bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
@@ -671,8 +695,7 @@ def parse_emotion_tagged_text(text):
 
 
 def change_sovits_weights(sovits_path, prompt_language=None, text_language=None):
-    if "！" in sovits_path or "!" in sovits_path:
-        sovits_path = name2sovits_path[sovits_path]
+    sovits_path = name2sovits_path.get(str(sovits_path), sovits_path)
     global vq_model, hps, version, model_version, dict_language, if_lora_v3, t2s_model_cudagraph
     global emotion_controller_metadata, sovits_path_global
     current_t2s_model = globals().get("t2s_model")
@@ -703,12 +726,12 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
             )
         else:
             prompt_text_update = {"__type__": "update", "value": ""}
-            prompt_language_update = {"__type__": "update", "value": i18n("中文")}
+            prompt_language_update = {"__type__": "update", "value": _default_language_choice()}
         if text_language in list(dict_language.keys()):
             text_update, text_language_update = {"__type__": "update"}, {"__type__": "update", "value": text_language}
         else:
             text_update = {"__type__": "update", "value": ""}
-            text_language_update = {"__type__": "update", "value": i18n("中文")}
+            text_language_update = {"__type__": "update", "value": _default_language_choice()}
         if model_version in v3v4set:
             visible_sample_steps = True
             visible_inp_refs = False
@@ -839,8 +862,7 @@ except:
 
 
 def change_gpt_weights(gpt_path):
-    if "！" in gpt_path or "!" in gpt_path:
-        gpt_path = name2gpt_path[gpt_path]
+    gpt_path = name2gpt_path.get(str(gpt_path), gpt_path)
     global hz, max_sec, t2s_model, config, t2s_model_cudagraph, gpt_path_global
     global emotion_controller_metadata
     if t2s_model_cudagraph is not None:
@@ -910,9 +932,26 @@ if (
 
 def change_gpt_weights_webui(gpt_path):
     change_gpt_weights(gpt_path)
+
+    paired_controller = dev_controller_for_gpt(
+        dev_output_root(Path(gpt_path_global).parent),
+        Path(gpt_path_global),
+    )
+    if paired_controller is not None:
+        try:
+            return load_emotion_controller_webui(
+                str(paired_controller)
+            )
+        except Exception as exc:
+            return (
+                {"__type__": "update", "choices": [], "value": None},
+                i18n("GPT 모델은 전환됐지만 대응 Controller 자동 로드 실패")
+                + f": {exc}",
+            )
+
     return (
         {"__type__": "update", "choices": [], "value": None},
-        i18n("GPT 模型已切换，请重新加载情感控制器"),
+        i18n("GPT 모델이 전환됐으며 대응 개발용 Controller가 없습니다."),
     )
 
 
@@ -2088,7 +2127,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     prompt_language = gr.Dropdown(
                         label=i18n("参考音频的语种"),
                         choices=list(dict_language.keys()),
-                        value=i18n("中文"), scale=1,
+                        value=_default_language_choice(), scale=1,
                     )
                     cfg_rate = gr.Slider(
                         minimum=0, maximum=2, step=0.05,
@@ -2227,7 +2266,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                 text_language = gr.Dropdown(
                     label=i18n("需要合成的语种") + i18n(".限制范围越小判别效果越好。"),
                     choices=list(dict_language.keys()),
-                    value=i18n("中文"),
+                    value=_default_language_choice(),
                     scale=1,
                 )
                 how_to_cut = gr.Dropdown(
