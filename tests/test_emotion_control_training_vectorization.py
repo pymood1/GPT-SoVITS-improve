@@ -85,12 +85,13 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
         return torch.stack(values)
 
 
-    def test_simplex_init_is_centered_and_zero_effect(self):
+    def test_legacy_simplex_init_is_centered_and_zero_effect(self):
         torch.manual_seed(1234)
         controller = LowRankEmotionPreference(
             hidden_dim=16,
             num_emotions=4,
             rank=8,
+            steering_mode="legacy_low_rank",
         )
         coeff = controller.emotion_coeff.weight.detach()
 
@@ -132,13 +133,14 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
                 atol=0.0,
             )
 
-    def test_simplex_init_gives_u_proj_first_step_gradient(self):
+    def test_legacy_simplex_init_gives_u_proj_first_step_gradient(self):
         torch.manual_seed(4321)
         controller = LowRankEmotionPreference(
             hidden_dim=16,
             num_emotions=4,
             rank=8,
             prefix_log_ratio_budget=2.0,
+            steering_mode="legacy_low_rank",
         )
         time_steps = 17
         vocab_size = 31
@@ -264,7 +266,11 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
         )
         legacy_loss.backward()
         legacy_gradients = {
-            name: parameter.grad.detach().clone()
+            name: (
+                None
+                if parameter.grad is None
+                else parameter.grad.detach().clone()
+            )
             for name, parameter in controller.named_parameters()
         }
 
@@ -286,9 +292,20 @@ class EmotionTrainingVectorizationTests(unittest.TestCase):
         vectorized_loss.backward()
 
         for name, parameter in controller.named_parameters():
+            expected = legacy_gradients[name]
+            if expected is None:
+                self.assertIsNone(
+                    parameter.grad,
+                    msg=f"unexpected gradient for {name}",
+                )
+                continue
+            self.assertIsNotNone(
+                parameter.grad,
+                msg=f"missing gradient for {name}",
+            )
             torch.testing.assert_close(
                 parameter.grad,
-                legacy_gradients[name],
+                expected,
                 rtol=2e-5,
                 atol=2e-6,
             )
