@@ -114,6 +114,18 @@ from tools.emotion_training_pipeline import (
     validate_emotion_dataset,
     write_v5_tts_config,
 )
+from tools.dev_experiment_harness import (
+    available_gpu_ids as dev_available_gpu_ids,
+    case_gpu as dev_case_gpu,
+    clear_s1_training_state as dev_clear_s1_training_state,
+    controller_for_gpt as dev_controller_for_gpt,
+    load_preset as dev_load_preset,
+    output_root as dev_output_root,
+    preprocess_gpu_string as dev_preprocess_gpu_string,
+    slug as dev_slug,
+    snapshot_s1_checkpoint as dev_snapshot_s1_checkpoint,
+    write_manifest as dev_write_manifest,
+)
 from tools.my_utils import check_details, check_for_existance
 from tools.runtime_status import (
     STATUS_PATH_ENV,
@@ -318,6 +330,11 @@ latest_emotion_controller_path = os.environ.get(
 tts_inference_url = None
 tts_inference_logs = deque(maxlen=40)
 tts_inference_reader = None
+
+# Temporary development-only experiment harness. Remove together with
+# DEV_EXPERIMENT_PRESET.yaml after the final training direction is selected.
+DEV_EXPERIMENT_PRESET_PATH = Path(now_dir) / "DEV_EXPERIMENT_PRESET.yaml"
+dev_experiment_cancel_requested = False
 
 
 def kill_proc_tree(pid, including_parent=True):
@@ -2001,9 +2018,16 @@ def change_tts_inference(
     bert_path = str(resolved["BERT"][0])
     cnhubert_base_path = str(resolved["CNHuBERT"][0])
 
-    controller_text = _clean_user_path(
-        latest_emotion_controller_path
+    dev_controller = dev_controller_for_gpt(
+        dev_output_root(Path(GPT_weight_version2root["v5dev"])),
+        Path(gpt_path),
     )
+    if dev_controller is not None:
+        controller_text = str(dev_controller)
+    else:
+        controller_text = _clean_user_path(
+            latest_emotion_controller_path
+        )
     controller_path = (
         _resolve_repo_path(controller_text)
         if controller_text
@@ -4997,6 +5021,444 @@ def close1abcd():
     )
 
 
+def _dev_experiment_status(title, lines):
+    body = [f"### {title}", ""]
+    body.extend(str(item) for item in lines)
+    return "\n".join(body)
+
+
+@_persistent_gradio_errors
+def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
+    """Run the Git-defined temporary experiment from preprocessing to training."""
+    global dev_experiment_cancel_requested
+
+    if _training_process_running():
+        yield (
+            _dev_experiment_status(
+                "원클릭 실험 시작 불가",
+                ["이미 다른 학습 작업이 실행 중입니다."],
+            ),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        return
+
+    preset = dev_load_preset(DEV_EXPERIMENT_PRESET_PATH)
+    preset_id = dev_slug(preset.get("preset_id"))
+    training = preset["training"]
+    preprocess = preset.get("preprocess") or {}
+    controller_cfg = preset.get("controller") or {}
+    cases = training["cases"]
+
+    experiment_name = str(experiment_name or "").strip()
+    source_list = _clean_user_path(source_list)
+    wav_root = _clean_user_path(wav_root)
+    if not experiment_name:
+        raise RuntimeError("실험명이 비어 있습니다.")
+    if not source_list or not wav_root:
+        raise RuntimeError("학습 .list와 음성 폴더 경로가 필요합니다.")
+
+    gpu_ids = dev_available_gpu_ids(set_gpu_numbers, default_gpu_numbers)
+    preprocess_gpus = dev_preprocess_gpu_string(gpu_ids)
+    dataset_id = dev_slug(f"{experiment_name}__{preset_id}")
+    sidecar_path = ""
+    results = []
+
+    pretrained_s1 = "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+    pretrained_s2 = (
+        "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/"
+        "s2Gv5dev.pth"
+    )
+    bert_dir = (
+        "GPT_SoVITS/pretrained_models/"
+        "chinese-roberta-wwm-ext-large"
+    )
+    cnhubert_dir = (
+        "GPT_SoVITS/pretrained_models/chinese-hubert-base"
+    )
+    root = dev_output_root(Path(GPT_weight_version2root["v5dev"]))
+    manifest_path = (
+        root
+        / "dev_experiments"
+        / f"{experiment_name}__{preset_id}"
+        / "manifest.json"
+    )
+    multilingual_bert = bool(preprocess.get("multilingual_bert", True))
+    multilingual_model = str(
+        preprocess.get("multilingual_bert_model")
+        or "google-bert/bert-base-multilingual-cased"
+    )
+
+    dev_experiment_cancel_requested = False
+
+    try:
+        yield (
+            _dev_experiment_status(
+                f"원클릭 실험 시작 · {preset_id}",
+                [
+                    f"- 전처리 GPU: `{preprocess_gpus}`",
+                    f"- GPT/S1 case: `{len(cases)}`개",
+                    "- SoVITS/S2: **학습 안 함 / V5dev base 고정**",
+                    "- 각 GPT/S1 case: **pretrained에서 새로 학습**",
+                ],
+            ),
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+
+        preprocess_finished = False
+        for result in open1abcd(
+            "v5dev",
+            source_list,
+            wav_root,
+            experiment_name,
+            preprocess_gpus,
+            preprocess_gpus,
+            preprocess_gpus,
+            bert_dir,
+            multilingual_bert,
+            multilingual_model,
+            cnhubert_dir,
+            pretrained_s2,
+            "",
+            dataset_id,
+            str(
+                preprocess.get("emotion_model")
+                or "iic/emotion2vec_plus_large"
+            ),
+            float(preprocess.get("emotion_confidence", 0.35)),
+            str(preprocess.get("emotion_device") or "auto"),
+        ):
+            if dev_experiment_cancel_requested:
+                return
+
+            status = result[0] if result else ""
+            if (
+                len(result) > 3
+                and isinstance(result[3], dict)
+                and result[3].get("value")
+            ):
+                sidecar_path = str(result[3]["value"])
+
+            preprocess_finished = str(status).startswith(
+                "### 전처리 일괄 실행 완료"
+            )
+            yield (
+                _dev_experiment_status(
+                    f"{preset_id} · 전처리",
+                    [status],
+                ),
+                {"__type__": "update", "visible": False},
+                {"__type__": "update", "visible": True},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+
+        if not preprocess_finished:
+            raise RuntimeError("원클릭 전처리가 완료되지 않았습니다.")
+
+        for case_index, case in enumerate(cases):
+            if dev_experiment_cancel_requested:
+                return
+
+            case_id = dev_slug(case.get("id"))
+            label = str(case.get("label") or case_id)
+            adapter = str(case.get("adapter") or "full")
+            gpu = dev_case_gpu(case, case_index, gpu_ids)
+            batch_size = int(
+                case.get("batch_size", training.get("batch_size", 7))
+            )
+            epochs = int(
+                case.get("epochs", training.get("epochs", 15))
+            )
+            dpo = bool(case.get("dpo", training.get("dpo", True)))
+            save_every = int(
+                case.get(
+                    "save_every_epoch",
+                    training.get("save_every_epoch", 5),
+                )
+            )
+            lora_rank = int(case.get("lora_rank", 8))
+            lora_alpha = float(case.get("lora_alpha", 16))
+
+            dev_clear_s1_training_state(
+                Path(exp_root),
+                experiment_name,
+                "v5dev",
+                Path(GPT_weight_version2root["v5dev"]),
+            )
+
+            yield (
+                _dev_experiment_status(
+                    f"{preset_id} · GPT {case_index + 1}/{len(cases)}",
+                    [
+                        f"**{label}**",
+                        f"- GPU: `{gpu}`",
+                        f"- epoch: `{epochs}` / batch: `{batch_size}`",
+                        f"- DPO: `{dpo}`",
+                        f"- adapter: `{adapter}`",
+                        (
+                            f"- LoRA: r{lora_rank} / a{lora_alpha:g}"
+                            if adapter != "full"
+                            else "- LoRA: 사용 안 함"
+                        ),
+                    ],
+                ),
+                {"__type__": "update", "visible": False},
+                {"__type__": "update", "visible": True},
+                {"__type__": "update"},
+                {"__type__": "update"},
+            )
+
+            gpt_finished = False
+            for result in open1Bb(
+                "v5dev",
+                batch_size,
+                epochs,
+                experiment_name,
+                source_list,
+                wav_root,
+                dpo,
+                True,
+                True,
+                save_every,
+                gpu,
+                pretrained_s1,
+                adapter,
+                lora_rank,
+                lora_alpha,
+                pretrained_s2,
+                multilingual_bert,
+                multilingual_model,
+            ):
+                if dev_experiment_cancel_requested:
+                    return
+
+                child_status = result[0] if result else ""
+                gpt_finished = (
+                    child_status
+                    == process_info(process_name_gpt, "finish")
+                )
+                yield (
+                    _dev_experiment_status(
+                        f"{preset_id} · {label}",
+                        [child_status],
+                    ),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    {"__type__": "update"},
+                    {"__type__": "update"},
+                )
+
+            if not gpt_finished:
+                raise RuntimeError(
+                    f"GPT case가 정상 완료되지 않았습니다: {label}"
+                )
+
+            snapshot = dev_snapshot_s1_checkpoint(
+                Path(GPT_weight_version2root["v5dev"]),
+                experiment_name,
+                preset_id,
+                case_id,
+            )
+
+            case_result = {
+                "id": case_id,
+                "label": label,
+                "adapter": adapter,
+                "gpu": gpu,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "dpo": dpo,
+                "gpt_checkpoint": str(snapshot),
+                "controller": None,
+                "controller_gate": "not_run",
+            }
+
+            if bool(controller_cfg.get("enabled", True)):
+                root = dev_output_root(
+                    Path(GPT_weight_version2root["v5dev"])
+                )
+                controller_dir = (
+                    root
+                    / "emotion_controllers"
+                    / f"{experiment_name}__{preset_id}"
+                )
+                controller_dir.mkdir(parents=True, exist_ok=True)
+                controller_output = (
+                    controller_dir
+                    / f"{case_id}_emotion_controller.pt"
+                )
+                artifacts = controller_artifact_paths(controller_output)
+                for path in artifacts.values():
+                    if path.exists():
+                        path.unlink()
+
+                controller_gpu = str(
+                    controller_cfg.get("gpu") or "auto"
+                ).strip().lower()
+                if controller_gpu == "auto":
+                    controller_gpu = gpu
+
+                for controller_status in run_emotion_training_pipeline(
+                    source_list,
+                    wav_root,
+                    sidecar_path,
+                    dataset_id,
+                    "",
+                    "",
+                    str(controller_output),
+                    experiment_name,
+                    str(snapshot),
+                    str(controller_cfg.get("emotion_names") or ""),
+                    int(controller_cfg.get("steps", 500)),
+                    controller_gpu,
+                    bool(controller_cfg.get("reuse_dataset", True)),
+                ):
+                    if dev_experiment_cancel_requested:
+                        return
+                    yield (
+                        _dev_experiment_status(
+                            f"{preset_id} · {label} Controller",
+                            [controller_status],
+                        ),
+                        {"__type__": "update", "visible": False},
+                        {"__type__": "update", "visible": True},
+                        {"__type__": "update"},
+                        {"__type__": "update"},
+                    )
+
+                artifacts = controller_artifact_paths(controller_output)
+                if artifacts["final"].is_file():
+                    case_result["controller"] = str(artifacts["final"])
+                    case_result["controller_gate"] = "pass"
+                elif artifacts["failed"].is_file():
+                    case_result["controller"] = str(artifacts["failed"])
+                    case_result["controller_gate"] = "failed"
+                else:
+                    raise RuntimeError(
+                        f"Controller 산출물이 없습니다: {label}"
+                    )
+
+            results.append(case_result)
+            dev_write_manifest(
+                manifest_path,
+                {
+                    "preset_id": preset_id,
+                    "experiment_name": experiment_name,
+                    "version": "v5dev",
+                    "complete": False,
+                    "source_list": source_list,
+                    "wav_root": wav_root,
+                    "fixed_sovits": pretrained_s2,
+                    "results": results,
+                    "listening_validation": {
+                        "performed_by_user": True,
+                        "same_reference": True,
+                        "same_text": True,
+                        "same_sovits": True,
+                    },
+                },
+            )
+
+        dev_write_manifest(
+            manifest_path,
+            {
+                "preset_id": preset_id,
+                "experiment_name": experiment_name,
+                "version": "v5dev",
+                "complete": True,
+                "source_list": source_list,
+                "wav_root": wav_root,
+                "fixed_sovits": pretrained_s2,
+                "results": results,
+                "listening_validation": {
+                    "performed_by_user": True,
+                    "same_reference": True,
+                    "same_text": True,
+                    "same_sovits": True,
+                },
+            },
+        )
+
+        sovits_update, gpt_update = change_choices()
+        summary = [
+            "**학습 완료. 이제 추론해서 청취만 하면 됩니다.**",
+            "",
+            f"Manifest: `{manifest_path}`",
+            f"Fixed SoVITS: `{pretrained_s2}`",
+            "",
+        ]
+        for item in results:
+            summary.append(
+                f"- **{item['label']}** → `{item['gpt_checkpoint']}`"
+            )
+            if item["controller"]:
+                summary.append(
+                    f"  - Controller ({item['controller_gate']}): "
+                    f"`{item['controller']}`"
+                )
+        summary.extend(
+            [
+                "",
+                "같은 reference / 같은 문장 / 같은 SoVITS로 비교하고 ",
+                "목소리 유지, 발음·자연스러움, 감정 차이만 알려주세요.",
+            ]
+        )
+
+        yield (
+            _dev_experiment_status(
+                f"원클릭 실험 완료 · {preset_id}",
+                summary,
+            ),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            sovits_update,
+            gpt_update,
+        )
+
+    except Exception as exc:
+        yield (
+            _dev_experiment_status(
+                f"원클릭 실험 실패 · {preset_id}",
+                [
+                    f"`{type(exc).__name__}: {exc}`",
+                    "",
+                    "이미 완료된 case 산출물은 유지했습니다.",
+                ],
+            ),
+            {"__type__": "update", "visible": True},
+            {"__type__": "update", "visible": False},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
+        raise
+    finally:
+        dev_experiment_cancel_requested = False
+
+
+def stop_dev_one_click_experiment():
+    global dev_experiment_cancel_requested
+
+    dev_experiment_cancel_requested = True
+    if ps1a or ps1b or ps1c:
+        close1abcd()
+    if p_train_GPT is not None and p_train_GPT.poll() is None:
+        close1Bb()
+    if p_emotion_training is not None and p_emotion_training.poll() is None:
+        stop_emotion_training()
+
+    return (
+        "### 원클릭 실험 중지 요청됨\n\n"
+        "현재 실행 중인 전처리/학습 프로세스를 종료했습니다.",
+        {"__type__": "update", "visible": True},
+        {"__type__": "update", "visible": False},
+    )
+
 def switch_version(version_):
     os.environ["version"] = version_
     global version
@@ -6168,6 +6630,59 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                             )
                         with gr.Column():
                             tts_info = gr.Markdown(value=process_info(process_name_tts, "info"))
+                        with gr.Accordion(
+                            label="개발용 원클릭 실험 (임시)",
+                            open=True,
+                        ):
+                            gr.Markdown(
+                                "Git의 `DEV_EXPERIMENT_PRESET.yaml`에 적힌 "
+                                "실험을 Kaggle에서 자동 실행합니다. "
+                                "**전처리 → GPT/S1 여러 case 새 학습 → "
+                                "각 Controller 학습**까지 진행하고 "
+                                "SoVITS/S2는 고정합니다. "
+                                "성능 방향이 확정되면 제거할 임시 개발 기능입니다."
+                            )
+                            with gr.Row():
+                                dev_one_click_run = gr.Button(
+                                    value="원클릭 실험 시작",
+                                    variant="primary",
+                                    visible=True,
+                                )
+                                dev_one_click_stop = gr.Button(
+                                    value="원클릭 실험 중지",
+                                    variant="stop",
+                                    visible=False,
+                                )
+                            dev_one_click_status = gr.Markdown(
+                                value=(
+                                    "버튼 한 번이면 Git preset 기준으로 "
+                                    "전처리와 학습을 진행합니다. "
+                                    "완료 후 추론해서 청취 결과만 알려주세요."
+                                )
+                            )
+
+                        dev_one_click_run.click(
+                            run_dev_one_click_experiment,
+                            [inp_text, inp_wav_dir, exp_name],
+                            [
+                                dev_one_click_status,
+                                dev_one_click_run,
+                                dev_one_click_stop,
+                                SoVITS_dropdown,
+                                GPT_dropdown,
+                            ],
+                        )
+                        dev_one_click_stop.click(
+                            stop_dev_one_click_experiment,
+                            [],
+                            [
+                                dev_one_click_status,
+                                dev_one_click_run,
+                                dev_one_click_stop,
+                            ],
+                            queue=False,
+                        )
+
                         open_tts.click(
                             change_tts_inference,
                             [

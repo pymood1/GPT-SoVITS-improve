@@ -14,6 +14,17 @@ pipeline. Preserve ordinary GPT-SoVITS behavior, Korean UI, complete dependency
 scope, user data and checkpoints. Inspect current source and runtime evidence
 before proposing fixes; keep patches focused.
 
+## Development experiment validation split
+
+- For model-quality experiments, Codex should prepare the Git preset, code,
+  parameter cases, output naming and the exact listening instructions.
+- Do not spend substantial time or quota trying to judge TTS quality autonomously.
+  Cheap syntax/import/unit checks are still appropriate.
+- The user runs the Kaggle one-click experiment and performs listening validation.
+- After the user reports what sounded better/worse, update the experiment preset
+  and implementation for the next round.
+- `DEV_EXPERIMENT_PRESET.yaml` and the one-click experiment UI are temporary
+  development harnesses and should be removed once the final direction is stable.
 ## Compatibility and validation
 
 - Support Python 3.10, 3.11, 3.12, 3.13 and 3.14. Keep version markers in
