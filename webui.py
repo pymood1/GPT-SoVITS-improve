@@ -106,6 +106,7 @@ from tools import my_utils
 from tools.emotion_training_pipeline import (
     EmotionPipelineError,
     controller_artifact_paths,
+    controller_artifact_result,
     create_reference_map,
     detect_pair_emotions,
     format_dataset_summary,
@@ -3482,7 +3483,10 @@ def open1Bb(
         finally:
             gpt_auto_controller_active = False
 
-        if not controller_artifacts["final"].is_file():
+        controller_gate, controller_path = controller_artifact_result(
+            controller_output
+        )
+        if controller_gate != "pass" or controller_path is None:
             yield (
                 process_info(process_name_gpt, "failed")
                 + ": GPT/S1 학습은 끝났지만 대응 Controller가 PASS하지 못했습니다.",
@@ -3494,7 +3498,7 @@ def open1Bb(
             return
 
         latest_emotion_controller_path = str(
-            controller_artifacts["final"]
+            controller_path
         )
         os.environ["emotion_controller_path"] = (
             latest_emotion_controller_path
@@ -5572,16 +5576,15 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                         {"__type__": "update"},
                     )
 
-                if artifacts["final"].is_file():
-                    case_result["controller"] = str(artifacts["final"])
-                    case_result["controller_gate"] = "pass"
-                elif artifacts["failed"].is_file():
-                    case_result["controller"] = str(artifacts["failed"])
-                    case_result["controller_gate"] = "failed"
-                else:
+                controller_gate, controller_path = (
+                    controller_artifact_result(controller_output)
+                )
+                if controller_path is None:
                     raise RuntimeError(
                         f"Controller 산출물이 없습니다: {label}"
                     )
+                case_result["controller"] = str(controller_path)
+                case_result["controller_gate"] = controller_gate
 
             results.append(case_result)
             dev_write_manifest(
