@@ -758,6 +758,35 @@ class GptControllerPairingTests(unittest.TestCase):
             pipeline_block,
         )
 
+    def test_webui_reuses_configured_pretrained_paths(self):
+        root = Path(__file__).resolve().parents[1]
+        webui = (root / "webui.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "bert_path as default_bert_path",
+            webui,
+        )
+        self.assertIn(
+            "cnhubert_path as default_cnhubert_path",
+            webui,
+        )
+        self.assertIn(
+            'pretrained_s1 = pretrained_gpt_name["v5dev"]',
+            webui,
+        )
+        self.assertIn(
+            'pretrained_s2 = pretrained_sovits_name["v5dev"]',
+            webui,
+        )
+        self.assertNotIn(
+            "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
+            webui,
+        )
+        self.assertNotIn(
+            "GPT_SoVITS/pretrained_models/chinese-hubert-base",
+            webui,
+        )
+
     def test_inference_webui_requires_pair_for_managed_gpt_switch(self):
         root = Path(__file__).resolve().parents[1]
         source = (
