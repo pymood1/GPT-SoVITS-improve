@@ -353,11 +353,12 @@ def _controller_semantic_s2_hash_path(sovits_path):
     return resolved_sovits, target_model_version
 
 
-def _validate_controller_identity(
+def _load_validated_controller_checkpoint(
     controller_path,
     gpt_path,
     sovits_path,
 ):
+    """Load one controller and validate its S1/S2 provenance in one place."""
     if controller_path in [None, ""]:
         raise gr.Error(i18n("请选择情感控制器文件"))
     if gpt_path in [None, ""]:
@@ -365,7 +366,7 @@ def _validate_controller_identity(
     if sovits_path in [None, ""]:
         raise gr.Error(i18n("当前 SoVITS 模型路径不可用"))
 
-    _controller, metadata = load_emotion_controller_checkpoint(
+    controller, metadata = load_emotion_controller_checkpoint(
         str(controller_path),
         map_location="cpu",
     )
@@ -384,6 +385,11 @@ def _validate_controller_identity(
     s2_hash_path, target_model_version = (
         _controller_semantic_s2_hash_path(sovits_path)
     )
+    if target_model_version not in V5_VERSIONS:
+        raise gr.Error(
+            i18n("情感控制器目前仅支持 V5dev/V5turbo 模型")
+        )
+
     expected_version = extra.get("version")
     if (
         expected_version
@@ -406,6 +412,19 @@ def _validate_controller_identity(
             i18n("控制器与当前 V5 SoVITS/S2 权重不匹配，已拒绝加载")
         )
 
+    return controller, metadata
+
+
+def _validate_controller_identity(
+    controller_path,
+    gpt_path,
+    sovits_path,
+):
+    _controller, metadata = _load_validated_controller_checkpoint(
+        controller_path,
+        gpt_path,
+        sovits_path,
+    )
     return metadata
 
 
@@ -420,41 +439,11 @@ def load_emotion_controller_webui(controller_path):
     if hasattr(controller_path, "name"):
         controller_path = controller_path.name
     controller_path = str(controller_path)
-    if model_version not in V5_VERSIONS:
-        raise gr.Error(i18n("情感控制器目前仅支持 V5dev/V5turbo 模型"))
-
-    controller, metadata = load_emotion_controller_checkpoint(
-        controller_path, map_location="cpu"
+    controller, metadata = _load_validated_controller_checkpoint(
+        controller_path,
+        gpt_path_global,
+        sovits_path_global,
     )
-    expected_s1_hash = metadata.get("extra", {}).get("s1_sha256")
-    if not expected_s1_hash:
-        raise gr.Error(i18n("控制器缺少 S1 哈希，请使用当前训练器重新生成"))
-    if gpt_path_global in [None, ""]:
-        raise gr.Error(i18n("当前 GPT 模型路径不可用"))
-    if sha256_file(gpt_path_global) != expected_s1_hash:
-        raise gr.Error(i18n("控制器与当前 GPT/S1 权重不匹配，已拒绝加载"))
-    extra = metadata.get("extra", {})
-    expected_version = extra.get("version")
-    if expected_version and expected_version != model_version:
-        raise gr.Error(
-            i18n("控制器 V5 版本与当前模型不匹配，已拒绝加载")
-        )
-    expected_s2_hash = (
-        extra.get("semantic_s2_sha256")
-        or extra.get("s2_sha256")
-    )
-    if not expected_s2_hash:
-        raise gr.Error(i18n("控制器缺少 S2 哈希，请使用当前训练器重新生成"))
-    if sovits_path_global in [None, ""]:
-        raise gr.Error(i18n("当前 SoVITS 模型路径不可用"))
-
-    s2_hash_path = sovits_path_global
-
-    if if_lora_v3 and model_version in V5_VERSIONS:
-        s2_hash_path = pretrained_sovits_name[model_version]
-
-    if sha256_file(s2_hash_path) != expected_s2_hash:
-        raise gr.Error(i18n("控制器与当前 V5 SoVITS/S2 权重不匹配，已拒绝加载"))
     if controller.hidden_dim != t2s_model.model.model_dim:
         raise gr.Error(i18n("控制器 hidden_dim 与当前 GPT 模型不匹配"))
 
