@@ -8,6 +8,48 @@
 
 ---
 
+## Development experiment harness
+
+The current fast iteration loop intentionally separates implementation from
+model-quality validation:
+
+```text
+Codex / ChatGPT:
+  choose experiment cases and parameters
+  update DEV_EXPERIMENT_PRESET.yaml
+  implement the required code
+  keep outputs isolated and reproducible
+  run only cheap structural checks
+
+User:
+  open the Kaggle WebUI
+  press the temporary one-click experiment button
+  let Kaggle preprocess/train automatically
+  run inference/listen
+  report the perceptual result
+
+Then update the next Git preset from that feedback.
+```
+
+Current temporary preset:
+
+```text
+Full FT
+V+Attention-Out LoRA r8/a16
+QKV+Attention-Out LoRA r8/a16
+
+epoch 15
+batch 7
+DPO ON
+SoVITS/S2 fixed and NOT trained
+Controller retrained separately for every GPT/S1 case
+```
+
+The WebUI one-click experiment is a development harness, not a product feature.
+Remove `DEV_EXPERIMENT_PRESET.yaml`, `tools/dev_experiment_harness.py`, and the
+temporary WebUI controls after the final training direction is selected.
+
+
 ## 0. Operating rule for Codex
 
 For every nontrivial task:
