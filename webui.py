@@ -118,6 +118,7 @@ from tools.dev_experiment_harness import (
     available_gpu_ids as dev_available_gpu_ids,
     case_gpu as dev_case_gpu,
     clear_s1_training_state as dev_clear_s1_training_state,
+    controller_for_gpt as dev_controller_for_gpt,
     load_preset as dev_load_preset,
     output_root as dev_output_root,
     preprocess_gpu_string as dev_preprocess_gpu_string,
@@ -2017,9 +2018,16 @@ def change_tts_inference(
     bert_path = str(resolved["BERT"][0])
     cnhubert_base_path = str(resolved["CNHuBERT"][0])
 
-    controller_text = _clean_user_path(
-        latest_emotion_controller_path
+    dev_controller = dev_controller_for_gpt(
+        dev_output_root(Path(GPT_weight_version2root["v5dev"])),
+        Path(gpt_path),
     )
+    if dev_controller is not None:
+        controller_text = str(dev_controller)
+    else:
+        controller_text = _clean_user_path(
+            latest_emotion_controller_path
+        )
     controller_path = (
         _resolve_repo_path(controller_text)
         if controller_text
@@ -6656,7 +6664,8 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         )
 
                         open_tts.click(
-                            change_tts_inference,                            [
+                            change_tts_inference,
+                            [
                                 bert_pretrained_dir,
                                 cnhubert_base_dir,
                                 gpu_number_1C,
