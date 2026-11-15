@@ -2840,6 +2840,63 @@ def _ensure_training_list(
     return str(final_path)
 
 
+def _auto_training_source_marker(list_path):
+    return Path(str(Path(list_path).resolve()) + ".auto_source.json")
+
+
+def _read_auto_training_source(list_path):
+    marker = _auto_training_source_marker(list_path)
+    if not marker.is_file():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _auto_training_source_is_current(
+    payload,
+    original_wav_dir,
+):
+    if not payload:
+        return False
+
+    original = Path(original_wav_dir).resolve()
+    if payload.get("original_wav_dir") != str(original):
+        return False
+    if payload.get("source_signature") != quick_path_signature(original):
+        return False
+
+    effective = _resolve_repo_path(payload.get("effective_wav_dir"))
+    return effective is not None and effective.is_dir()
+
+
+def _write_auto_training_source(
+    list_path,
+    original_wav_dir,
+    effective_wav_dir,
+):
+    original = Path(original_wav_dir).resolve()
+    effective = Path(effective_wav_dir).resolve()
+    marker = _auto_training_source_marker(list_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "original_wav_dir": str(original),
+                "effective_wav_dir": str(effective),
+                "source_signature": quick_path_signature(original),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _ensure_training_sources(inp_text, inp_wav_dir):
     """Prepare short training audio and a matching .list when needed."""
     requested = (
@@ -2849,18 +2906,30 @@ def _ensure_training_sources(inp_text, inp_wav_dir):
     )
     original_wav_dir = _resolve_repo_path(inp_wav_dir)
 
-    if _usable_training_list(requested):
-        if original_wav_dir is None or not original_wav_dir.is_dir():
-            raise FileNotFoundError(
-                "학습용 음성 폴더가 없습니다: "
-                f"{original_wav_dir or '<empty>'}"
-            )
-        return str(requested), str(original_wav_dir)
-
     if original_wav_dir is None or not original_wav_dir.is_dir():
         raise FileNotFoundError(
-            "자동 전처리에 사용할 음성 폴더가 없습니다: "
+            "학습용 음성 폴더가 없습니다: "
             f"{original_wav_dir or '<empty>'}"
+        )
+
+    if _usable_training_list(requested):
+        auto_source = _read_auto_training_source(requested)
+        if auto_source is None:
+            return str(requested), str(original_wav_dir)
+
+        if _auto_training_source_is_current(
+            auto_source,
+            original_wav_dir,
+        ):
+            effective = _resolve_repo_path(
+                auto_source["effective_wav_dir"]
+            )
+            return str(requested), str(effective)
+
+        # Only stale files carrying our marker are safe to regenerate.
+        requested.unlink(missing_ok=True)
+        _auto_training_source_marker(requested).unlink(
+            missing_ok=True
         )
 
     target_list = _training_list_target_path(
@@ -2895,6 +2964,11 @@ def _ensure_training_sources(inp_text, inp_wav_dir):
             break
         yield str(status)
 
+    _write_auto_training_source(
+        list_path,
+        original_wav_dir,
+        effective_wav_dir,
+    )
     return str(list_path), str(effective_wav_dir)
 
 
