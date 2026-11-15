@@ -15,6 +15,9 @@ preprocess:
 training:
   batch_size: 7
   epochs: 15
+  # Keep fixed for clean A/B comparisons. Set true globally or per-case to
+  # exercise validation-based automatic epoch extension / early stop.
+  adaptive_training: false
   dpo: true
   save_every_epoch: 5
   cases:
