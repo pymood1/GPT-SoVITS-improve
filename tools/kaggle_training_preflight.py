@@ -27,6 +27,16 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = Path("/kaggle/working/gpt_sovits_output")
 DEFAULT_EMOTION_ROOT = Path("/kaggle/tmp/emotion_opt")
+AUDIO_EXTENSIONS = {
+    ".wav",
+    ".flac",
+    ".mp3",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".wma",
+}
 
 KEY_FILES = (
     "webui.py",
@@ -83,15 +93,37 @@ def human_bytes(value: int) -> str:
 
 
 def check_dataset(
-    training_list: Path,
+    training_list: Path | None,
     datas_dir: Path,
 ) -> dict[str, Any]:
+    if not datas_dir.is_dir():
+        raise PreflightError(f"datas dir not found: {datas_dir}")
+
+    audio_files = [
+        path
+        for path in sorted(datas_dir.rglob("*"))
+        if (
+            path.is_file()
+            and path.suffix.lower() in AUDIO_EXTENSIONS
+        )
+    ]
+    if not audio_files:
+        raise PreflightError(
+            f"no supported audio files found in datas dir: {datas_dir}"
+        )
+
+    if training_list is None:
+        return {
+            "mode": "auto_list",
+            "samples": len(audio_files),
+            "training_list": None,
+            "datas_dir": str(datas_dir),
+        }
+
     if not training_list.is_file():
         raise PreflightError(
             f"training.list not found: {training_list}"
         )
-    if not datas_dir.is_dir():
-        raise PreflightError(f"datas dir not found: {datas_dir}")
 
     lines = training_list.read_text(
         encoding="utf-8-sig",
@@ -128,6 +160,7 @@ def check_dataset(
         raise PreflightError("training.list has no usable samples")
 
     return {
+        "mode": "provided_list",
         "samples": sample_count,
         "training_list": str(training_list),
         "datas_dir": str(datas_dir),
@@ -259,7 +292,14 @@ def disk_summary(path: Path) -> dict[str, Any]:
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--training-list", required=True)
+    parser.add_argument(
+        "--training-list",
+        default="",
+        help=(
+            "Optional existing training.list. Leave empty to let the "
+            "WebUI create one from datas/ with the automatic preprocessing flow."
+        ),
+    )
     parser.add_argument("--datas-dir", required=True)
     parser.add_argument(
         "--output-root",
@@ -288,9 +328,11 @@ def make_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = make_parser().parse_args()
     try:
-        training_list = Path(
-            args.training_list
-        ).expanduser().resolve()
+        training_list = (
+            Path(args.training_list).expanduser().resolve()
+            if str(args.training_list or "").strip()
+            else None
+        )
         datas_dir = Path(args.datas_dir).expanduser().resolve()
         output_root = Path(
             args.output_root
@@ -305,7 +347,8 @@ def main() -> int:
         print("[preflight 1/5] dataset", flush=True)
         dataset = check_dataset(training_list, datas_dir)
         print(
-            f"[OK] dataset samples={dataset['samples']}",
+            f"[OK] dataset mode={dataset['mode']} "
+            f"samples={dataset['samples']}",
             flush=True,
         )
 
