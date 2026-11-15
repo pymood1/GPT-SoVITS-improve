@@ -28,13 +28,53 @@ class Text2SemanticDataModule(LightningDataModule):
         pass
 
     def setup(self, stage=None, output_logs=False):
+        adaptive = bool(
+            self.config["train"].get("adaptive_training", False)
+        )
+        val_fraction = float(
+            self.config["train"].get(
+                "adaptive_validation_fraction",
+                0.10,
+            )
+        )
+        split_seed = int(
+            self.config["train"].get(
+                "adaptive_split_seed",
+                233333,
+            )
+        )
+
         self._train_dataset = Text2SemanticDataset(
             phoneme_path=self.train_phoneme_path,
             semantic_path=self.train_semantic_path,
             max_sec=self.config["data"]["max_sec"],
             pad_val=self.config["data"]["pad_val"],
+            adaptive_validation=adaptive,
+            validation_fraction=val_fraction,
+            split_role="train",
+            split_seed=split_seed,
         )
-        self._dev_dataset = self._train_dataset
+        if adaptive:
+            try:
+                self._dev_dataset = Text2SemanticDataset(
+                    phoneme_path=self.train_phoneme_path,
+                    semantic_path=self.train_semantic_path,
+                    max_sec=self.config["data"]["max_sec"],
+                    pad_val=self.config["data"]["pad_val"],
+                    adaptive_validation=True,
+                    validation_fraction=val_fraction,
+                    split_role="val",
+                    split_seed=split_seed,
+                )
+            except RuntimeError as exc:
+                print(
+                    "[S1 adaptive] validation disabled: "
+                    f"{exc}"
+                )
+                self.config["train"]["adaptive_training"] = False
+                self._dev_dataset = self._train_dataset
+        else:
+            self._dev_dataset = self._train_dataset
         # self._dev_dataset = Text2SemanticDataset(
         #     phoneme_path=self.dev_phoneme_path,
         #     semantic_path=self.dev_semantic_path,
@@ -61,14 +101,20 @@ class Text2SemanticDataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
+        if not self.config["train"].get(
+            "adaptive_training",
+            False,
+        ):
+            return None
+        workers = max(1, min(self.num_workers, 4))
         return DataLoader(
             self._dev_dataset,
-            batch_size=1,
+            batch_size=min(4, len(self._dev_dataset)),
             shuffle=False,
-            collate_fn=self._train_dataset.collate,
-            num_workers=max(self.num_workers, 12),
-            persistent_workers=True,
-            prefetch_factor=16,
+            collate_fn=self._dev_dataset.collate,
+            num_workers=workers,
+            persistent_workers=workers > 0,
+            prefetch_factor=2 if workers > 0 else None,
         )
 
     # 这个会使用到嘛？
