@@ -177,14 +177,30 @@ class Text2SemanticLightningModule(LightningModule):
     def training_step(self, batch: Dict, batch_idx: int):
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
-        forward = self.model.forward if self.config["train"].get("if_dpo", False) == True else self.model.forward_old
-        loss, acc = forward(
-            batch["phoneme_ids"],
-            batch["phoneme_ids_len"],
-            batch["semantic_ids"],
-            batch["semantic_ids_len"],
-            batch["bert_feature"],
-        )
+        use_dpo = self.config["train"].get("if_dpo", False) is True
+        if use_dpo:
+            loss, acc = self.model.forward(
+                batch["phoneme_ids"],
+                batch["phoneme_ids_len"],
+                batch["semantic_ids"],
+                batch["semantic_ids_len"],
+                batch["bert_feature"],
+                dpo_beta=float(
+                    self.config["train"].get("dpo_beta", 0.2)
+                ),
+                dpo_reference_mode=self.config["train"].get(
+                    "dpo_reference_mode",
+                    "reference_free",
+                ),
+            )
+        else:
+            loss, acc = self.model.forward_old(
+                batch["phoneme_ids"],
+                batch["phoneme_ids_len"],
+                batch["semantic_ids"],
+                batch["semantic_ids_len"],
+                batch["bert_feature"],
+            )
         self.manual_backward(loss)
         self._grad_accum_count += 1
         if self._grad_accum_count >= self.grad_accum_steps:
