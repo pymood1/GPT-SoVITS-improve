@@ -197,10 +197,10 @@ class MultiheadAttention(Module):
         self.register_buffer("lora_reference_in_B", None)
         self.register_buffer("lora_reference_out_A", None)
         self.register_buffer("lora_reference_out_B", None)
-        self.register_buffer(
-            "lora_reference_ready",
-            torch.tensor(False, dtype=torch.bool),
-        )
+        # Keep all reference buffers absent until LoRA is actually
+        # enabled. Ordinary pretrained S1 checkpoints therefore see exactly
+        # the legacy state_dict surface and still load with strict=True.
+        self.register_buffer("lora_reference_ready", None)
 
     @property
     def lora_enabled(self) -> bool:
@@ -216,7 +216,10 @@ class MultiheadAttention(Module):
 
     @property
     def has_lora_reference(self) -> bool:
-        return bool(self.lora_reference_ready.item())
+        return (
+            self.lora_reference_ready is not None
+            and bool(self.lora_reference_ready.item())
+        )
 
     def snapshot_lora_reference(self) -> None:
         """Freeze the current speaker-adapted LoRA as a tiny DPO reference."""
@@ -324,7 +327,11 @@ class MultiheadAttention(Module):
         self.lora_reference_in_B = torch.zeros_like(self.lora_in_B)
         self.lora_reference_out_A = torch.zeros_like(self.lora_out_A)
         self.lora_reference_out_B = torch.zeros_like(self.lora_out_B)
-        self.lora_reference_ready.fill_(False)
+        self.lora_reference_ready = torch.tensor(
+            False,
+            dtype=torch.bool,
+            device=self.in_proj_weight.device,
+        )
 
     def lora_in_proj_delta(self) -> Tensor:
         if not self.lora_enabled:
