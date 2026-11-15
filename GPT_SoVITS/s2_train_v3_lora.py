@@ -456,43 +456,53 @@ def evaluate_validation_loss(rank, hps, net_g, eval_loader):
     model_g.eval()
     losses = []
 
-    with torch.no_grad():
-        for (
-            ssl,
-            spec,
-            mel,
-            ssl_lengths,
-            spec_lengths,
-            text,
-            text_lengths,
-            mel_lengths,
-        ) in eval_loader:
-            target_device = (
-                torch.device("cuda", rank)
-                if torch.cuda.is_available()
-                else torch.device(device)
-            )
-            spec = spec.to(target_device)
-            spec_lengths = spec_lengths.to(target_device)
-            mel = mel.to(target_device)
-            mel_lengths = mel_lengths.to(target_device)
-            ssl = ssl.to(target_device)
-            text = text.to(target_device)
-            text_lengths = text_lengths.to(target_device)
+    devices = [rank] if torch.cuda.is_available() else []
+    with torch.random.fork_rng(devices=devices):
+        # CFM validation samples noise/timesteps internally. Fix the RNG so
+        # epoch selection measures model change rather than validation noise.
+        torch.manual_seed(233333)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(233333)
 
-            with autocast(enabled=hps.train.fp16_run):
-                loss = model_g(
-                    ssl,
-                    spec,
-                    mel,
-                    ssl_lengths,
-                    spec_lengths,
-                    text,
-                    text_lengths,
-                    mel_lengths,
-                    use_grad_ckpt=False,
+        with torch.no_grad():
+            for (
+                ssl,
+                spec,
+                mel,
+                ssl_lengths,
+                spec_lengths,
+                text,
+                text_lengths,
+                mel_lengths,
+            ) in eval_loader:
+                target_device = (
+                    torch.device("cuda", rank)
+                    if torch.cuda.is_available()
+                    else torch.device(device)
                 )
-            losses.append(float(loss.detach().float().item()))
+                spec = spec.to(target_device)
+                spec_lengths = spec_lengths.to(target_device)
+                mel = mel.to(target_device)
+                mel_lengths = mel_lengths.to(target_device)
+                ssl = ssl.to(target_device)
+                text = text.to(target_device)
+                text_lengths = text_lengths.to(target_device)
+
+                with autocast(enabled=hps.train.fp16_run):
+                    loss = model_g(
+                        ssl,
+                        spec,
+                        mel,
+                        ssl_lengths,
+                        spec_lengths,
+                        text,
+                        text_lengths,
+                        mel_lengths,
+                        use_grad_ckpt=False,
+                    )
+                losses.append(
+                    float(loss.detach().float().item())
+                )
 
     if was_training:
         model_g.train()
