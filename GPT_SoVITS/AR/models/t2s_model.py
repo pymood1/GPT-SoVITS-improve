@@ -14,6 +14,7 @@ from AR.models.utils import (
     dpo_loss,
     get_batch_logps,
     make_pad_mask,
+    make_confusion_reject_y,
     make_pad_mask_left,
     make_reject_y,
     sample,
@@ -585,9 +586,9 @@ class Text2SemanticDecoder(nn.Module):
         bert_feature,
         dpo_beta: float = 0.2,
         dpo_reference_mode: str = "reference_free",
+        dpo_negative_mode: str = "mixed",
     ):
         """Compute only the deterministic preference objective."""
-        reject_y, reject_y_lens = make_reject_y(y, y_lens)
 
         xy_pos, xy_attn_mask, targets = self.make_input_data(
             x, x_lens, y, y_lens, bert_feature
@@ -595,6 +596,55 @@ class Text2SemanticDecoder(nn.Module):
         xy_dec, _ = self.h((xy_pos, None), mask=xy_attn_mask)
         x_len = x_lens.max()
         logits = self.ar_predict_layer(xy_dec[:, x_len - 1 :])
+
+        negative_mode = str(
+            dpo_negative_mode or "mixed"
+        ).strip().lower()
+        if negative_mode in {"repeat_drop", "synthetic", "legacy"}:
+            reject_y, reject_y_lens = make_reject_y(
+                y,
+                y_lens,
+            )
+            negative_kind = "repeat_drop"
+        elif negative_mode in {"confusion", "hard"}:
+            reject_y, reject_y_lens = make_confusion_reject_y(
+                y,
+                y_lens,
+                logits,
+                eos_id=self.EOS,
+            )
+            negative_kind = "confusion"
+        elif negative_mode in {"mixed", "auto"}:
+            # Alternate between structural degeneration and the model's own
+            # plausible semantic mistakes. Batch-level selection keeps the
+            # implementation simple while both modes are observed repeatedly
+            # across a shuffled few-shot dataset.
+            if bool(
+                torch.randint(
+                    0,
+                    2,
+                    size=(1,),
+                    device=y.device,
+                ).item()
+            ):
+                reject_y, reject_y_lens = make_confusion_reject_y(
+                    y,
+                    y_lens,
+                    logits,
+                    eos_id=self.EOS,
+                )
+                negative_kind = "confusion"
+            else:
+                reject_y, reject_y_lens = make_reject_y(
+                    y,
+                    y_lens,
+                )
+                negative_kind = "repeat_drop"
+        else:
+            raise ValueError(
+                "unsupported dpo_negative_mode: "
+                f"{dpo_negative_mode!r}"
+            )
 
         reject_xy_pos, reject_xy_attn_mask, reject_targets = (
             self.make_input_data(
@@ -685,6 +735,7 @@ class Text2SemanticDecoder(nn.Module):
         return loss, {
             "chosen_logp": chosen_logps.detach().mean(),
             "rejected_logp": rejected_logps.detach().mean(),
+            "negative_kind": negative_kind,
         }
 
     def forward(
@@ -697,6 +748,7 @@ class Text2SemanticDecoder(nn.Module):
         dpo_beta: float = 0.2,
         dpo_reference_mode: str = "reference_free",
         dpo_weight: float = 1.0,
+        dpo_negative_mode: str = "mixed",
     ):
         """Run original S1 CE plus deterministic auxiliary DPO."""
         loss_1, acc = self.forward_old(
@@ -720,6 +772,7 @@ class Text2SemanticDecoder(nn.Module):
                 bert_feature,
                 dpo_beta=dpo_beta,
                 dpo_reference_mode=dpo_reference_mode,
+                dpo_negative_mode=dpo_negative_mode,
             )
 
         valid_target_tokens = (
