@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from adaptive_training import AdaptiveEpochState
 from tools.runtime_status import clear_activity, publish_activity
 
 hps = utils.get_hparams(stage=2)
@@ -161,6 +162,39 @@ def _run(rank, n_gpus, hps, use_ddp):
         persistent_workers=True,
         prefetch_factor=2,
     )
+
+    adaptive_enabled = bool(
+        getattr(hps.train, "adaptive_training", False)
+    )
+    eval_loader = None
+    if adaptive_enabled and rank == 0:
+        try:
+            eval_dataset = TextAudioSpeakerLoader(
+                hps.data,
+                version=hps.model.version,
+                val=True,
+            )
+            eval_loader = DataLoader(
+                eval_dataset,
+                num_workers=0,
+                shuffle=False,
+                batch_size=min(2, len(eval_dataset)),
+                pin_memory=torch.cuda.is_available(),
+                drop_last=False,
+                collate_fn=collate_fn,
+            )
+        except RuntimeError as exc:
+            print(
+                "[SoVITS adaptive] validation disabled: "
+                f"{exc}"
+            )
+            adaptive_enabled = False
+
+    if use_ddp:
+        flag = [adaptive_enabled if rank == 0 else None]
+        dist.broadcast_object_list(flag, src=0)
+        adaptive_enabled = bool(flag[0])
+
     # if rank == 0:
     #     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data, val=True)
     #     eval_loader = DataLoader(eval_dataset, num_workers=0, shuffle=False,
@@ -310,9 +344,47 @@ def _run(rank, n_gpus, hps, use_ddp):
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
+    adaptive_state = None
+    best_generator_state = None
+    if adaptive_enabled:
+        min_epochs = int(
+            getattr(
+                hps.train,
+                "adaptive_min_epochs",
+                hps.train.epochs,
+            )
+        )
+        max_epochs = max(
+            min_epochs,
+            int(
+                getattr(
+                    hps.train,
+                    "adaptive_max_epochs",
+                    hps.train.epochs,
+                )
+            ),
+        )
+        adaptive_state = AdaptiveEpochState(
+            min_epochs=min_epochs,
+            max_epochs=max_epochs,
+            patience=int(
+                getattr(hps.train, "adaptive_patience", 3)
+            ),
+            min_relative_improvement=float(
+                getattr(
+                    hps.train,
+                    "adaptive_min_relative_improvement",
+                    0.005,
+                )
+            ),
+        )
+    else:
+        min_epochs = int(hps.train.epochs)
+        max_epochs = min_epochs
+
     print("start training from epoch %s" % epoch_str)
     if rank == 0:
-        total_steps = int(hps.train.epochs) * len(train_loader)
+        total_steps = int(max_epochs) * len(train_loader)
         publish_activity(
             task="SoVITS 학습",
             stage="starting",
@@ -322,9 +394,9 @@ def _run(rank, n_gpus, hps, use_ddp):
             step=global_step,
             total_steps=total_steps,
             epoch=epoch_str,
-            total_epochs=int(hps.train.epochs),
+            total_epochs=int(max_epochs),
         )
-    for epoch in range(epoch_str, hps.train.epochs + 1):
+    for epoch in range(epoch_str, max_epochs + 1):
         if rank == 0:
             train_and_evaluate(
                 rank,
@@ -335,7 +407,7 @@ def _run(rank, n_gpus, hps, use_ddp):
                 [scheduler_g, scheduler_d],
                 scaler,
                 # [train_loader, eval_loader], logger, [writer, writer_eval])
-                [train_loader, None],
+                [train_loader, eval_loader],
                 logger,
                 [writer, writer_eval],
             )
@@ -352,9 +424,271 @@ def _run(rank, n_gpus, hps, use_ddp):
                 None,
                 None,
             )
+        stop_training = False
+        if adaptive_enabled and rank == 0:
+            val_loss = evaluate_validation_loss(
+                rank,
+                hps,
+                net_g,
+                eval_loader,
+            )
+            improved, stop_training = adaptive_state.update(
+                epoch,
+                val_loss,
+            )
+            if improved:
+                model_g = (
+                    net_g.module
+                    if hasattr(net_g, "module")
+                    else net_g
+                )
+                best_generator_state = {
+                    name: parameter.detach().cpu().clone()
+                    for name, parameter in model_g.named_parameters()
+                    if parameter.requires_grad
+                }
+                print(
+                    "[SoVITS adaptive] validation improved: "
+                    f"epoch={epoch} val_loss={val_loss:.6f}"
+                )
+            else:
+                print(
+                    "[SoVITS adaptive] no meaningful improvement: "
+                    f"epoch={epoch} val_loss={val_loss:.6f} "
+                    f"best={adaptive_state.best_loss:.6f}@"
+                    f"{adaptive_state.best_epoch} "
+                    f"patience={adaptive_state.bad_epochs}/"
+                    f"{adaptive_state.patience}"
+                )
+
+        if use_ddp:
+            flag = [stop_training if rank == 0 else None]
+            dist.broadcast_object_list(flag, src=0)
+            stop_training = bool(flag[0])
+
         scheduler_g.step()
         scheduler_d.step()
+        if stop_training:
+            break
+
+    if (
+        adaptive_enabled
+        and rank == 0
+        and best_generator_state is not None
+    ):
+        model_g = (
+            net_g.module
+            if hasattr(net_g, "module")
+            else net_g
+        )
+        with torch.no_grad():
+            for name, parameter in model_g.named_parameters():
+                if name in best_generator_state:
+                    parameter.copy_(
+                        best_generator_state[name].to(
+                            device=parameter.device,
+                            dtype=parameter.dtype,
+                        )
+                    )
+        export_adaptive_best(
+            net_g,
+            hps,
+            adaptive_state.best_epoch,
+        )
+        print(
+            "[SoVITS adaptive] restored/exported best epoch "
+            f"{adaptive_state.best_epoch}"
+        )
+
     print("training done")
+
+
+def evaluate_validation_loss(rank, hps, net_g, eval_loader):
+    if eval_loader is None:
+        return float("inf")
+
+    model_g = net_g.module if hasattr(net_g, "module") else net_g
+    was_training = model_g.training
+    model_g.eval()
+    losses = []
+    target_device = (
+        torch.device("cuda", rank)
+        if torch.cuda.is_available()
+        else torch.device(device)
+    )
+
+    devices = [rank] if torch.cuda.is_available() else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(233333)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(233333)
+
+        with torch.no_grad():
+            for data in eval_loader:
+                if hps.model.version in {"v2Pro", "v2ProPlus"}:
+                    (
+                        ssl,
+                        ssl_lengths,
+                        spec,
+                        spec_lengths,
+                        y,
+                        y_lengths,
+                        text,
+                        text_lengths,
+                        sv_emb,
+                    ) = data
+                    sv_emb = sv_emb.to(target_device)
+                else:
+                    (
+                        ssl,
+                        ssl_lengths,
+                        spec,
+                        spec_lengths,
+                        y,
+                        y_lengths,
+                        text,
+                        text_lengths,
+                    ) = data
+
+                spec = spec.to(target_device)
+                spec_lengths = spec_lengths.to(target_device)
+                y = y.to(target_device)
+                y_lengths = y_lengths.to(target_device)
+                ssl = ssl.to(target_device)
+                text = text.to(target_device)
+                text_lengths = text_lengths.to(target_device)
+
+                with autocast(enabled=hps.train.fp16_run):
+                    if hps.model.version in {"v2Pro", "v2ProPlus"}:
+                        (
+                            y_hat,
+                            kl_ssl,
+                            ids_slice,
+                            x_mask,
+                            z_mask,
+                            (
+                                z,
+                                z_p,
+                                m_p,
+                                logs_p,
+                                m_q,
+                                logs_q,
+                            ),
+                            stats_ssl,
+                        ) = model_g(
+                            ssl,
+                            spec,
+                            spec_lengths,
+                            text,
+                            text_lengths,
+                            sv_emb,
+                        )
+                    else:
+                        (
+                            y_hat,
+                            kl_ssl,
+                            ids_slice,
+                            x_mask,
+                            z_mask,
+                            (
+                                z,
+                                z_p,
+                                m_p,
+                                logs_p,
+                                m_q,
+                                logs_q,
+                            ),
+                            stats_ssl,
+                        ) = model_g(
+                            ssl,
+                            spec,
+                            spec_lengths,
+                            text,
+                            text_lengths,
+                        )
+
+                    mel = spec_to_mel_torch(
+                        spec,
+                        hps.data.filter_length,
+                        hps.data.n_mel_channels,
+                        hps.data.sampling_rate,
+                        hps.data.mel_fmin,
+                        hps.data.mel_fmax,
+                    )
+                    y_mel = commons.slice_segments(
+                        mel,
+                        ids_slice,
+                        hps.train.segment_size
+                        // hps.data.hop_length,
+                    )
+                    y_hat_mel = mel_spectrogram_torch(
+                        y_hat.squeeze(1),
+                        hps.data.filter_length,
+                        hps.data.n_mel_channels,
+                        hps.data.sampling_rate,
+                        hps.data.hop_length,
+                        hps.data.win_length,
+                        hps.data.mel_fmin,
+                        hps.data.mel_fmax,
+                    )
+
+                with autocast(enabled=False):
+                    loss_mel = (
+                        F.l1_loss(y_mel, y_hat_mel)
+                        * hps.train.c_mel
+                    )
+                    loss_kl = (
+                        kl_loss(
+                            z_p,
+                            logs_q,
+                            m_p,
+                            logs_p,
+                            z_mask,
+                        )
+                        * hps.train.c_kl
+                    )
+                    val_loss = loss_mel + kl_ssl + loss_kl
+                losses.append(
+                    float(val_loss.detach().float().item())
+                )
+
+    if was_training:
+        model_g.train()
+    if not losses:
+        return float("inf")
+    return sum(losses) / len(losses)
+
+
+def export_adaptive_best(net_g, hps, best_epoch):
+    model_g = net_g.module if hasattr(net_g, "module") else net_g
+    ckpt = model_g.state_dict()
+
+    weight_dir = Path(hps.save_weight_dir)
+    weight_dir.mkdir(parents=True, exist_ok=True)
+    if hps.train.if_save_latest:
+        for old_weight in weight_dir.glob(
+            f"{hps.name}_e*_s*.pth"
+        ):
+            try:
+                old_weight.unlink()
+            except OSError:
+                pass
+
+    savee(
+        ckpt,
+        (
+            f"{hps.name}_e{best_epoch}_adaptive-best"
+            f"_s{global_step}"
+        ),
+        best_epoch,
+        global_step,
+        hps,
+        model_version=(
+            hps.model.version
+            if hps.model.version in {"v2Pro", "v2ProPlus"}
+            else None
+        ),
+    )
 
 
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
@@ -496,7 +830,19 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 batch_idx % status_interval == 0
                 or batch_idx + 1 == len(train_loader)
             ):
-                total_steps = int(hps.train.epochs) * len(train_loader)
+                total_steps = int(
+                    getattr(
+                        hps.train,
+                        "adaptive_max_epochs",
+                        hps.train.epochs,
+                    )
+                    if getattr(
+                        hps.train,
+                        "adaptive_training",
+                        False,
+                    )
+                    else hps.train.epochs
+                ) * len(train_loader)
                 completed_step = global_step + 1
                 publish_activity(
                     task="SoVITS 학습",
@@ -507,7 +853,19 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     step=completed_step,
                     total_steps=total_steps,
                     epoch=epoch,
-                    total_epochs=int(hps.train.epochs),
+                    total_epochs=int(
+                        getattr(
+                            hps.train,
+                            "adaptive_max_epochs",
+                            hps.train.epochs,
+                        )
+                        if getattr(
+                            hps.train,
+                            "adaptive_training",
+                            False,
+                        )
+                        else hps.train.epochs
+                    ),
                     loss=float(loss_gen_all.detach().float().item()),
                     metric=(
                         f"mel {float(loss_mel.detach().float().item()):.4f}"
