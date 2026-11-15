@@ -6152,6 +6152,11 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                     f"- 전처리 GPU: `{preprocess_gpus}`",
                     f"- GPT/S1 case: `{len(cases)}`개",
                     "- SoVITS/S2: **학습 안 함 / V5dev base 고정**",
+                    (
+                        "- Controller: **ON**"
+                        if bool(controller_cfg.get("enabled", True))
+                        else "- Controller: **OFF (acoustic ablation)**"
+                    ),
                     "- 각 GPT/S1 case: **pretrained에서 새로 학습**",
                 ],
             ),
@@ -6339,6 +6344,9 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 "batch_size": batch_size,
                 "dpo": dpo,
                 "gpt_checkpoint": str(snapshot),
+                "controller_enabled": bool(
+                    controller_cfg.get("enabled", True)
+                ),
                 "controller": None,
                 "controller_gate": "not_run",
             }
@@ -6446,6 +6454,11 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
             "",
             f"Manifest: `{manifest_path}`",
             f"Fixed SoVITS: `{pretrained_s2}`",
+            (
+                "Controller: ON"
+                if bool(controller_cfg.get("enabled", True))
+                else "Controller: OFF (acoustic ablation)"
+            ),
             "",
         ]
         for item in results:
