@@ -51,41 +51,73 @@ for several minutes. Keep the tab connected until the players appear. No
 training data, Drive mount, uploaded reference, model selection or WebUI click
 is required.
 
-## Enable in an existing Kaggle session
+## Primary path: existing Kaggle session + existing data
 
-In the existing installed Kaggle GPU session, run this ONE cell:
+Kaggle is now the preferred diagnostic path. The diagnostic intentionally reuses
+the user's existing GPT-SoVITS installation, pretrained assets, Korean training
+metadata and audio. It does **not** download or invent a public reference when
+valid existing data is unavailable.
+
+Run one cell:
 
 ```python
-import urllib.request
-url = "https://raw.githubusercontent.com/pymood1/GPT-SoVITS-improve/codex/v5-acoustic-ab/tools/kaggle_v5_acoustic_ab.py"
-scope = {"__name__": "v5_ab_bootstrap"}
-exec(compile(urllib.request.urlopen(url).read(), url, "exec"), scope)
-v5_ab_process = scope["launch"]()
+from pathlib import Path
+import importlib.util
+import subprocess
+
+repo = Path("/kaggle/working/GPT-SoVITS-improve-diagnostic")
+branch = "codex/v5-acoustic-ab"
+remote = "https://github.com/pymood1/GPT-SoVITS-improve.git"
+
+if not (repo / ".git").is_dir():
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", branch, remote, str(repo)],
+        check=True,
+    )
+else:
+    subprocess.run(["git", "fetch", "origin", branch], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", branch], cwd=repo, check=True)
+    subprocess.run(["git", "reset", "--hard", "origin/" + branch], cwd=repo, check=True)
+
+spec = importlib.util.spec_from_file_location(
+    "kaggle_v5_acoustic_ab",
+    repo / "tools/kaggle_v5_acoustic_ab.py",
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+result_folder = module.run_kaggle_all(repo)
+print("완료 폴더:", result_folder)
 ```
 
-The cell clones/updates a separate diagnostic checkout, links existing assets,
-and starts its own inference server on an available port. It does not reset the
-original source, install packages, restart the runtime or kill existing jobs.
-It checks for GPU and required installed pretrained assets and reuses an already
-running diagnostic server when the cell is repeated. It assumes the normal setup
-has already completed; missing assets are reported explicitly.
+The runner:
 
-Open the printed public WebUI link. Base GPT `s1v3.ckpt` and base V5dev SoVITS
-`s2Gv5dev.pth` are preselected. A Korean reference and its exact transcript are
-selected from the existing training list when available; otherwise upload a
-3–10 second reference and enter its exact transcript in the normal fields.
-No emotion tag or trained GPT/SoVITS is needed for this first test.
+1. fetches the current PR branch through Git;
+2. reuses `/kaggle/tmp/GPT-SoVITS` rather than reinstalling the runtime;
+3. symlinks the already-downloaded base GPT, V5dev SoVITS, V5 vocoder, CNHuBERT
+   and BERT into the dedicated diagnostic checkout;
+4. searches existing Kaggle-local `.list` metadata under the normal temp,
+   working and user dataset roots;
+5. selects a real Korean 3–10 s reference and preserves its exact transcript;
+6. displays that original reference before synthesis;
+7. runs the semantic path and the full fixed-semantic A/B/order/FP32 suite
+   headlessly, with no Gradio interaction; and
+8. displays the listening controls and writes
+   `/kaggle/working/v5_acoustic_ab/latest_listening.zip`.
 
-The target is prefilled: **안녕하세요. 오늘은 날씨가 좋아서 잠깐 산책을 다녀오려고 합니다.**
-Press synthesize ONCE and wait for all sequences, including FP32, to finish.
-Players appear automatically in the notebook cell in listening order. This is
-8 acoustic passes plus reference-vocoder probes, not one ordinary inference;
-model construction/FP32 on a T4 can take several minutes.
-Do not run training or another synthesis/model switch concurrently with this
-in-process diagnostic. It fetches only four public pinned source files; all
-private tensors and WAVs stay in the runtime. No upload occurs. Internet must be
-enabled for that public source read. Unset the variable and restart the inference
-process when done. Normal behavior is untouched when the diagnostic variable is absent.
+If no valid Korean reference + transcript is found, the runner stops and prints
+which metadata files it inspected. This is deliberate: for this bug investigation
+the user's existing data is a better control than an unrelated public English
+sample.
+
+The fixed target remains:
+**안녕하세요. 오늘은 날씨가 좋아서 잠깐 산책을 다녀오려고 합니다.**
+
+## Secondary path: standalone Colab
+
+The Colab runner remains only as a portable fallback for a clean environment.
+It may use the pinned public reference when no local Korean dataset exists, so it
+is not the preferred path for reproducing the user's current training/inference
+symptom.
 
 ## What executes
 
