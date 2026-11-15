@@ -60,6 +60,24 @@ global_step = 0
 device = "cpu"  # cuda以外的设备，等mps优化后加入
 
 
+def _broadcast_bool(value, rank, src=0):
+    """Synchronize one boolean without Python object collectives."""
+    if not dist.is_initialized():
+        return bool(value)
+    sync_device = (
+        torch.device("cuda", rank)
+        if torch.cuda.is_available()
+        else torch.device("cpu")
+    )
+    tensor = torch.tensor(
+        [1 if bool(value) else 0],
+        dtype=torch.uint8,
+        device=sync_device,
+    )
+    dist.broadcast(tensor, src=src)
+    return bool(int(tensor.item()))
+
+
 def main():
     if torch.cuda.is_available():
         n_gpus = torch.cuda.device_count()
@@ -197,9 +215,11 @@ def _run(rank, n_gpus, hps, use_ddp):
             adaptive_enabled = False
 
     if use_ddp:
-        flag = [adaptive_enabled if rank == 0 else None]
-        dist.broadcast_object_list(flag, src=0)
-        adaptive_enabled = bool(flag[0])
+        adaptive_enabled = _broadcast_bool(
+            adaptive_enabled if rank == 0 else False,
+            rank,
+            src=0,
+        )
 
     hps.train.adaptive_training = adaptive_enabled
     save_root = "%s/logs_s2_%s_lora_%s" % (hps.data.exp_dir, hps.model.version, hps.train.lora_rank)
@@ -407,9 +427,11 @@ def _run(rank, n_gpus, hps, use_ddp):
                 )
 
         if use_ddp:
-            flag = [stop_training if rank == 0 else None]
-            dist.broadcast_object_list(flag, src=0)
-            stop_training = bool(flag[0])
+            stop_training = _broadcast_bool(
+                stop_training if rank == 0 else False,
+                rank,
+                src=0,
+            )
 
         scheduler_g.step()
         if stop_training:
