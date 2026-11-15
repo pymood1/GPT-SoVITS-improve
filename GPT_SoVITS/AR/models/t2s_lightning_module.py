@@ -354,7 +354,47 @@ class Text2SemanticLightningModule(LightningModule):
         )
 
     def validation_step(self, batch: Dict, batch_idx: int):
-        return
+        if not self.config["train"].get(
+            "adaptive_training",
+            False,
+        ):
+            return None
+
+        loss_sum, acc = self.model.forward_old(
+            batch["phoneme_ids"],
+            batch["phoneme_ids_len"],
+            batch["semantic_ids"],
+            batch["semantic_ids_len"],
+            batch["bert_feature"],
+        )
+        token_count = (
+            batch["semantic_ids_len"].to(
+                device=loss_sum.device,
+                dtype=loss_sum.dtype,
+            )
+            + 1
+        ).sum().clamp_min(1.0)
+        val_loss = loss_sum / token_count
+
+        self.log(
+            "val_loss",
+            val_loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=batch["semantic_ids"].shape[0],
+        )
+        self.log(
+            f"val_top_{self.top_k}_acc",
+            float(acc),
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            sync_dist=True,
+            batch_size=batch["semantic_ids"].shape[0],
+        )
+        return val_loss
 
     # # get loss
     # loss, acc = self.model.forward(
