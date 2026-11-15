@@ -192,6 +192,25 @@ class AdaptiveS1Callback(Callback):
                 f"{self.state.patience}"
             )
 
+        if trainer.is_global_zero:
+            publish_activity(
+                task="GPT / S1 학습",
+                stage="validation",
+                progress=min(
+                    epoch / max(self.state.max_epochs, 1),
+                    1.0,
+                ),
+                epoch=epoch,
+                total_epochs=self.state.max_epochs,
+                loss=value,
+                metric=(
+                    f"val {value:.5f} · best "
+                    f"{self.state.best_loss:.5f}@"
+                    f"{self.state.best_epoch} · patience "
+                    f"{self.state.bad_epochs}/{self.state.patience}"
+                ),
+            )
+
         if should_stop:
             print(
                 "[S1 adaptive] early stop; restoring best epoch "
