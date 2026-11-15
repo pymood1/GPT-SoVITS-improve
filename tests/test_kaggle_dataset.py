@@ -12,6 +12,10 @@ from tools.kaggle_dataset import (
     discover_dataset,
     prepare_kaggle_dataset,
 )
+from tools.kaggle_launch_webui import (
+    apply_nvidia_library_path,
+    nvidia_library_dirs,
+)
 
 
 class KaggleDatasetTests(unittest.TestCase):
@@ -99,6 +103,36 @@ class KaggleDatasetTests(unittest.TestCase):
                     kaggle_input=root,
                     runtime_root=root / "runtime",
                 )
+
+    def test_nvidia_library_dirs_are_injected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cublas = root / "nvidia" / "cublas" / "lib"
+            cudnn = root / "nvidia" / "cudnn" / "lib"
+            cublas.mkdir(parents=True)
+            cudnn.mkdir(parents=True)
+
+            directories = nvidia_library_dirs([str(root)])
+            self.assertEqual(
+                directories,
+                [cublas.resolve(), cudnn.resolve()],
+            )
+
+            env = {"LD_LIBRARY_PATH": "/system/cuda/lib64"}
+            applied = apply_nvidia_library_path(
+                env,
+                search_paths=[str(root)],
+            )
+
+            self.assertEqual(applied, directories)
+            self.assertEqual(
+                env["LD_LIBRARY_PATH"].split(":"),
+                [
+                    str(cublas.resolve()),
+                    str(cudnn.resolve()),
+                    "/system/cuda/lib64",
+                ],
+            )
 
 
 if __name__ == "__main__":
