@@ -3,15 +3,17 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest import mock
 
 from tools.colab_v5_acoustic_ab import (
     _run,
+    ensure_nltk_frontend_resources,
     find_completed_suite,
     run_headless,
     runtime_environment,
+    select_korean_reference,
     verified_download,
 )
 
@@ -69,6 +71,8 @@ class ColabAcousticABTests(unittest.TestCase):
         )
         self.assertEqual(env["GPT_SOVITS_V5_ACOUSTIC_AB_DIR"], str(output))
         self.assertEqual(env["GPT_SOVITS_AB_REFERENCE"], str(reference))
+        self.assertEqual(env["GPT_SOVITS_AB_REFERENCE_TEXT"], "I had that curiosity beside me at this moment.")
+        self.assertEqual(env["GPT_SOVITS_AB_REFERENCE_LANGUAGE"], "en")
         self.assertNotIn("emotion_controller_path", env)
 
     def test_headless_run_consumes_generator_with_english_reference_and_korean_target(self):
@@ -96,6 +100,86 @@ class ColabAcousticABTests(unittest.TestCase):
         self.assertEqual(kwargs["cfg_rate"], 1.30)
         self.assertFalse(kwargs["use_cuda_graph"])
         self.assertFalse(kwargs["use_flash_attention"])
+
+    def test_headless_run_accepts_korean_reference_without_english_frontend(self):
+        calls = []
+
+        def get_tts_wav(*args, **kwargs):
+            calls.append((args, kwargs))
+            yield 48000, b"ordinary-output"
+
+        webui = SimpleNamespace(
+            dict_language={"Korean label": "all_ko"},
+            get_tts_wav=get_tts_wav,
+        )
+
+        yielded = run_headless(
+            webui,
+            "/content/korean.wav",
+            "안녕하세요. 참조 음성입니다.",
+            "all_ko",
+        )
+
+        self.assertEqual(yielded, 1)
+        args, _ = calls[0]
+        self.assertEqual(args[1], "안녕하세요. 참조 음성입니다.")
+        self.assertEqual(args[2], "Korean label")
+        self.assertEqual(args[4], "Korean label")
+
+    def test_select_korean_reference_prefers_valid_three_to_ten_second_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "sample.wav"
+            audio.write_bytes(b"fixture")
+            listing = root / "training.list"
+            listing.write_text(
+                f"{audio}|speaker|ko|정확한 한국어 전사문\n",
+                encoding="utf-8",
+            )
+
+            selected = select_korean_reference(
+                [listing],
+                lambda _: SimpleNamespace(duration=5.5),
+            )
+
+        self.assertIsNotNone(selected)
+        path, transcript = selected
+        self.assertEqual(path.name, "sample.wav")
+        self.assertEqual(transcript, "정확한 한국어 전사문")
+
+    def test_nltk_frontend_preflight_installs_only_missing_resources_and_runs_pos_tag(self):
+        nltk = ModuleType("nltk")
+        corpus = ModuleType("nltk.corpus")
+        installed = set()
+        downloads = []
+        pos_calls = []
+
+        resource_for_package = {
+            "averaged_perceptron_tagger_eng": "taggers/averaged_perceptron_tagger_eng",
+            "cmudict": "corpora/cmudict",
+            "averaged_perceptron_tagger": "taggers/averaged_perceptron_tagger",
+        }
+
+        def find(resource):
+            if resource not in installed:
+                raise LookupError(resource)
+            return resource
+
+        def download(package, quiet=True):
+            downloads.append(package)
+            installed.add(resource_for_package[package])
+            return True
+
+        nltk.data = SimpleNamespace(find=find)
+        nltk.download = download
+        nltk.pos_tag = lambda words: pos_calls.append(tuple(words)) or [(word, "NN") for word in words]
+        corpus.cmudict = SimpleNamespace(dict=lambda: {"frontend": [["F"]]})
+
+        with mock.patch.dict(sys.modules, {"nltk": nltk, "nltk.corpus": corpus}):
+            ensure_nltk_frontend_resources()
+
+        self.assertEqual(downloads, ["averaged_perceptron_tagger_eng", "cmudict"])
+        self.assertEqual(pos_calls, [("frontend", "check")])
 
     def test_verified_download_rejects_content_that_does_not_match_pinned_hash(self):
         with tempfile.TemporaryDirectory() as tmp:
