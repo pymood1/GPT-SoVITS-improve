@@ -3855,6 +3855,7 @@ def open1Bb(
         "dpo_warmup_epochs": dpo_warmup_epochs,
         "dpo_beta": 0.2,
         "dpo_weight": 0.2,
+        "dpo_negative_mode": "mixed",
         "adaptive_training": bool(adaptive_training),
         "adaptive_min_epochs": int(total_epoch),
         "gradient_accumulation_policy": (
@@ -3974,6 +3975,7 @@ def open1Bb(
     data["train"]["dpo_warmup_epochs"] = dpo_warmup_epochs
     data["train"]["dpo_beta"] = 0.2
     data["train"]["dpo_weight"] = 0.2
+    data["train"]["dpo_negative_mode"] = "mixed"
     data["train"]["s1_adapter"] = s1_adapter
     data["train"]["s1_lora_rank"] = s1_lora_rank
     data["train"]["s1_lora_alpha"] = s1_lora_alpha
