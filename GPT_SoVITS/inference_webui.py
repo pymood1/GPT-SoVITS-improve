@@ -2373,7 +2373,8 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
         )
         gr.Markdown(html_center(i18n("*请上传并填写参考信息"), "h3"))
         with gr.Row():
-            inp_ref = gr.Audio(label=i18n("请上传3~10秒内参考音频，超过会报错！"), type="filepath", scale=13)
+            inp_ref = gr.Audio(label=i18n("请上传3~10秒内参考音频，超过会报错！"), type="filepath", scale=13,
+                               value=os.environ.get("GPT_SOVITS_AB_REFERENCE") or None)
             with gr.Column(scale=13):
                 ref_text_free = gr.Checkbox(
                     label=i18n("开启无参考文本模式。不填参考文本亦相当于开启。")
@@ -2390,7 +2391,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                         + i18n("听不清参考音频说的啥(不晓得写啥)可以开。开启后无视填写的参考文本。")
                     )
                 )
-                prompt_text = gr.Textbox(label=i18n("参考音频的文本"), value="", lines=5, max_lines=5, scale=1)
+                prompt_text = gr.Textbox(label=i18n("参考音频的文本"), value=os.environ.get("GPT_SOVITS_AB_REFERENCE_TEXT", ""), lines=5, max_lines=5, scale=1)
             with gr.Column(scale=14):
                 with gr.Row():
                     prompt_language = gr.Dropdown(
@@ -2528,7 +2529,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
             with gr.Column(scale=13):
                 text = gr.Textbox(
                     label=i18n("需要合成的文本（支持情感标签）"),
-                    value="",
+                    value=os.environ.get("GPT_SOVITS_AB_TARGET_TEXT", ""),
                     placeholder=(
                         "[happy] 오늘은 정말 좋은 날이야.\n"
                         "[sad:0.5] 그래도 조금 아쉽네."

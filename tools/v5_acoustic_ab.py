@@ -109,6 +109,8 @@ def compare_traces(left, right):
                "normalized_mel", "denorm_mel", "vocoder_input", "raw_audio"]
     rows = []
     first = None
+    first_value = None
+    first_metadata = None
     for name in ordered:
         if name not in left:
             continue
@@ -119,18 +121,26 @@ def compare_traces(left, right):
             row = {"stage": label}
             if i >= len(a) or i >= len(b):
                 row.update(equal=False, reason="capture count differs")
+                row["value_equal"] = False
             else:
                 x, y = a[i], b[i]
                 meta = x.shape == y.shape and x.dtype == y.dtype and x.device == y.device
                 row.update(left=tensor_stats(x), right=tensor_stats(y),
                            equal=bool(meta and torch.equal(x, y)))
+                row["value_equal"] = bool(x.shape == y.shape and torch.equal(x.float().cpu(), y.float().cpu()))
+                row["metadata_equal"] = meta
                 if x.shape == y.shape:
                     diff = (x.float() - y.float()).abs()
                     row["max_abs_diff"] = (float(diff.max()) if torch.isfinite(diff).all() else None) if diff.numel() else 0.
             rows.append(row)
             if not row["equal"] and first is None:
                 first = label
-    return {"first_difference": first, "stages": rows}
+            if not row["value_equal"] and first_value is None:
+                first_value = label
+            if not row.get("metadata_equal", False) and first_metadata is None:
+                first_metadata = label
+    return {"first_difference": first, "first_value_difference": first_value,
+            "first_metadata_difference": first_metadata, "stages": rows}
 
 
 def official_sources(root):
@@ -207,7 +217,7 @@ def checkpoint_bindings(namespace, root):
     return result
 
 
-def run_from_webui(namespace, inputs, output_root):
+def _run_sequence(namespace, inputs, output_root, routes=None, frozen_noise=None):
     """Called only when explicitly enabled; tensors/WAV stay in the runtime."""
     import datetime
     import torch
@@ -216,7 +226,7 @@ def run_from_webui(namespace, inputs, output_root):
     if namespace["model_version"] not in namespace["V5_VERSIONS"]:
         raise ValueError("V5 diagnostic only")
     root = Path(__file__).resolve().parents[1]
-    sources, audit = official_sources(root)
+    sources, audit = namespace.get("_ab_sources") or official_sources(root)
     engine_source = sources["GPT_SoVITS/TTS_infer_pack/TTS.py"]
     # No S1 sampling here. Clone the exact semantic and prompt selected by the UI.
     base = dict(namespace)
@@ -272,7 +282,7 @@ def run_from_webui(namespace, inputs, output_root):
         report["vocoder_sr_derived_from_mel_and_stride"] = (
             32000 / 320 * math.prod(s[0] for s in report["vocoder_upsample_strides"]))
     # Bind the checkpoint bytes actually selected, without exporting their paths.
-    report.update(checkpoint_bindings(namespace, root))
+    report.update(namespace.get("_ab_bindings") or checkpoint_bindings(namespace, root))
     device = torch.device(namespace["device"])
     devices = list(range(torch.cuda.device_count())) if device.type == "cuda" else []
     # Runtime-local replay bundle; contains private derived tensors, never uploaded.
@@ -280,16 +290,17 @@ def run_from_webui(namespace, inputs, output_root):
                 for key, value in inputs.items()}, out / "private_inputs.pt")
     # The short prefix isolates a single chunk; full case preserves every token.
     cases = {"full": base["pred_semantic"]}
-    if base["pred_semantic"].shape[-1] > 100:
-        cases = {"short_prefix_100_tokens": base["pred_semantic"][..., :100], **cases}
+    # One case per fresh pair: never carry state from a prefix into the full case.
     original_forward = vocoder.forward
     original_inference = model.cfm.inference
     saved_inference = model.cfm.__dict__.get("inference")
     saved_forward = vocoder.__dict__.get("forward")
+    all_traces = {}
+    from tools.v5_ab_controls import initial_noise_override, runtime_profile, buffer_snapshot, changed_buffers
     try:
         for case, semantic in cases.items():
             traces, waves = {}, {}
-            for route in ("webui_A", "webui_A_repeat", "official_B"):
+            for route in routes or ("webui_A", "webui_A_repeat", "official_B"):
                 trace = {}
                 cfm_calls = []
                 ns = dict(base, pred_semantic=semantic.clone())
@@ -305,13 +316,23 @@ def run_from_webui(namespace, inputs, output_root):
                     if effective_temperature is None:
                         effective_temperature = kwargs.get("temperature", 0.875)
                     cfm_calls.append({"steps": steps, "cfg": kwargs.get("inference_cfg_rate", 1.3),
-                                      "effective_temperature": effective_temperature})
-                    with torch.random.fork_rng(devices=devices):
-                        noise = torch.randn(
-                            [mu.shape[0], model.cfm.in_channels, mu.shape[1]],
-                            device=mu.device, dtype=mu.dtype) * effective_temperature
+                                      "effective_temperature": effective_temperature,
+                                      "initial_noise_source": "cold_B_exact_scaled_values" if frozen_noise is not None else "native_dtype_seed_1234"})
+                    fixed = None
+                    if frozen_noise is not None:
+                        fixed = frozen_noise[case][len(cfm_calls) - 1].to(mu)
+                        noise = fixed
+                    else:
+                        with torch.random.fork_rng(devices=devices):
+                            noise = torch.randn(
+                                [mu.shape[0], model.cfm.in_channels, mu.shape[1]],
+                                device=mu.device, dtype=mu.dtype) * effective_temperature
                     record(trace, "cfm_noise", noise)
-                    result = original_inference(mu, lengths, prompt_mel, steps, *args, **kwargs)
+                    if fixed is None:
+                        result = original_inference(mu, lengths, prompt_mel, steps, *args, **kwargs)
+                    else:
+                        with initial_noise_override(model.cfm, fixed):
+                            result = model.cfm.inference(mu, lengths, prompt_mel, steps, *args, **kwargs)
                     record(trace, "cfm_output", result)
                     return result
                 model.cfm.inference = infer
@@ -331,6 +352,10 @@ def run_from_webui(namespace, inputs, output_root):
                 # Restore identical CPU and CUDA RNG state around each execution.
                 with torch.random.fork_rng(devices=devices), torch.no_grad():
                     torch.manual_seed(1234)
+                    profile = runtime_profile(model, vocoder)
+                    buffer_state = buffer_snapshot(model), buffer_snapshot(vocoder)
+                    parameter_versions = {n: p._version for n, p in model.named_parameters()}
+                    vocoder_versions = {n: p._version for n, p in vocoder.named_parameters()}
                     if route.startswith("webui"):
                         fn = compile_webui_acoustic((root / "GPT_SoVITS/inference_webui.py").read_text(encoding="utf-8"), ns, trace)
                         audio = fn()
@@ -375,6 +400,13 @@ def run_from_webui(namespace, inputs, output_root):
                 waves[route] = audio.detach().float().cpu()
                 traces[route] = trace
                 trace["_settings"] = cfm_calls
+                trace["_runtime"] = {"before": profile, "after": runtime_profile(model, vocoder),
+                                      "changed_s2_buffers": changed_buffers(model, buffer_state[0]),
+                                      "changed_vocoder_buffers": changed_buffers(vocoder, buffer_state[1])}
+                trace["_parameter_mutations"] = [n for n, p in model.named_parameters()
+                                                  if p._version != parameter_versions[n]]
+                trace["_vocoder_parameter_mutations"] = [n for n, p in vocoder.named_parameters()
+                                                          if p._version != vocoder_versions[n]]
                 # Same output gain on both routes: raw FLOAT WAV, no normalization.
                 save_float_wav(out / f"{case}_{route}.wav", waves[route])
             # Browser-compatible listening copies use ONE common gain across A/B.
@@ -389,7 +421,7 @@ def run_from_webui(namespace, inputs, output_root):
                       (pcm * 32767).astype(np.int16))
             if "reference_vocoder_probe" not in report:
                 # Remove CFM entirely: reconstruct the actual reference mel.
-                raw_reference_mel = traces["webui_A"]["mel2"][0]
+                raw_reference_mel = next(iter(traces.values()))["mel2"][0]
                 normalized_reference = base["norm_spec"](raw_reference_mel)
                 reconstructed_mel = base["denorm_spec"](normalized_reference).to(base["dtype"])
                 with torch.inference_mode():
@@ -407,14 +439,21 @@ def run_from_webui(namespace, inputs, output_root):
                     "listening_gain": gain,
                 }
             report["cases"][case] = {
-                "repeat_control": compare_traces(traces["webui_A"], traces["webui_A_repeat"]),
-                "ab": compare_traces(traces["webui_A"], traces["official_B"]),
+                "repeat_control": (compare_traces(traces["webui_A"], traces["webui_A_repeat"])
+                                   if "webui_A_repeat" in traces else None),
+                "ab": (compare_traces(traces["webui_A"], traces["official_B"])
+                       if "webui_A" in traces and "official_B" in traces else None),
                 "semantic_tokens": semantic.shape[-1],
                 "listening_common_gain": listening_gain,
                 "cfm_call_settings": {r: t["_settings"] for r, t in traces.items()},
+                "route_runtime": {r: t["_runtime"] for r, t in traces.items()},
+                "parameter_mutations": {r: t["_parameter_mutations"] for r, t in traces.items()},
+                "vocoder_parameter_mutations": {r: t["_vocoder_parameter_mutations"] for r, t in traces.items()},
                 "normalized_mel": {r: [tensor_stats(x) for x in t.get("normalized_mel", [])]
                                    for r, t in traces.items()},
             }
+            if namespace.get("_ab_retain_traces"):
+                all_traces[case] = traces
             del traces, waves
     except Exception as exc:
         report["failure"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -431,4 +470,124 @@ def run_from_webui(namespace, inputs, output_root):
             model.cfm.inference = saved_inference
     (out / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
     print(f"[V5 acoustic A/B] report and private listening WAV: {out}", flush=True)
+    if namespace.get("_ab_retain_traces"):
+        return report, all_traces, out
+    return report
+
+
+def run_from_webui(namespace, inputs, output_root):
+    """Order/state and FP32 controls, fresh checkpoint-backed pairs per sequence."""
+    import datetime
+    import gc
+    import torch
+    from tools.v5_ab_controls import FreshAcousticFactory, precision_context, runtime_profile
+    root = Path(__file__).resolve().parents[1]
+    import os
+    if os.environ.get("GPT_SOVITS_V5_AB_REQUIRE_PRETRAINED") == "1":
+        expected = root / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
+        if Path(namespace["sovits_path_global"]).resolve() != expected.resolve():
+            raise ValueError("진단에서는 V5dev 기본 SoVITS를 선택하세요.")
+    suite = Path(output_root) / datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    suite.mkdir(parents=True, exist_ok=False)
+    ns = dict(namespace, _ab_retain_traces=True)
+    ns["_ab_sources"] = official_sources(root)
+    ns["_ab_bindings"] = checkpoint_bindings(namespace, root)
+    original_runtime = runtime_profile(namespace["vq_model"], namespace["hifigan_model"])
+    factory = namespace.get("_ab_factory") or FreshAcousticFactory(namespace, root)
+    results, captures, folders = {}, {}, {}
+    report = {"suite": "v5_acoustic_order_and_precision_v2", "listening_performed": False,
+              "baseline": "a43dfd1", "sequences": {}, "comparisons": {}, "listening_files": [],
+              "checkpoints": ns["_ab_bindings"],
+              "sample_steps": inputs["sample_steps"], "cfg": inputs["cfg_rate"],
+              "semantic": tensor_stats(inputs["pred_semantic"]),
+              "original_loaded_runtime_before_offload": original_runtime,
+              "fp32_noise_policy": "exact scaled initial noise from cold_B; not merely the same seed",
+              "state_policy": "fresh pair per sequence; shared pair within forward/reverse sequences"}
+    pair = None
+    cpu_rng = torch.random.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state_all() if str(namespace["device"]).startswith("cuda") else None
+    try:
+        plans = [
+            ("forward", ("webui_A", "webui_A_repeat", "official_B")),
+            ("reverse", ("official_B", "webui_A")),
+            ("cold_A", ("webui_A",)),
+            ("cold_B", ("official_B",)),
+            ("fp32", ("official_B",)),
+        ]
+        for sequence, routes in plans:
+            print(f"[V5 acoustic A/B] {sequence}: 새 acoustic/vocoder 인스턴스 준비", flush=True)
+            pair = factory(fp32=sequence == "fp32")
+            active = dict(ns, vq_model=pair[0], hifigan_model=pair[1])
+            fixed = None
+            if sequence == "fp32":
+                active.update(dtype=torch.float32, is_half=False)
+                fixed = {case: trace["official_B"]["cfm_noise"]
+                         for case, trace in captures["cold_B"].items()}
+            with precision_context(sequence == "fp32"):
+                result, trace, folder = _run_sequence(active, inputs, suite / sequence, routes, fixed)
+            results[sequence], captures[sequence], folders[sequence] = result, trace, folder
+            report["sequences"][sequence] = {"report": str((folder / "report.json").relative_to(suite)),
+                                              "fresh_instance": True,
+                                              "precision": "fp32_from_original_checkpoint" if sequence == "fp32" else "current_loaded_weights_and_dtypes",
+                                              "runtime_by_route": result["cases"]["full"]["route_runtime"],
+                                              "parameter_mutations": result["cases"]["full"]["parameter_mutations"],
+                                              "vocoder_parameter_mutations": result["cases"]["full"]["vocoder_parameter_mutations"],
+                                              "cfm_settings": result["cases"]["full"]["cfm_call_settings"]}
+            for module in pair:
+                module.cpu()
+            pair = None
+            del active
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        for case in captures["forward"]:
+            f, r = captures["forward"][case], captures["reverse"][case]
+            a, b = captures["cold_A"][case]["webui_A"], captures["cold_B"][case]["official_B"]
+            report["comparisons"][case] = {
+                "forward_A_repeat": compare_traces(f["webui_A"], f["webui_A_repeat"]),
+                "forward_A_B": compare_traces(f["webui_A"], f["official_B"]),
+                "reverse_B_A": compare_traces(r["official_B"], r["webui_A"]),
+                "A_order_effect": compare_traces(f["webui_A"], r["webui_A"]),
+                "B_order_effect": compare_traces(f["official_B"], r["official_B"]),
+                "cold_A_B": compare_traces(a, b),
+                "cold_current_vs_fp32_matched_noise": compare_traces(b, captures["fp32"][case]["official_B"]),
+            }
+            fp_noise = captures["fp32"][case]["official_B"]["cfm_noise"]
+            report["comparisons"][case]["fp32_initial_noise_values_identical"] = (
+                len(b["cfm_noise"]) == len(fp_noise)
+                and all(torch.equal(x.float(), y.float()) for x, y in zip(b["cfm_noise"], fp_noise)))
+            # Regenerate suite listening copies with ONE gain across every route/precision.
+            from scipy.io.wavfile import read, write
+            import numpy as np
+            tracks = [(s, route, folders[s] / f"{case}_{route}.wav") for s, routes in plans for route in routes]
+            tracks.extend((s, "reference_roundtrip", folders[s] / "reference_vocoder_roundtrip.wav")
+                          for s in ("cold_B", "fp32"))
+            samples = [(s, route, path, read(path)[1]) for s, route, path in tracks]
+            gain = .98 / max(1., *(float(np.max(np.abs(x))) for _, _, _, x in samples))
+            for s, route, path, audio in samples:
+                target = path.with_name(path.stem + "_listen.wav")
+                write(str(target), 48000, (audio * gain * 32767).clip(-32767, 32767).astype(np.int16))
+                report["listening_files"].append({"sequence": s, "route": route, "case": case,
+                                                   "path": str(target.relative_to(suite))})
+            report["comparisons"][case]["common_listening_gain"] = gain
+            for sequence in results:
+                results[sequence]["cases"][case]["listening_common_gain"] = gain
+                if sequence in ("cold_B", "fp32"):
+                    results[sequence]["reference_vocoder_probe"]["listening_gain"] = gain
+                (folders[sequence] / "report.json").write_text(
+                    json.dumps(results[sequence], indent=2, allow_nan=False), encoding="utf-8")
+    except Exception as exc:
+        report["failure"] = {"type": type(exc).__name__, "message": str(exc)}
+        raise
+    finally:
+        if pair is not None:
+            for module in pair:
+                module.cpu()
+        if hasattr(factory, "close"):
+            factory.close()
+        torch.random.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
+        (suite / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
+    print(f"[V5 acoustic A/B SUITE] 완료: {suite}", flush=True)
     return report

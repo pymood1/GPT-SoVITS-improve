@@ -2,6 +2,29 @@
 
 ## Acoustic-only noise isolation — 2026-11-15
 
+### PR #45 state/order/precision strengthening
+
+- One-cell launcher: `tools/kaggle_v5_acoustic_ab.py` (bootstrap instructions in
+  `docs/V5_ACOUSTIC_AB.md`). Separate checkout, reuse assets/packages, automatic
+  base GPT + pretrained V5dev S2, Korean reference/transcript when available,
+  prefilled short sentence, automatic ordered notebook playback.
+- Forward A/A-repeat/B, reverse B/A, independent cold A and cold B use fresh
+  checkpoint-backed acoustic pairs per sequence. Parameters/buffers are isolated
+  between pairs; current precision preserves the actual loaded dtypes/weights.
+- FP32 B reloads original checkpoint tensors, disables AMP/TF32 locally and
+  receives cold B's exact scaled CFM initial noise, not just its seed. All
+  sequences retain the same semantic/prompt/phones/reference. No training change.
+- Root report includes per-route S2/CFM/vocoder dtype/device histograms, AMP,
+  cache inventories, buffer/parameter-version changes, order controls and
+  metadata-vs-value first differences. Common-gain playback includes FP32 and
+  both reference-vocoder probes.
+- Synthetic stateful-model test detects warm/order artifacts while independent
+  cold A/B remain identical. CPU tests check isolated fresh weight storage,
+  FP32-from-file vs rounded FP16, fixed initial noise and context restoration.
+- Real pretrained-checkpoint GPU synthesis/listening remains unexecuted here.
+  No noise cause is confirmed. The launcher requires the user's existing Kaggle
+  GPU setup; no private data is uploaded or external GPU job submitted.
+
 - Start point: latest main `a43dfd1`; its V5 WebUI routing/defaults fix is already
   present and was not reapplied. S1 training/DPO/Controller code is untouched.
 - Current official upstream pin `6d51ffceafbf240145619af4c92408a6e54b7924`:

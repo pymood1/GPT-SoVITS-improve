@@ -41,7 +41,11 @@ jobs:
             tools/calibrate_emotion_seed_thresholds.py \
             tools/dev_experiment_harness.py \
             tools/v5_acoustic_ab.py \
+            tools/v5_ab_controls.py \
+            tools/kaggle_v5_acoustic_ab.py \
             tests/test_v5_acoustic_ab.py \
+            tests/test_v5_ab_controls.py \
+            tests/test_kaggle_v5_acoustic_ab.py \
             tools/emotion_label_refiner.py \
             tools/evaluate_emotion_review.py \
             tools/kaggle_training_preflight.py \
@@ -52,6 +56,9 @@ jobs:
       - name: Kaggle dataset discovery smoke
         run: |
           python tests/test_kaggle_dataset.py
+
+      - name: Acoustic diagnostic launcher contract
+        run: python -m unittest discover -s tests -p test_kaggle_v5_acoustic_ab.py -v
 
       - name: Validate notebooks as JSON
         run: |

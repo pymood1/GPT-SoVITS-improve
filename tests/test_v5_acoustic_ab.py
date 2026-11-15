@@ -20,15 +20,22 @@ class AcousticABTests(unittest.TestCase):
         nodes = [n for n in tree.body if isinstance(n, ast.Assign)
                  or isinstance(n, ast.FunctionDef) and n.name == "synthesize_v5_mel"]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "<real V5 helper>", "exec"), helper_ns)
-        class CFM:
+        class CFM(torch.nn.Module):
             in_channels = 100
             noise_temperature = .875
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+                self.stateful = False
             def inference(self, mu, lengths, prompt, steps, **kwargs):
-                noise = torch.randn(mu.shape[0], 100, mu.shape[1]) * self.noise_temperature
-                return noise + mu.mean(-1).unsqueeze(1)
-        class Model:
-            cfm = CFM()
+                x = torch.randn(mu.shape[0], 100, mu.shape[1], dtype=mu.dtype) * self.noise_temperature
+                self.calls += 1
+                return x + mu.mean(-1).unsqueeze(1) + (self.calls if self.stateful else 0)
+        class Model(torch.nn.Module):
             version = "v5dev"
+            def __init__(self):
+                super().__init__()
+                self.cfm = CFM()
             def decode_encp(self, tokens, phones, refer, ge=None, speed=1):
                 features = tokens.reshape(1, 1, -1).float().repeat(1, 4, 2) / 1000
                 return features, torch.ones(1, 4, 1)
@@ -40,7 +47,7 @@ class AcousticABTests(unittest.TestCase):
                                            save=lambda *a, **kw: None)
         mel = lambda x, **kwargs: x.new_ones((1, 100, 100))
         ns = dict(torch=torch, torchaudio=fake_audio, model_version="v5dev",
-                  V5_VERSIONS={"v5dev", "v5turbo"}, vq_model=Model(),
+                  V5_VERSIONS={"v5dev", "v5turbo"}, vq_model=Model().eval(),
                   hifigan_model=Vocoder().eval(), hifigan_version="v5", device="cpu",
                   dtype=torch.float32, is_half=False,
                   hps=types.SimpleNamespace(data=types.SimpleNamespace(
@@ -59,12 +66,12 @@ class AcousticABTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, torchaudio=fake_audio), \
                 patch.object(ab, "official_sources", return_value=({"GPT_SoVITS/TTS_infer_pack/TTS.py": source}, {})), \
                 patch.object(ab, "checkpoint_bindings", return_value={}):
-            report = ab.run_from_webui(ns, inputs, tmp)
+            report = ab._run_sequence(ns, inputs, tmp)
         self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
         for case in report["cases"].values():
             self.assertIsNone(case["repeat_control"]["first_difference"])
             self.assertIsNone(case["ab"]["first_difference"])
-        self.assertEqual(len(report["cases"]), 2)
+        self.assertEqual(len(report["cases"]), 1)
         self.assertNotIn("forward", ns["hifigan_model"].__dict__)
         self.assertNotIn("inference", ns["vq_model"].cfm.__dict__)
         # A single deliberately changed frontend factor must be located at mel2,
@@ -73,7 +80,7 @@ class AcousticABTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, torchaudio=fake_audio), \
                 patch.object(ab, "official_sources", return_value=({"GPT_SoVITS/TTS_infer_pack/TTS.py": changed}, {})), \
                 patch.object(ab, "checkpoint_bindings", return_value={}):
-            report = ab.run_from_webui(ns, inputs, tmp)
+            report = ab._run_sequence(ns, inputs, tmp)
         for case in report["cases"].values():
             self.assertIsNone(case["repeat_control"]["first_difference"])
             self.assertEqual(case["ab"]["first_difference"], "mel2[1]")
@@ -82,11 +89,35 @@ class AcousticABTests(unittest.TestCase):
                 patch.object(ab, "checkpoint_bindings", return_value={}), \
                 patch.object(ab, "save_float_wav", side_effect=OSError("fixture write failure")):
             with self.assertRaisesRegex(OSError, "fixture write failure"):
-                ab.run_from_webui(ns, inputs, tmp)
+                ab._run_sequence(ns, inputs, tmp)
             self.assertTrue(list(Path(tmp).glob("*/report.json")))
         self.assertNotIn("forward", ns["hifigan_model"].__dict__)
         self.assertNotIn("inference", ns["vq_model"].cfm.__dict__)
         self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
+        # Full fresh/order/precision suite must retain fixed semantics and noise.
+        ns["_ab_factory"] = lambda fp32=False: (Model().eval(), Vocoder().eval())
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, torchaudio=fake_audio), \
+                patch.object(ab, "official_sources", return_value=({"GPT_SoVITS/TTS_infer_pack/TTS.py": source}, {})), \
+                patch.object(ab, "checkpoint_bindings", return_value={}):
+            suite = ab.run_from_webui(ns, inputs, tmp)
+        for case in suite["comparisons"].values():
+            for name, comparison in case.items():
+                if isinstance(comparison, dict):
+                    self.assertIsNone(comparison["first_difference"], name)
+        self.assertEqual(len(suite["sequences"]), 5)
+        def stateful_factory(fp32=False):
+            model = Model().eval()
+            model.cfm.stateful = True
+            return model, Vocoder().eval()
+        ns["_ab_factory"] = stateful_factory
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, torchaudio=fake_audio), \
+                patch.object(ab, "official_sources", return_value=({"GPT_SoVITS/TTS_infer_pack/TTS.py": source}, {})), \
+                patch.object(ab, "checkpoint_bindings", return_value={}):
+            suite = ab.run_from_webui(ns, inputs, tmp)
+        case = suite["comparisons"]["full"]
+        self.assertIsNotNone(case["forward_A_repeat"]["first_difference"])
+        self.assertIsNotNone(case["B_order_effect"]["first_difference"])
+        self.assertIsNone(case["cold_A_B"]["first_difference"])
 
     def test_nonfinite_difference_is_json_safe(self):
         import json
