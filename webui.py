@@ -6336,6 +6336,12 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
             epochs = int(
                 case.get("epochs", training.get("epochs", 15))
             )
+            adaptive_case = bool(
+                case.get(
+                    "adaptive_training",
+                    training.get("adaptive_training", False),
+                )
+            )
             dpo = bool(case.get("dpo", training.get("dpo", True)))
             save_every = int(
                 case.get(
@@ -6360,6 +6366,9 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                         f"**{label}**",
                         f"- GPU: `{gpu}`",
                         f"- epoch: `{epochs}` / batch: `{batch_size}`",
+                        (
+                            f"- adaptive epoch: `{adaptive_case}`"
+                        ),
                         f"- DPO: `{dpo}`",
                         f"- adapter: `{adapter}`",
                         (
@@ -6380,6 +6389,7 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 "v5dev",
                 batch_size,
                 epochs,
+                adaptive_case,
                 experiment_name,
                 source_list,
                 wav_root,
@@ -6434,6 +6444,7 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 "adapter": adapter,
                 "gpu": gpu,
                 "epochs": epochs,
+                "adaptive_training": adaptive_case,
                 "batch_size": batch_size,
                 "dpo": dpo,
                 "gpt_checkpoint": str(snapshot),
