@@ -6456,10 +6456,14 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                     "preset_id": preset_id,
                     "experiment_name": experiment_name,
                     "version": "v5dev",
+                    "acoustic_ablation": bool(
+                        preset.get("acoustic_ablation", False)
+                    ),
                     "complete": False,
                     "source_list": source_list,
                     "wav_root": wav_root,
                     "fixed_sovits": pretrained_s2,
+                    "listening_reference": listening_reference,
                     "results": results,
                     "listening_validation": {
                         "performed_by_user": True,
@@ -6476,10 +6480,14 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 "preset_id": preset_id,
                 "experiment_name": experiment_name,
                 "version": "v5dev",
+                "acoustic_ablation": bool(
+                    preset.get("acoustic_ablation", False)
+                ),
                 "complete": True,
                 "source_list": source_list,
                 "wav_root": wav_root,
                 "fixed_sovits": pretrained_s2,
+                "listening_reference": listening_reference,
                 "results": results,
                 "listening_validation": {
                     "performed_by_user": True,
@@ -6496,6 +6504,8 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
             "",
             f"Manifest: `{manifest_path}`",
             f"Fixed SoVITS: `{pretrained_s2}`",
+            f"Reference WAV: `{listening_reference['audio']}`",
+            f"Reference text: `{listening_reference['text']}`",
             (
                 "Controller: ON"
                 if bool(controller_cfg.get("enabled", True))
