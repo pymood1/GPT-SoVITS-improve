@@ -189,9 +189,10 @@ def _run(rank, n_gpus, hps, use_ddp):
         **loader_kwargs,
     )
 
-    adaptive_enabled = bool(
+    adaptive_requested = bool(
         getattr(hps.train, "adaptive_training", False)
     )
+    adaptive_enabled = adaptive_requested
     eval_loader = None
     if adaptive_enabled and rank == 0:
         try:
@@ -213,33 +214,6 @@ def _run(rank, n_gpus, hps, use_ddp):
                 f"{exc}"
             )
             adaptive_enabled = False
-            # Rebuild without a holdout so failed validation never removes
-            # scarce few-shot speaker examples from the real training set.
-            hps.data.adaptive_training = False
-            train_dataset = TextAudioSpeakerLoader(hps.data)
-            train_sampler = DistributedBucketSampler(
-                train_dataset,
-                hps.train.batch_size,
-                [
-                    32,
-                    300,
-                    400,
-                    500,
-                    600,
-                    700,
-                    800,
-                    900,
-                    1000,
-                ],
-                num_replicas=n_gpus,
-                rank=rank,
-                shuffle=True,
-            )
-            loader_kwargs["batch_sampler"] = train_sampler
-            train_loader = DataLoader(
-                train_dataset,
-                **loader_kwargs,
-            )
 
     if use_ddp:
         adaptive_enabled = _broadcast_bool(
@@ -249,6 +223,36 @@ def _run(rank, n_gpus, hps, use_ddp):
         )
 
     hps.train.adaptive_training = adaptive_enabled
+
+    if adaptive_requested and not adaptive_enabled:
+        # Validation probing happens only on rank 0. Rebuild on every rank
+        # after the synchronized fallback so no GPU keeps a holdout-excluded
+        # few-shot training set.
+        hps.data.adaptive_training = False
+        train_dataset = TextAudioSpeakerLoader(hps.data)
+        train_sampler = DistributedBucketSampler(
+            train_dataset,
+            hps.train.batch_size,
+            [
+                32,
+                300,
+                400,
+                500,
+                600,
+                700,
+                800,
+                900,
+                1000,
+            ],
+            num_replicas=n_gpus,
+            rank=rank,
+            shuffle=True,
+        )
+        loader_kwargs["batch_sampler"] = train_sampler
+        train_loader = DataLoader(
+            train_dataset,
+            **loader_kwargs,
+        )
     save_root = "%s/logs_s2_%s_lora_%s" % (hps.data.exp_dir, hps.model.version, hps.train.lora_rank)
     os.makedirs(save_root, exist_ok=True)
     lora_rank = int(hps.train.lora_rank)
