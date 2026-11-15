@@ -15,6 +15,7 @@ import torch
 from AR.data.data_module import Text2SemanticDataModule
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
 from AR.utils.io import load_yaml_config
+from adaptive_training import AdaptiveEpochState
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger  # WandbLogger
@@ -116,6 +117,107 @@ class RuntimeStatusCallback(Callback):
             total_batches and batch_idx + 1 >= total_batches
         ):
             self._publish(trainer, batch_idx=batch_idx)
+
+
+class AdaptiveS1Callback(Callback):
+    """Controller-style validation early stop with best-state restore."""
+
+    def __init__(
+        self,
+        *,
+        min_epochs: int,
+        max_epochs: int,
+        patience: int,
+        min_relative_improvement: float,
+    ):
+        super().__init__()
+        self.state = AdaptiveEpochState(
+            min_epochs=int(min_epochs),
+            max_epochs=int(max_epochs),
+            patience=int(patience),
+            min_relative_improvement=float(
+                min_relative_improvement
+            ),
+        )
+        self.best_state = None
+
+    @staticmethod
+    def _as_float(value):
+        try:
+            if hasattr(value, "detach"):
+                value = value.detach()
+            if hasattr(value, "float"):
+                value = value.float()
+            if hasattr(value, "item"):
+                value = value.item()
+            return float(value)
+        except (TypeError, ValueError, RuntimeError):
+            return None
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not pl_module.config["train"].get(
+            "adaptive_training",
+            False,
+        ):
+            return
+
+        value = self._as_float(
+            trainer.callback_metrics.get("val_loss")
+        )
+        if value is None:
+            return
+
+        epoch = int(trainer.current_epoch) + 1
+        improved, should_stop = self.state.update(
+            epoch,
+            value,
+        )
+
+        if improved:
+            self.best_state = {
+                key: tensor.detach().cpu().clone()
+                for key, tensor in pl_module.state_dict().items()
+            }
+            print(
+                "[S1 adaptive] validation improved: "
+                f"epoch={epoch} val_loss={value:.6f}"
+            )
+        else:
+            print(
+                "[S1 adaptive] no meaningful validation improvement: "
+                f"epoch={epoch} val_loss={value:.6f} "
+                f"best={self.state.best_loss:.6f}@"
+                f"{self.state.best_epoch} "
+                f"patience={self.state.bad_epochs}/"
+                f"{self.state.patience}"
+            )
+
+        if should_stop:
+            print(
+                "[S1 adaptive] early stop; restoring best epoch "
+                f"{self.state.best_epoch}"
+            )
+            trainer.should_stop = True
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        # If a genuinely tiny dataset disabled held-out validation during
+        # DataModule.setup(), do not silently run to the enlarged safety cap.
+        if (
+            not pl_module.config["train"].get(
+                "adaptive_training",
+                False,
+            )
+            and int(trainer.current_epoch) + 1
+            >= self.state.min_epochs
+        ):
+            trainer.should_stop = True
+
+    def on_train_end(self, trainer, pl_module):
+        if self.best_state is not None:
+            pl_module.load_state_dict(
+                self.best_state,
+                strict=True,
+            )
 
 
 class my_model_ckpt(ModelCheckpoint):
@@ -225,6 +327,46 @@ def main(args):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     seed_everything(config["train"]["seed"], workers=True)
+
+    adaptive_enabled = bool(
+        config["train"].get("adaptive_training", False)
+    )
+    min_epochs = int(
+        config["train"].get(
+            "adaptive_min_epochs",
+            config["train"]["epochs"],
+        )
+    )
+    max_epochs = int(
+        config["train"].get(
+            "adaptive_max_epochs",
+            config["train"]["epochs"],
+        )
+    )
+    if not adaptive_enabled:
+        min_epochs = int(config["train"]["epochs"])
+        max_epochs = min_epochs
+    max_epochs = max(min_epochs, max_epochs)
+
+    adaptive_callback = None
+    if adaptive_enabled:
+        adaptive_callback = AdaptiveS1Callback(
+            min_epochs=min_epochs,
+            max_epochs=max_epochs,
+            patience=int(
+                config["train"].get(
+                    "adaptive_patience",
+                    3,
+                )
+            ),
+            min_relative_improvement=float(
+                config["train"].get(
+                    "adaptive_min_relative_improvement",
+                    0.005,
+                )
+            ),
+        )
+
     ckpt_callback: ModelCheckpoint = my_model_ckpt(
         config=config,
         if_save_latest=config["train"]["if_save_latest"],
@@ -241,12 +383,18 @@ def main(args):
     logger = TensorBoardLogger(name=output_dir.stem, save_dir=output_dir)
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["USE_LIBUV"] = "0"
+    callbacks = [
+        ckpt_callback,
+        RuntimeStatusCallback(max_epochs),
+    ]
+    if adaptive_callback is not None:
+        callbacks.append(adaptive_callback)
+
     trainer: Trainer = Trainer(
-        max_epochs=config["train"]["epochs"],
+        max_epochs=max_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        # val_check_interval=9999999999999999999999,###不要验证
-        # check_val_every_n_epoch=None,
-        limit_val_batches=0,
+        limit_val_batches=1.0 if adaptive_enabled else 0,
+        check_val_every_n_epoch=1,
         devices=-1 if torch.cuda.is_available() else 1,
         benchmark=False,
         fast_dev_run=False,
@@ -256,10 +404,7 @@ def main(args):
         precision=config["train"]["precision"],
         logger=logger,
         num_sanity_val_steps=0,
-        callbacks=[
-            ckpt_callback,
-            RuntimeStatusCallback(config["train"]["epochs"]),
-        ],
+        callbacks=callbacks,
         use_distributed_sampler=False,  # 非常简单的修改，但解决了采用自定义的 bucket_sampler 下训练步数不一致的问题！
     )
 
@@ -300,6 +445,57 @@ def main(args):
             )
         raise
     else:
+        if (
+            adaptive_callback is not None
+            and adaptive_callback.state.best_epoch > 0
+            and os.environ.get("LOCAL_RANK", "0") == "0"
+        ):
+            best_epoch = adaptive_callback.state.best_epoch
+            weight_dir = Path(
+                config["train"]["half_weights_save_dir"]
+            )
+            weight_dir.mkdir(parents=True, exist_ok=True)
+
+            if config["train"].get("if_save_latest", False):
+                for old_weight in weight_dir.glob(
+                    f"{config['train']['exp_name']}-e*.ckpt"
+                ):
+                    try:
+                        old_weight.unlink()
+                    except OSError:
+                        pass
+                best_name = (
+                    f"{config['train']['exp_name']}-e"
+                    f"{best_epoch}.ckpt"
+                )
+            else:
+                best_name = (
+                    f"{config['train']['exp_name']}"
+                    f"-adaptive-best-e{best_epoch}.ckpt"
+                )
+
+            to_save = OrderedDict()
+            to_save["weight"] = OrderedDict(
+                (
+                    key,
+                    value.detach().half().cpu(),
+                )
+                for key, value in model.inference_state_dict().items()
+            )
+            to_save["config"] = config
+            to_save["info"] = (
+                f"GPT-adaptive-best-e{best_epoch}"
+            )
+            my_save(
+                to_save,
+                str(weight_dir / best_name),
+            )
+            print(
+                "[S1 adaptive] exported restored best model: "
+                f"{best_name} "
+                f"val_loss={adaptive_callback.state.best_loss:.6f}"
+            )
+
         if os.environ.get("LOCAL_RANK", "0") == "0":
             clear_activity(reason="gpt_finished")
 
