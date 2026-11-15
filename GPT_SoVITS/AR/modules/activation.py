@@ -192,6 +192,11 @@ class MultiheadAttention(Module):
         # pretrained S1 as a reference policy without keeping a second model
         # copy in VRAM.
         self._lora_suspended = False
+        self._lora_use_reference = False
+        self.register_buffer("lora_reference_in_A", None)
+        self.register_buffer("lora_reference_in_B", None)
+        self.register_buffer("lora_reference_out_A", None)
+        self.register_buffer("lora_reference_out_B", None)
 
     @property
     def lora_enabled(self) -> bool:
@@ -204,6 +209,29 @@ class MultiheadAttention(Module):
     def suspend_lora(self, suspended: bool = True) -> None:
         """Temporarily bypass LoRA deltas while keeping adapters registered."""
         self._lora_suspended = bool(suspended)
+
+    @property
+    def has_lora_reference(self) -> bool:
+        return (
+            self.lora_reference_in_A is not None
+            and self.lora_reference_in_B is not None
+            and self.lora_reference_out_A is not None
+            and self.lora_reference_out_B is not None
+        )
+
+    def snapshot_lora_reference(self) -> None:
+        """Freeze the current speaker-adapted LoRA as a tiny DPO reference."""
+        if not self.lora_enabled:
+            raise RuntimeError("cannot snapshot a disabled LoRA adapter")
+        self.lora_reference_in_A = self.lora_in_A.detach().clone()
+        self.lora_reference_in_B = self.lora_in_B.detach().clone()
+        self.lora_reference_out_A = self.lora_out_A.detach().clone()
+        self.lora_reference_out_B = self.lora_out_B.detach().clone()
+
+    def use_lora_reference(self, enabled: bool = True) -> None:
+        if enabled and not self.has_lora_reference:
+            raise RuntimeError("LoRA reference snapshot has not been created")
+        self._lora_use_reference = bool(enabled)
 
     @property
     def lora_scale(self) -> float:
@@ -286,8 +314,15 @@ class MultiheadAttention(Module):
         if not self.lora_enabled:
             return torch.zeros_like(self.in_proj_weight)
 
+        if self._lora_use_reference:
+            in_A = self.lora_reference_in_A
+            in_B = self.lora_reference_in_B
+        else:
+            in_A = self.lora_in_A
+            in_B = self.lora_in_B
+
         core = (
-            self.lora_in_B @ self.lora_in_A
+            in_B @ in_A
         ) * self.lora_scale
         if self.lora_target == "qkv":
             return core
@@ -304,8 +339,16 @@ class MultiheadAttention(Module):
     def lora_out_proj_delta(self) -> Tensor:
         if not self.lora_enabled:
             return torch.zeros_like(self.out_proj.weight)
+
+        if self._lora_use_reference:
+            out_A = self.lora_reference_out_A
+            out_B = self.lora_reference_out_B
+        else:
+            out_A = self.lora_out_A
+            out_B = self.lora_out_B
+
         return (
-            self.lora_out_B @ self.lora_out_A
+            out_B @ out_A
         ) * self.lora_scale
 
     def merged_in_proj_weight(self) -> Tensor:
