@@ -2526,23 +2526,20 @@ def _auto_asr_list_is_fresh(list_path, wav_dir):
     )
 
 
-def _ensure_training_list(
+def _training_list_target_path(
     inp_text,
     inp_wav_dir,
     *,
     asr_output_dir="output/asr_opt",
 ):
-    """Return an existing .list or create one with the existing ASR flow."""
     requested_text = my_utils.clean_path(inp_text)
-    wav_dir = _resolve_repo_path(inp_wav_dir)
-
     requested_path = (
         _resolve_repo_path(requested_text)
         if requested_text
         else None
     )
     if _usable_training_list(requested_path):
-        return str(requested_path)
+        return requested_path
 
     if requested_path is not None and requested_path.suffix.lower() != ".list":
         raise ValueError(
@@ -2550,22 +2547,17 @@ def _ensure_training_list(
             f"{requested_path}"
         )
 
+    wav_dir = _resolve_repo_path(inp_wav_dir)
     if wav_dir is None or not wav_dir.is_dir():
         raise FileNotFoundError(
             "자동 .list 생성에 사용할 음성 폴더가 없습니다: "
             f"{wav_dir or '<empty>'}"
         )
 
-    audio_files = _auto_asr_audio_files(wav_dir)
-    if not audio_files:
-        raise RuntimeError(
-            "자동 .list 생성에 사용할 음성 파일을 찾지 못했습니다: "
-            f"{wav_dir}"
-        )
-
     fallback_root = _resolve_repo_path(asr_output_dir)
     if fallback_root is None:
         raise RuntimeError("자동 ASR 출력 폴더를 결정하지 못했습니다.")
+    fallback_root.mkdir(parents=True, exist_ok=True)
 
     target_path = requested_path
     if (
@@ -2574,23 +2566,53 @@ def _ensure_training_list(
         and str(target_path).startswith("/content/drive/")
         and not os.path.ismount("/content/drive")
     ):
-        yield (
-            "Google Drive가 mount되지 않아 지정한 .list 경로 대신 "
-            "로컬 자동 전사 경로를 사용합니다."
-        )
         target_path = None
 
-    output_root = (
-        target_path.parent
-        if target_path is not None
-        else fallback_root
+    if target_path is not None:
+        try:
+            target_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+        except OSError:
+            target_path = None
+
+    return target_path or _auto_asr_list_path(
+        wav_dir,
+        fallback_root,
     )
-    try:
-        output_root.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        output_root = fallback_root
-        output_root.mkdir(parents=True, exist_ok=True)
-        target_path = None
+
+
+def _ensure_training_list(
+    inp_text,
+    inp_wav_dir,
+    *,
+    asr_output_dir="output/asr_opt",
+):
+    """Return an existing .list or create one with the existing ASR flow."""
+    requested_path = (
+        _resolve_repo_path(my_utils.clean_path(inp_text))
+        if my_utils.clean_path(inp_text)
+        else None
+    )
+    if _usable_training_list(requested_path):
+        return str(requested_path)
+
+    wav_dir = _resolve_repo_path(inp_wav_dir)
+    target_path = _training_list_target_path(
+        inp_text,
+        inp_wav_dir,
+        asr_output_dir=asr_output_dir,
+    )
+
+    audio_files = _auto_asr_audio_files(wav_dir)
+    if not audio_files:
+        raise RuntimeError(
+            "자동 .list 생성에 사용할 음성 파일을 찾지 못했습니다: "
+            f"{wav_dir}"
+        )
+
+    output_root = target_path.parent
 
     generated_path = _auto_asr_list_path(
         wav_dir,
@@ -5387,35 +5409,16 @@ def open1abcd(
     requested_list = _resolve_repo_path(inp_text) if inp_text else None
     if not _usable_training_list(requested_list):
         try:
-            auto_list = _ensure_training_list(
-                inp_text,
-                inp_wav_dir,
-            )
-            while True:
-                try:
-                    asr_status = next(auto_list)
-                except StopIteration as stop:
-                    inp_text = stop.value
-                    break
-
-                if preprocess_1abcd_cancel_requested:
-                    return
-
-                yield (
-                    "### 전처리 일괄 실행\n\n"
-                    "**.list 없음 → 기본 ASR 전사 중**\n\n"
-                    + str(asr_status),
-                    {"__type__": "update", "visible": False},
-                    {"__type__": "update", "visible": True},
-                    sidecar_update,
-                    list_update,
+            inp_text = str(
+                _training_list_target_path(
+                    inp_text,
+                    inp_wav_dir,
                 )
+            )
         except (OSError, RuntimeError, ValueError) as exc:
-            if preprocess_1abcd_cancel_requested:
-                return
             yield (
                 "### 전처리 일괄 실행 실패\n\n"
-                f"자동 .list 생성 실패: {exc}",
+                f"자동 .list 경로 준비 실패: {exc}",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
                 sidecar_update,
