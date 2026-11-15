@@ -207,6 +207,51 @@ def _run(rank, n_gpus, hps, use_ddp):
                 f"{exc}"
             )
             adaptive_enabled = False
+            # Rebuild the training loader without a holdout. Otherwise a
+            # failed validation split would silently discard scarce speaker
+            # samples even though adaptive training has been disabled.
+            hps.data.adaptive_training = False
+            train_dataset = TextAudioSpeakerLoader(
+                hps.data,
+                version=hps.model.version,
+            )
+            train_sampler = DistributedBucketSampler(
+                train_dataset,
+                hps.train.batch_size,
+                [
+                    32,
+                    300,
+                    400,
+                    500,
+                    600,
+                    700,
+                    800,
+                    900,
+                    1000,
+                    1100,
+                    1200,
+                    1300,
+                    1400,
+                    1500,
+                    1600,
+                    1700,
+                    1800,
+                    1900,
+                ],
+                num_replicas=n_gpus,
+                rank=rank,
+                shuffle=True,
+            )
+            train_loader = DataLoader(
+                train_dataset,
+                num_workers=4,
+                shuffle=False,
+                pin_memory=True,
+                collate_fn=collate_fn,
+                batch_sampler=train_sampler,
+                persistent_workers=True,
+                prefetch_factor=2,
+            )
 
     if use_ddp:
         adaptive_enabled = _broadcast_bool(
