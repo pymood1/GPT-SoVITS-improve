@@ -20,6 +20,7 @@ from AR.models.utils import (
     topk_sampling,
 )
 from AR.models.emotion_control import EmotionSamplingState, sample_with_emotion_preference
+from AR.modules.activation import MultiheadAttention
 from AR.modules.embedding import SinePositionalEmbedding, TokenEmbedding
 from AR.modules.transformer import LayerNorm, TransformerEncoder, TransformerEncoderLayer
 
@@ -434,14 +435,30 @@ class Text2SemanticDecoder(nn.Module):
             for module in self.modules()
             if isinstance(module, nn.Dropout)
         ]
+        attention_modules = [
+            module
+            for module in self.modules()
+            if isinstance(module, MultiheadAttention)
+        ]
         previous = [module.p for module in dropouts]
+        previous_attention = [
+            float(module.dropout)
+            for module in attention_modules
+        ]
         for module in dropouts:
             module.p = 0.0
+        for module in attention_modules:
+            module.dropout = 0.0
         try:
             yield
         finally:
             for module, probability in zip(dropouts, previous):
                 module.p = probability
+            for module, probability in zip(
+                attention_modules,
+                previous_attention,
+            ):
+                module.dropout = probability
 
     def snapshot_s1_lora_reference(self) -> int:
         """Freeze the current LoRA policy as the speaker-adapted DPO anchor."""
