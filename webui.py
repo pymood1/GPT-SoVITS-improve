@@ -3839,6 +3839,11 @@ def open1Bb(
         "dpo_warmup_epochs": dpo_warmup_epochs,
         "dpo_beta": 0.2,
         "dpo_weight": 0.2,
+        "gradient_accumulation_policy": (
+            "preserve_effective_batch"
+            if bool(if_dpo)
+            else "baseline"
+        ),
         "s1_adapter": s1_adapter,
         "s1_lora_rank": (
             s1_lora_rank if s1_adapter != "full" else None
@@ -3885,6 +3890,46 @@ def open1Bb(
     data["train"]["batch_size"] = batch_size
     data["train"]["epochs"] = total_epoch
     data["pretrained_s1"] = pretrained_s1
+
+    base_grad_accum = int(
+        data["train"].get("gradient_accumulation_steps", 4)
+    )
+    if base_grad_accum <= 0:
+        base_grad_accum = 4
+
+    if bool(if_dpo):
+        # Text2SemanticDataModule halves the physical batch for DPO memory.
+        # Compensate with accumulation so optimizer updates still see roughly
+        # the same number of examples as ordinary few-shot S1 fine-tuning.
+        physical_dpo_batch = max(int(batch_size) // 2, 1)
+        target_effective_batch = max(
+            1,
+            int(batch_size) * base_grad_accum,
+        )
+        dpo_grad_accum = max(
+            1,
+            int(
+                round(
+                    target_effective_batch
+                    / physical_dpo_batch
+                )
+            ),
+        )
+        data["train"]["gradient_accumulation_steps"] = (
+            dpo_grad_accum
+        )
+        print(
+            "[S1 DPO] effective batch preservation: "
+            f"configured_batch={int(batch_size)} "
+            f"physical_batch≈{physical_dpo_batch} "
+            f"grad_accum={dpo_grad_accum} "
+            f"effective≈{physical_dpo_batch * dpo_grad_accum} "
+            f"(baseline≈{target_effective_batch})"
+        )
+    else:
+        data["train"]["gradient_accumulation_steps"] = (
+            base_grad_accum
+        )
 
     if supports_paired_controller(version) and train_paired_controller:
         if_save_every_weights = True
