@@ -10,7 +10,11 @@ GPT_ROOT = ROOT / "GPT_SoVITS"
 if str(GPT_ROOT) not in sys.path:
     sys.path.insert(0, str(GPT_ROOT))
 
-from AR.models.utils import get_batch_logps, make_reject_y
+from AR.models.utils import (
+    get_batch_logps,
+    make_confusion_reject_y,
+    make_reject_y,
+)
 from AR.modules.activation import MultiheadAttention
 
 
@@ -52,6 +56,55 @@ class S1LowDataDPOTest(unittest.TestCase):
         self.assertNotIn(999, rejected.tolist()[1])
         self.assertNotEqual(int(rejected_lengths[0]), 3)
         self.assertNotEqual(int(rejected_lengths[1]), 4)
+
+    def test_confusion_negative_uses_policy_alternative_and_keeps_length(self):
+        y = torch.tensor(
+            [
+                [1, 2, 3, 0],
+                [4, 5, 6, 7],
+            ],
+            dtype=torch.long,
+        )
+        lengths = torch.tensor([3, 4], dtype=torch.long)
+        vocab = 10
+        eos = 9
+        logits = torch.full(
+            (2, 5, vocab),
+            -5.0,
+            dtype=torch.float32,
+        )
+
+        # Make the correct token best and a deterministic wrong token second.
+        for batch_index, length in enumerate(lengths.tolist()):
+            for position in range(length):
+                target = int(y[batch_index, position])
+                logits[batch_index, position, target] = 5.0
+                logits[
+                    batch_index,
+                    position,
+                    (target + 1) % eos,
+                ] = 4.0
+
+        torch.manual_seed(20261115)
+        rejected, rejected_lengths = make_confusion_reject_y(
+            y,
+            lengths,
+            logits,
+            eos_id=eos,
+        )
+
+        self.assertTrue(torch.equal(lengths, rejected_lengths))
+        for batch_index, length in enumerate(lengths.tolist()):
+            self.assertFalse(
+                torch.equal(
+                    y[batch_index, :length],
+                    rejected[batch_index, :length],
+                )
+            )
+            self.assertNotIn(
+                eos,
+                rejected[batch_index, :length].tolist(),
+            )
 
     def test_length_normalized_logps_ignore_padding(self):
         vocab = 4
