@@ -174,7 +174,12 @@ def _resolve_list_audio(
     raw = Path(str(audio_value).replace("\\", "/")).expanduser()
     candidates = []
     if raw.is_absolute():
-        candidates.append(raw)
+        candidates.extend(
+            [
+                raw,
+                wav_root / raw.name,
+            ]
+        )
     else:
         candidates.extend(
             [
