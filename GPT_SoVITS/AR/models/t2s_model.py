@@ -710,10 +710,15 @@ class Text2SemanticDecoder(nn.Module):
             preference_weight * valid_target_tokens * loss_2
         )
         loss = loss_1 + scaled_dpo_loss
+        dpo_to_ce_ratio = (
+            scaled_dpo_loss.detach()
+            / loss_1.detach().abs().clamp_min(1e-8)
+        )
         self.last_dpo_metrics = {
             "ce_loss": loss_1.detach(),
             "dpo_loss": loss_2.detach(),
             "scaled_dpo_loss": scaled_dpo_loss.detach(),
+            "dpo_to_ce_ratio": dpo_to_ce_ratio,
             "dpo_weight": preference_weight,
             "chosen_logp": A_logits.detach().mean(),
             "rejected_logp": R_logits.detach().mean(),
