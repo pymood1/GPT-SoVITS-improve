@@ -305,6 +305,22 @@ class Text2SemanticLightningModule(LightningModule):
                 prog_bar=False,
                 sync_dist=True,
             )
+            self.log(
+                "dpo_scaled_loss",
+                metrics["scaled_dpo_loss"],
+                on_step=True,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "dpo_to_ce_ratio",
+                metrics["dpo_to_ce_ratio"],
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
         self.log(
             "lr",
             scheduler.get_last_lr()[0],
