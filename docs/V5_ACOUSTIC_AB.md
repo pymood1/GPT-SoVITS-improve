@@ -28,7 +28,10 @@ notebook has one code cell. It automatically:
 1. clones/fast-forwards the PR branch in a separate `/content` checkout;
 2. installs the repository runtime and downloads only the pretrained assets
    needed for `s1v3.ckpt`, `s2Gv5dev.pth`, the V5 vocoder, CNHuBERT and BERT;
-3. downloads the pinned PyTorch VOiCES reference WAV and verifies its SHA-256;
+3. prefers an existing 3–10 s Korean reference + exact transcript when a training
+   list is already present; otherwise downloads the pinned PyTorch VOiCES English
+   fallback WAV, verifies its SHA-256, and installs/verifies only missing NLTK
+   English-frontend resources before phone conversion;
 4. runs the normal semantic path once with the fixed Korean sentence, without
    starting a Gradio server;
 5. waits for all A/A-repeat/B/reverse/cold/FP32 controls and displays the
@@ -36,8 +39,11 @@ notebook has one code cell. It automatically:
 6. creates `/content/v5_acoustic_ab_listening.zip` containing the listening
    WAVs and `report.json` (the private semantic tensor file is excluded).
 
-The public reference transcript is exactly
-`I had that curiosity beside me at this moment.` and the target is
+When no local Korean reference is available, the public fallback reference
+transcript is exactly `I had that curiosity beside me at this moment.`.
+Before that fallback is used, the launcher verifies the exact GPT-SoVITS English
+frontend path, including NLTK POS tagging and phone conversion. Existing NLTK
+resources are reused. The target is
 **안녕하세요. 오늘은 날씨가 좋아서 잠깐 산책을 다녀오려고 합니다.**
 The first run downloads several pretrained assets and then performs eight
 acoustic passes plus two reference-vocoder probes, so the single cell may run
