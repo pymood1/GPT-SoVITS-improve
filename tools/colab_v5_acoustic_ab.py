@@ -34,6 +34,11 @@ MODEL_PATTERNS = (
     "chinese-hubert-base/*",
     "chinese-roberta-wwm-ext-large/*",
 )
+KOREAN_REFERENCE_LISTS = (
+    "/content/audio_input/training.list",
+    "/content/GPT-SoVITS/training.list",
+    "/content/drive/MyDrive/audio_input/training.list",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -64,7 +69,13 @@ def verified_download(url: str, destination: Path, expected_sha256: str) -> Path
     return destination
 
 
-def runtime_environment(repo: Path, output: Path, reference: Path) -> dict[str, str]:
+def runtime_environment(
+    repo: Path,
+    output: Path,
+    reference: Path,
+    reference_text: str = REFERENCE_TEXT,
+    reference_language: str = "en",
+) -> dict[str, str]:
     repo, output, reference = map(Path, (repo, output, reference))
     pretrained = repo / "GPT_SoVITS/pretrained_models"
     return {
@@ -78,10 +89,86 @@ def runtime_environment(repo: Path, output: Path, reference: Path) -> dict[str, 
         "GPT_SOVITS_V5_ACOUSTIC_AB_DIR": str(output),
         "GPT_SOVITS_V5_AB_REQUIRE_PRETRAINED": "1",
         "GPT_SOVITS_AB_REFERENCE": str(reference),
-        "GPT_SOVITS_AB_REFERENCE_TEXT": REFERENCE_TEXT,
+        "GPT_SOVITS_AB_REFERENCE_TEXT": reference_text,
+        "GPT_SOVITS_AB_REFERENCE_LANGUAGE": reference_language,
         "GPT_SOVITS_AB_TARGET_TEXT": TEST_TEXT,
         "PYTHONUNBUFFERED": "1",
     }
+
+
+def ensure_nltk_frontend_resources() -> None:
+    """Prepare only missing English frontend data and verify the real POS path."""
+    import nltk
+
+    resources = (
+        ("taggers/averaged_perceptron_tagger_eng", "averaged_perceptron_tagger_eng"),
+        ("corpora/cmudict", "cmudict"),
+    )
+    for lookup, package in resources:
+        try:
+            nltk.data.find(lookup)
+        except LookupError:
+            print(f"NLTK frontend resource missing; installing once: {package}", flush=True)
+            nltk.download(package, quiet=True)
+            nltk.data.find(lookup)
+
+    # Verify the operation that failed in Colab, not merely downloader metadata.
+    try:
+        nltk.pos_tag(["frontend", "check"])
+    except LookupError:
+        # Older NLTK releases can still request the legacy tagger name.
+        print("NLTK legacy POS tagger is also required; installing once.", flush=True)
+        nltk.download("averaged_perceptron_tagger", quiet=True)
+        nltk.pos_tag(["frontend", "check"])
+
+    # g2p_en additionally consumes cmudict; instantiate and execute a tiny probe.
+    from g2p_en import G2p
+
+    probe = G2p()
+    if not probe("frontend check"):
+        raise RuntimeError("g2p_en frontend self-check returned no phones")
+    print("NLTK/g2p_en frontend self-check: OK", flush=True)
+
+
+def select_korean_reference(list_paths, info):
+    """Prefer an existing 3–10 s Korean training reference when one is available."""
+    for raw_list in list_paths:
+        if not raw_list:
+            continue
+        list_path = Path(raw_list)
+        if not list_path.is_file():
+            continue
+        candidates = []
+        for row in list_path.read_text(encoding="utf-8-sig").splitlines()[:1000]:
+            fields = row.split("|", 3)
+            if len(fields) != 4:
+                continue
+            raw_path, _, language, text = fields
+            if language.strip().lower() not in {"ko", "ko_kr", "ko-kr", "korean"} or not text.strip():
+                continue
+            name = raw_path.replace("\\", "/").rsplit("/", 1)[-1]
+            paths = (
+                Path(raw_path),
+                list_path.parent / raw_path,
+                list_path.parent / name,
+                list_path.parent / "datas" / name,
+                Path("/content/audio_input/datas") / name,
+                Path("/content/drive/MyDrive/audio_input/datas") / name,
+            )
+            for path in paths:
+                if not path.is_file():
+                    continue
+                try:
+                    duration = info(str(path)).duration
+                except Exception:
+                    continue
+                if 3 <= duration <= 10:
+                    candidates.append((abs(duration - 6), path.resolve(), text.strip()))
+                    break
+        if candidates:
+            _, path, text = min(candidates)
+            return path, text
+    return None
 
 
 def _language_label(mapping: dict[str, str], value: str) -> str:
@@ -91,13 +178,18 @@ def _language_label(mapping: dict[str, str], value: str) -> str:
         raise RuntimeError(f"언어 매핑에서 {value!r}을 찾지 못했습니다.") from exc
 
 
-def run_headless(webui, reference: str) -> int:
+def run_headless(
+    webui,
+    reference: str,
+    reference_text: str = REFERENCE_TEXT,
+    reference_language: str = "en",
+) -> int:
     """Drive the normal semantic path once; its opt-in hook writes the A/B suite."""
-    prompt_language = _language_label(webui.dict_language, "en")
+    prompt_language = _language_label(webui.dict_language, reference_language)
     target_language = _language_label(webui.dict_language, "all_ko")
     generated = webui.get_tts_wav(
         reference,
-        REFERENCE_TEXT,
+        reference_text,
         prompt_language,
         TEST_TEXT,
         target_language,
@@ -192,6 +284,7 @@ def _install_runtime(repo: Path) -> None:
         _run(["apt-get", "update"])
         _run(["apt-get", "install", "-y", "ffmpeg", "libsox-dev"])
     _run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=repo)
+    ensure_nltk_frontend_resources()
 
 
 def _download_models(repo: Path) -> None:
@@ -250,7 +343,10 @@ def _headless_main(repo: Path, output: Path, reference: Path) -> None:
 
     print("GPU:", torch.cuda.get_device_name(0), flush=True)
     print("자동 합성 문장:", TEST_TEXT, flush=True)
-    run_headless(webui, str(reference))
+    reference_text = os.environ.get("GPT_SOVITS_AB_REFERENCE_TEXT", REFERENCE_TEXT)
+    reference_language = os.environ.get("GPT_SOVITS_AB_REFERENCE_LANGUAGE", "en")
+    print("참조 언어:", reference_language, flush=True)
+    run_headless(webui, str(reference), reference_text, reference_language)
     folder = find_completed_suite(output)
     print(f"COLAB_V5_AB_RESULT={folder}", flush=True)
 
@@ -284,13 +380,36 @@ def run_colab_all() -> Path:
     _install_runtime(COLAB_REPO)
     _download_models(COLAB_REPO)
     COLAB_OUTPUT.mkdir(parents=True, exist_ok=True)
-    reference = verified_download(
-        REFERENCE_URL, COLAB_OUTPUT / "public_reference.wav", REFERENCE_SHA256
+    import soundfile
+
+    candidate_lists = (
+        os.environ.get("GPT_SOVITS_DEFAULT_TRAINING_LIST", ""),
+        *KOREAN_REFERENCE_LISTS,
     )
+    korean_reference = select_korean_reference(candidate_lists, soundfile.info)
+    if korean_reference is not None:
+        reference, reference_text = korean_reference
+        reference_language = "all_ko"
+        print("기존 한국어 reference를 우선 사용합니다:", reference, flush=True)
+    else:
+        reference = verified_download(
+            REFERENCE_URL, COLAB_OUTPUT / "public_reference.wav", REFERENCE_SHA256
+        )
+        reference_text = REFERENCE_TEXT
+        reference_language = "en"
+        print("한국어 reference를 찾지 못해 검증된 공개 영어 reference를 사용합니다.", flush=True)
     started = time.time_ns()
     env = dict(os.environ)
     env.pop("emotion_controller_path", None)
-    env.update(runtime_environment(COLAB_REPO, COLAB_OUTPUT, reference))
+    env.update(
+        runtime_environment(
+            COLAB_REPO,
+            COLAB_OUTPUT,
+            reference,
+            reference_text=reference_text,
+            reference_language=reference_language,
+        )
+    )
     env["PYTHONPATH"] = os.pathsep.join(
         [str(COLAB_REPO), str(COLAB_REPO / "GPT_SoVITS"), env.get("PYTHONPATH", "")]
     )
