@@ -137,6 +137,124 @@ def check_details(path_list=None, is_train=False, is_dataset_processing=False):
             gr.Warning(i18n("缺少语义数据集"))
 
 
+def load_cublas():
+    """Preload CUDA 12 cuBLAS for CTranslate2/Faster-Whisper.
+
+    PyTorch wheels often install NVIDIA libraries under
+    site-packages/nvidia/*/lib. CTranslate2 loads libcublas.so.12 by its
+    soname, so that directory is not always visible to the dynamic loader in
+    notebook runtimes such as Kaggle. Loading the absolute library paths with
+    RTLD_GLOBAL reuses the already installed CUDA runtime without requiring
+    notebook-specific LD_LIBRARY_PATH edits.
+    """
+
+    import torch
+
+    if not torch.cuda.is_available():
+        print("[INFO] CUDA is not available, skipping cuBLAS setup.")
+        return False
+
+    if sys.platform == "win32":
+        candidate_dirs = [
+            Path(torch.__file__).parent / "lib",
+            Path(torch.__file__).resolve().parents[1]
+            / "nvidia"
+            / "cublas"
+            / "bin",
+        ]
+        loaded = False
+        handles = []
+        for directory in candidate_dirs:
+            if not directory.exists():
+                continue
+            try:
+                handles.append(os.add_dll_directory(str(directory)))
+            except OSError:
+                pass
+            for pattern in ("cublasLt64_12.dll", "cublas64_12.dll"):
+                for dll_path in sorted(directory.glob(pattern)):
+                    try:
+                        ctypes.CDLL(str(dll_path))
+                        print(f"[INFO] Loaded: {dll_path}")
+                        if dll_path.name.lower().startswith("cublas64_12"):
+                            loaded = True
+                    except OSError as exc:
+                        print(
+                            f"[WARNING] Failed to load {dll_path}: {exc}"
+                        )
+        if loaded:
+            return True
+
+        try:
+            ctypes.CDLL("cublas64_12.dll")
+            print("[INFO] Loaded: cublas64_12.dll")
+            return True
+        except OSError as exc:
+            print(f"[WARNING] cuBLAS 12 is unavailable: {exc}")
+            return False
+
+    if sys.platform == "linux":
+        site_packages = Path(torch.__file__).resolve().parents[1]
+        candidate_dirs = [
+            site_packages / "nvidia" / "cublas" / "lib",
+            Path("/usr/local/cuda/lib64"),
+            Path("/usr/local/cuda-12/lib64"),
+        ]
+
+        # libcublas depends on libcublasLt on current CUDA 12 wheels, so load
+        # the latter first when both are provided as Python package assets.
+        load_order = ("libcublasLt.so.12", "libcublas.so.12")
+        loaded = False
+        for library_name in load_order:
+            library_loaded = False
+            for directory in candidate_dirs:
+                if not directory.exists():
+                    continue
+                matches = sorted(directory.glob(library_name + "*"))
+                for so_path in matches:
+                    try:
+                        ctypes.CDLL(
+                            str(so_path),
+                            mode=ctypes.RTLD_GLOBAL,
+                        )
+                        print(f"[INFO] Loaded: {so_path}")
+                        library_loaded = True
+                        if library_name == "libcublas.so.12":
+                            loaded = True
+                        break
+                    except OSError as exc:
+                        print(
+                            f"[WARNING] Failed to load {so_path}: {exc}"
+                        )
+                if library_loaded:
+                    break
+
+            if library_loaded:
+                continue
+
+            try:
+                ctypes.CDLL(
+                    library_name,
+                    mode=ctypes.RTLD_GLOBAL,
+                )
+                print(f"[INFO] Loaded: {library_name}")
+                if library_name == "libcublas.so.12":
+                    loaded = True
+            except OSError as exc:
+                print(
+                    f"[WARNING] Failed to load {library_name}: {exc}"
+                )
+
+        if not loaded:
+            print(
+                "[WARNING] CUDA 12 cuBLAS was not found. "
+                "Faster-Whisper should use its CPU fallback."
+            )
+        return loaded
+
+    return False
+
+
 def load_cudnn():
     import torch
 
