@@ -228,6 +228,11 @@ class Text2SemanticDataset(Dataset):
                 "duration/phoneme-rate filtering. Check 2-name2text.txt, "
                 "6-name2semantic.tsv, language/version, and preprocessing outputs."
             )
+        if self.split_role == "val" and leng < 2:
+            raise RuntimeError(
+                "S1 adaptive validation needs at least 2 usable held-out "
+                f"items after filtering; got {leng}."
+            )
         if self.split_role == "train" and leng < min_num:
             tmp1 = self.semantic_phoneme
             tmp2 = self.item_names
