@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 
 version = os.environ.get("version", None)
 
+from adaptive_training import deterministic_holdout_names
 from text import cleaned_text_to_sequence
 
 # from config import exp_dir
@@ -51,6 +52,10 @@ class Text2SemanticDataset(Dataset):
         min_ps_ratio: int = 3,
         # max value of phoneme/sec
         max_ps_ratio: int = 25,
+        adaptive_validation: bool = False,
+        validation_fraction: float = 0.10,
+        split_role: str = "train",
+        split_seed: int = 233333,
     ) -> None:
         super().__init__()
 
@@ -94,6 +99,14 @@ class Text2SemanticDataset(Dataset):
         self.max_sec = max_sec
         self.min_ps_ratio = min_ps_ratio
         self.max_ps_ratio = max_ps_ratio
+        self.adaptive_validation = bool(adaptive_validation)
+        self.validation_fraction = float(validation_fraction)
+        self.split_role = str(split_role or "train").strip().lower()
+        self.split_seed = int(split_seed)
+        if self.split_role not in {"train", "val"}:
+            raise ValueError(
+                f"unsupported S1 split_role: {self.split_role!r}"
+            )
 
         if max_sample is not None:
             self.semantic_data = self.semantic_data[:max_sample]
@@ -117,6 +130,25 @@ class Text2SemanticDataset(Dataset):
     def init_batch(self):
         semantic_data_len = len(self.semantic_data)
         phoneme_data_len = len(self.phoneme_data.keys())
+
+        holdout_names = set()
+        if self.adaptive_validation:
+            candidate_names = [
+                str(self.semantic_data.iloc[i, 0])
+                for i in range(semantic_data_len)
+            ]
+            holdout_names = deterministic_holdout_names(
+                candidate_names,
+                fraction=self.validation_fraction,
+                seed=self.split_seed,
+            )
+            if self.split_role == "val" and not holdout_names:
+                raise RuntimeError(
+                    "S1 adaptive validation requires at least 8 unique "
+                    "usable items; fixed-epoch training should be used "
+                    "for smaller few-shot datasets."
+                )
+
         print("semantic_data_len:", semantic_data_len)
         print("phoneme_data_len:", phoneme_data_len)
         print(self.semantic_data)
@@ -128,6 +160,12 @@ class Text2SemanticDataset(Dataset):
             # 先依次遍历
             # get str
             item_name = self.semantic_data.iloc[i, 0]
+            if holdout_names:
+                in_holdout = str(item_name) in holdout_names
+                if self.split_role == "train" and in_holdout:
+                    continue
+                if self.split_role == "val" and not in_holdout:
+                    continue
             # print(self.phoneme_data)
             try:
                 phoneme, word2ph, text = self.phoneme_data[item_name]
@@ -190,7 +228,7 @@ class Text2SemanticDataset(Dataset):
                 "duration/phoneme-rate filtering. Check 2-name2text.txt, "
                 "6-name2semantic.tsv, language/version, and preprocessing outputs."
             )
-        if leng < min_num:
+        if self.split_role == "train" and leng < min_num:
             tmp1 = self.semantic_phoneme
             tmp2 = self.item_names
             self.semantic_phoneme = []
@@ -217,7 +255,14 @@ class Text2SemanticDataset(Dataset):
 
         """
         # 345410 for LibriTTS
-        print("dataset.__len__():", self.__len__())
+        print(
+            "dataset.__len__():",
+            self.__len__(),
+            "split_role=",
+            self.split_role,
+            "holdout_unique=",
+            len(holdout_names),
+        )
 
     def __get_item_names__(self) -> List[str]:
         return self.item_names
