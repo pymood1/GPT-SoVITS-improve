@@ -1,0 +1,37 @@
+name: Research low-data S1 DPO check
+
+on:
+  push:
+    branches:
+      - research/lowdata-reference-dpo
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile changed Python files
+        run: |
+          python -m py_compile \
+            webui.py \
+            GPT_SoVITS/AR/models/t2s_lightning_module.py \
+            GPT_SoVITS/AR/models/t2s_model.py \
+            GPT_SoVITS/AR/models/utils.py \
+            GPT_SoVITS/AR/modules/activation.py \
+            tests/test_s1_lowdata_dpo.py
+      - name: Install CPU torch for focused regression tests
+        run: |
+          python -m pip install -q \
+            --index-url https://download.pytorch.org/whl/cpu \
+            torch
+      - name: Run focused low-data DPO tests
+        env:
+          PYTHONPATH: GPT_SoVITS
+        run: |
+          python -m unittest tests/test_s1_lowdata_dpo.py -v
