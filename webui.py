@@ -124,7 +124,9 @@ from tools.dev_experiment_harness import (
     available_gpu_ids as dev_available_gpu_ids,
     case_gpu as dev_case_gpu,
     clear_s1_training_state as dev_clear_s1_training_state,
+    controller_bypass_for_gpt as dev_controller_bypass_for_gpt,
     controller_for_gpt as dev_controller_for_gpt,
+    export_listening_reference as dev_export_listening_reference,
     load_preset as dev_load_preset,
     output_root as dev_output_root,
     preprocess_gpu_string as dev_preprocess_gpu_string,
@@ -2131,7 +2133,15 @@ def change_tts_inference(
         Path(gpt_path),
         version,
     )
-    if controller_required and controller_path is None:
+    controller_bypass = dev_controller_bypass_for_gpt(
+        dev_output_root(Path(gpt_path).parent),
+        Path(gpt_path),
+    )
+    if (
+        controller_required
+        and controller_path is None
+        and not controller_bypass
+    ):
         expected_controller = paired_controller_path(
             Path(gpt_path)
         )
@@ -2144,6 +2154,13 @@ def change_tts_inference(
             {"__type__": "update", "visible": False},
         )
         return
+
+    if controller_bypass:
+        print(
+            "[TTS] dev acoustic ablation: "
+            "Controller requirement bypassed for this checkpoint",
+            flush=True,
+        )
 
     controller_available = (
         controller_path is not None
@@ -6130,12 +6147,12 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
     bert_dir = default_bert_path
     cnhubert_dir = default_cnhubert_path
     root = dev_output_root(Path(GPT_weight_version2root["v5dev"]))
-    manifest_path = (
+    experiment_output_dir = (
         root
         / "dev_experiments"
         / f"{experiment_name}__{preset_id}"
-        / "manifest.json"
     )
+    manifest_path = experiment_output_dir / "manifest.json"
     multilingual_bert = bool(preprocess.get("multilingual_bert", True))
     multilingual_model = str(
         preprocess.get("multilingual_bert_model")
@@ -6228,6 +6245,31 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
 
         if not preprocess_finished:
             raise RuntimeError("원클릭 전처리가 완료되지 않았습니다.")
+
+        listening_reference = dev_export_listening_reference(
+            Path(source_list),
+            Path(wav_root),
+            experiment_output_dir / "listening",
+        )
+        yield (
+            _dev_experiment_status(
+                f"{preset_id} · 추론 reference 준비",
+                [
+                    f"- WAV: `{listening_reference['audio']}`",
+                    f"- Text: `{listening_reference['text']}`",
+                    (
+                        "- Duration: "
+                        f"`{listening_reference['duration_seconds']:.2f}s`"
+                        if listening_reference["duration_seconds"] is not None
+                        else "- Duration: `unknown`"
+                    ),
+                ],
+            ),
+            {"__type__": "update", "visible": False},
+            {"__type__": "update", "visible": True},
+            {"__type__": "update"},
+            {"__type__": "update"},
+        )
 
         for case_index, case in enumerate(cases):
             if dev_experiment_cancel_requested:
