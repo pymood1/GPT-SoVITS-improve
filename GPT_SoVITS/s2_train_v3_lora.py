@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from adaptive_training import AdaptiveEpochState
 from tools.runtime_status import clear_activity, publish_activity
 
 hps = utils.get_hparams(stage=2)
@@ -169,6 +170,37 @@ def _run(rank, n_gpus, hps, use_ddp):
         train_dataset,
         **loader_kwargs,
     )
+
+    adaptive_enabled = bool(
+        getattr(hps.train, "adaptive_training", False)
+    )
+    eval_loader = None
+    if adaptive_enabled and rank == 0:
+        try:
+            eval_dataset = TextAudioSpeakerLoader(
+                hps.data,
+                val=True,
+            )
+            eval_loader = DataLoader(
+                eval_dataset,
+                batch_size=min(2, len(eval_dataset)),
+                shuffle=False,
+                pin_memory=torch.cuda.is_available(),
+                collate_fn=collate_fn,
+                num_workers=0,
+            )
+        except RuntimeError as exc:
+            print(
+                "[SoVITS adaptive] validation disabled: "
+                f"{exc}"
+            )
+            adaptive_enabled = False
+
+    if use_ddp:
+        flag = [adaptive_enabled if rank == 0 else None]
+        dist.broadcast_object_list(flag, src=0)
+        adaptive_enabled = bool(flag[0])
+
     save_root = "%s/logs_s2_%s_lora_%s" % (hps.data.exp_dir, hps.model.version, hps.train.lora_rank)
     os.makedirs(save_root, exist_ok=True)
     lora_rank = int(hps.train.lora_rank)
@@ -255,9 +287,48 @@ def _run(rank, n_gpus, hps, use_ddp):
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
     net_d = optim_d = scheduler_d = None
+
+    adaptive_state = None
+    best_trainable_state = None
+    if adaptive_enabled:
+        min_epochs = int(
+            getattr(
+                hps.train,
+                "adaptive_min_epochs",
+                hps.train.epochs,
+            )
+        )
+        max_epochs = max(
+            min_epochs,
+            int(
+                getattr(
+                    hps.train,
+                    "adaptive_max_epochs",
+                    hps.train.epochs,
+                )
+            ),
+        )
+        adaptive_state = AdaptiveEpochState(
+            min_epochs=min_epochs,
+            max_epochs=max_epochs,
+            patience=int(
+                getattr(hps.train, "adaptive_patience", 3)
+            ),
+            min_relative_improvement=float(
+                getattr(
+                    hps.train,
+                    "adaptive_min_relative_improvement",
+                    0.005,
+                )
+            ),
+        )
+    else:
+        min_epochs = int(hps.train.epochs)
+        max_epochs = min_epochs
+
     print("start training from epoch %s" % epoch_str)
     if rank == 0:
-        total_steps = int(hps.train.epochs) * len(train_loader)
+        total_steps = int(max_epochs) * len(train_loader)
         publish_activity(
             task="SoVITS LoRA 학습",
             stage="starting",
@@ -267,9 +338,9 @@ def _run(rank, n_gpus, hps, use_ddp):
             step=global_step,
             total_steps=total_steps,
             epoch=epoch_str,
-            total_epochs=int(hps.train.epochs),
+            total_epochs=int(max_epochs),
         )
-    for epoch in range(epoch_str, hps.train.epochs + 1):
+    for epoch in range(epoch_str, max_epochs + 1):
         if rank == 0:
             train_and_evaluate(
                 rank,
@@ -280,7 +351,7 @@ def _run(rank, n_gpus, hps, use_ddp):
                 [scheduler_g, scheduler_d],
                 scaler,
                 # [train_loader, eval_loader], logger, [writer, writer_eval])
-                [train_loader, None],
+                [train_loader, eval_loader],
                 logger,
                 [writer, writer_eval],
             )
@@ -297,8 +368,169 @@ def _run(rank, n_gpus, hps, use_ddp):
                 None,
                 None,
             )
+        stop_training = False
+        if adaptive_enabled and rank == 0:
+            val_loss = evaluate_validation_loss(
+                rank,
+                hps,
+                net_g,
+                eval_loader,
+            )
+            improved, stop_training = adaptive_state.update(
+                epoch,
+                val_loss,
+            )
+            if improved:
+                model_g = (
+                    net_g.module
+                    if hasattr(net_g, "module")
+                    else net_g
+                )
+                best_trainable_state = {
+                    name: parameter.detach().cpu().clone()
+                    for name, parameter in model_g.named_parameters()
+                    if parameter.requires_grad
+                }
+                print(
+                    "[SoVITS adaptive] validation improved: "
+                    f"epoch={epoch} val_loss={val_loss:.6f}"
+                )
+            else:
+                print(
+                    "[SoVITS adaptive] no meaningful improvement: "
+                    f"epoch={epoch} val_loss={val_loss:.6f} "
+                    f"best={adaptive_state.best_loss:.6f}@"
+                    f"{adaptive_state.best_epoch} "
+                    f"patience={adaptive_state.bad_epochs}/"
+                    f"{adaptive_state.patience}"
+                )
+
+        if use_ddp:
+            flag = [stop_training if rank == 0 else None]
+            dist.broadcast_object_list(flag, src=0)
+            stop_training = bool(flag[0])
+
         scheduler_g.step()
+        if stop_training:
+            break
+
+    if (
+        adaptive_enabled
+        and rank == 0
+        and best_trainable_state is not None
+    ):
+        model_g = (
+            net_g.module
+            if hasattr(net_g, "module")
+            else net_g
+        )
+        with torch.no_grad():
+            for name, parameter in model_g.named_parameters():
+                if name in best_trainable_state:
+                    parameter.copy_(
+                        best_trainable_state[name].to(
+                            device=parameter.device,
+                            dtype=parameter.dtype,
+                        )
+                    )
+        export_adaptive_best(
+            net_g,
+            hps,
+            adaptive_state.best_epoch,
+        )
+        print(
+            "[SoVITS adaptive] restored/exported best epoch "
+            f"{adaptive_state.best_epoch}"
+        )
+
     print("training done")
+
+
+def evaluate_validation_loss(rank, hps, net_g, eval_loader):
+    if eval_loader is None:
+        return float("inf")
+
+    model_g = net_g.module if hasattr(net_g, "module") else net_g
+    was_training = model_g.training
+    model_g.eval()
+    losses = []
+
+    with torch.no_grad():
+        for (
+            ssl,
+            spec,
+            mel,
+            ssl_lengths,
+            spec_lengths,
+            text,
+            text_lengths,
+            mel_lengths,
+        ) in eval_loader:
+            target_device = (
+                torch.device("cuda", rank)
+                if torch.cuda.is_available()
+                else torch.device(device)
+            )
+            spec = spec.to(target_device)
+            spec_lengths = spec_lengths.to(target_device)
+            mel = mel.to(target_device)
+            mel_lengths = mel_lengths.to(target_device)
+            ssl = ssl.to(target_device)
+            text = text.to(target_device)
+            text_lengths = text_lengths.to(target_device)
+
+            with autocast(enabled=hps.train.fp16_run):
+                loss = model_g(
+                    ssl,
+                    spec,
+                    mel,
+                    ssl_lengths,
+                    spec_lengths,
+                    text,
+                    text_lengths,
+                    mel_lengths,
+                    use_grad_ckpt=False,
+                )
+            losses.append(float(loss.detach().float().item()))
+
+    if was_training:
+        model_g.train()
+    if not losses:
+        return float("inf")
+    return sum(losses) / len(losses)
+
+
+def export_adaptive_best(net_g, hps, best_epoch):
+    model_g = net_g.module if hasattr(net_g, "module") else net_g
+    ckpt = model_g.state_dict()
+    sim_ckpt = od()
+    for key in ckpt:
+        if key not in no_grad_names:
+            sim_ckpt[key] = ckpt[key].half().cpu()
+
+    weight_dir = Path(hps.save_weight_dir)
+    weight_dir.mkdir(parents=True, exist_ok=True)
+    if hps.train.if_save_latest:
+        for old_weight in weight_dir.glob(
+            f"{hps.name}_e*_s*_l{lora_rank}.pth"
+        ):
+            try:
+                old_weight.unlink()
+            except OSError:
+                pass
+
+    savee(
+        sim_ckpt,
+        (
+            f"{hps.name}_e{best_epoch}_adaptive-best"
+            f"_s{global_step}_l{lora_rank}"
+        ),
+        best_epoch,
+        global_step,
+        hps,
+        model_version=hps.model.version,
+        lora_rank=lora_rank,
+    )
 
 
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
@@ -373,7 +605,19 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 batch_idx % status_interval == 0
                 or batch_idx + 1 == len(train_loader)
             ):
-                total_steps = int(hps.train.epochs) * len(train_loader)
+                total_steps = int(
+                    getattr(
+                        hps.train,
+                        "adaptive_max_epochs",
+                        hps.train.epochs,
+                    )
+                    if getattr(
+                        hps.train,
+                        "adaptive_training",
+                        False,
+                    )
+                    else hps.train.epochs
+                ) * len(train_loader)
                 completed_step = global_step + 1
                 publish_activity(
                     task="SoVITS LoRA 학습",
@@ -384,7 +628,19 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     step=completed_step,
                     total_steps=total_steps,
                     epoch=epoch,
-                    total_epochs=int(hps.train.epochs),
+                    total_epochs=int(
+                        getattr(
+                            hps.train,
+                            "adaptive_max_epochs",
+                            hps.train.epochs,
+                        )
+                        if getattr(
+                            hps.train,
+                            "adaptive_training",
+                            False,
+                        )
+                        else hps.train.epochs
+                    ),
                     loss=float(loss_gen_all.detach().float().item()),
                     metric=f"LoRA rank {lora_rank}",
                 )
