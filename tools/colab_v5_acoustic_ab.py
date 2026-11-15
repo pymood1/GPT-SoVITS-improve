@@ -219,6 +219,14 @@ def _headless_main(repo: Path, output: Path, reference: Path) -> None:
     print(f"COLAB_V5_AB_RESULT={folder}", flush=True)
 
 
+def _running_from_colab_checkout() -> bool:
+    """Return false for raw ``exec`` bootstraps, which do not define __file__."""
+    source = globals().get("__file__")
+    if not source:
+        return False
+    return Path(source).resolve().parent == (COLAB_REPO / "tools").resolve()
+
+
 def run_colab_all() -> Path:
     """Public notebook entry point: setup, one synthesis, controls, playback."""
     if not Path("/content").is_dir():
@@ -229,7 +237,7 @@ def run_colab_all() -> Path:
         raise RuntimeError("Colab 메뉴에서 런타임 유형을 GPU로 설정한 뒤 Run all을 누르세요.")
     _prepare_checkout(COLAB_REPO)
     # Re-exec the just-fetched implementation so an old raw bootstrap cannot run stale logic.
-    if Path(__file__).resolve().parent != (COLAB_REPO / "tools").resolve():
+    if not _running_from_colab_checkout():
         import importlib.util
 
         current = COLAB_REPO / "tools/colab_v5_acoustic_ab.py"

@@ -14,6 +14,14 @@ from tools.colab_v5_acoustic_ab import (
 
 
 class ColabAcousticABTests(unittest.TestCase):
+    def test_raw_bootstrap_without_dunder_file_is_treated_as_external_loader(self):
+        script = Path("tools/colab_v5_acoustic_ab.py")
+        scope = {"__name__": "colab_v5_ab_bootstrap"}
+
+        exec(compile(script.read_bytes(), str(script), "exec"), scope)
+
+        self.assertFalse(scope["_running_from_colab_checkout"]())
+
     def test_runtime_environment_selects_only_pretrained_v5dev_assets(self):
         repo = Path("/content/GPT-SoVITS-acoustic-ab")
         output = Path("/content/v5_acoustic_ab")
