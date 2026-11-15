@@ -45,6 +45,10 @@ jobs:
             tools/kaggle_dataset.py \
             tools/kaggle_launch_webui.py
 
+      - name: Kaggle dataset discovery smoke
+        run: |
+          python tests/test_kaggle_dataset.py
+
       - name: Validate notebooks as JSON
         run: |
           python - <<'PY'
