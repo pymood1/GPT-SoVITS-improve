@@ -152,12 +152,9 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if (
-            (not val and len(audiopaths_sid_text_new) <= 1)
-            or (val and len(audiopaths_sid_text_new) == 0)
-        ):
+        if len(audiopaths_sid_text_new) <= 1:
             role = "validation" if val else "training"
-            minimum = 1 if val else 2
+            minimum = 2
             raise RuntimeError(
                 f"Too few usable S2 {role} samples remain after "
                 "duration/phone filtering: "
@@ -465,12 +462,9 @@ class TextAudioSpeakerLoaderV3(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if (
-            (not val and len(audiopaths_sid_text_new) <= 1)
-            or (val and len(audiopaths_sid_text_new) == 0)
-        ):
+        if len(audiopaths_sid_text_new) <= 1:
             role = "validation" if val else "training"
-            minimum = 1 if val else 2
+            minimum = 2
             raise RuntimeError(
                 f"Too few usable S2 {role} samples remain after "
                 "duration/phone filtering: "
@@ -762,12 +756,9 @@ class TextAudioSpeakerLoaderV4(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if (
-            (not val and len(audiopaths_sid_text_new) <= 1)
-            or (val and len(audiopaths_sid_text_new) == 0)
-        ):
+        if len(audiopaths_sid_text_new) <= 1:
             role = "validation" if val else "training"
-            minimum = 1 if val else 2
+            minimum = 2
             raise RuntimeError(
                 f"Too few usable S2 {role} samples remain after "
                 "duration/phone filtering: "
@@ -1032,12 +1023,9 @@ class TextAudioSpeakerLoaderV3b(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if (
-            (not val and len(audiopaths_sid_text_new) <= 1)
-            or (val and len(audiopaths_sid_text_new) == 0)
-        ):
+        if len(audiopaths_sid_text_new) <= 1:
             role = "validation" if val else "training"
-            minimum = 1 if val else 2
+            minimum = 2
             raise RuntimeError(
                 f"Too few usable S2 {role} samples remain after "
                 "duration/phone filtering: "
