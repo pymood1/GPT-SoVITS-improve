@@ -43,7 +43,8 @@ jobs:
             tools/evaluate_emotion_review.py \
             tools/kaggle_training_preflight.py \
             tools/kaggle_dataset.py \
-            tools/kaggle_launch_webui.py
+            tools/kaggle_launch_webui.py \
+            tools/my_utils.py
 
       - name: Kaggle dataset discovery smoke
         run: |
