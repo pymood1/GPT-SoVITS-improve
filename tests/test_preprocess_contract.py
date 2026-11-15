@@ -569,6 +569,14 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         dev_block = webui[dev_start:dev_end]
         self.assertIn("len(result) > 4", dev_block)
         self.assertIn('source_list = str(result[4]["value"])', dev_block)
+        self.assertNotIn(
+            "if not source_list or not wav_root:",
+            dev_block,
+        )
+        self.assertIn(
+            "if not wav_root:",
+            dev_block,
+        )
 
     def test_auto_asr_is_owned_by_preprocessing_cancel_flow(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
