@@ -256,6 +256,10 @@ class Text2SemanticLightningModule(LightningModule):
                 dpo_weight=float(
                     self.config["train"].get("dpo_weight", 0.2)
                 ),
+                dpo_negative_mode=self.config["train"].get(
+                    "dpo_negative_mode",
+                    "mixed",
+                ),
             )
         else:
             loss, acc = self.model.forward_old(
@@ -318,6 +322,16 @@ class Text2SemanticLightningModule(LightningModule):
                 on_step=True,
                 on_epoch=True,
                 prog_bar=True,
+                sync_dist=True,
+            )
+            self.log(
+                "dpo_confusion_negative",
+                1.0
+                if metrics.get("negative_kind") == "confusion"
+                else 0.0,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=False,
                 sync_dist=True,
             )
         self.log(
