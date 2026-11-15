@@ -3191,6 +3191,7 @@ def open1Ba(
     version,
     batch_size,
     total_epoch,
+    adaptive_training,
     exp_name,
     inp_text,
     inp_wav_dir,
@@ -3359,6 +3360,8 @@ def open1Ba(
             else None
         ),
         "s2_config_signature": quick_path_signature(config_path),
+        "adaptive_training": bool(adaptive_training),
+        "adaptive_min_epochs": int(total_epoch),
         "text_low_lr_rate": (
             float(text_low_lr_rate)
             if version not in v3v4set
@@ -3411,6 +3414,15 @@ def open1Ba(
 
     data["train"]["batch_size"] = batch_size
     data["train"]["epochs"] = total_epoch
+    data["train"]["adaptive_training"] = bool(adaptive_training)
+    data["train"]["adaptive_min_epochs"] = int(total_epoch)
+    data["train"]["adaptive_max_epochs"] = min(
+        50,
+        max(int(total_epoch) + 5, int(total_epoch) * 2),
+    )
+    data["train"]["adaptive_patience"] = 3
+    data["train"]["adaptive_min_relative_improvement"] = 0.005
+    data["train"]["adaptive_validation_fraction"] = 0.10
     data["train"]["text_low_lr_rate"] = text_low_lr_rate
     data["train"]["pretrained_s2G"] = pretrained_s2G
     data["train"]["pretrained_s2D"] = pretrained_s2D
@@ -3582,6 +3594,7 @@ def open1Bb(
     version,
     batch_size,
     total_epoch,
+    adaptive_training,
     exp_name,
     inp_text,
     inp_wav_dir,
@@ -3839,6 +3852,8 @@ def open1Bb(
         "dpo_warmup_epochs": dpo_warmup_epochs,
         "dpo_beta": 0.2,
         "dpo_weight": 0.2,
+        "adaptive_training": bool(adaptive_training),
+        "adaptive_min_epochs": int(total_epoch),
         "gradient_accumulation_policy": (
             "preserve_effective_batch"
             if bool(if_dpo)
@@ -3889,6 +3904,16 @@ def open1Bb(
 
     data["train"]["batch_size"] = batch_size
     data["train"]["epochs"] = total_epoch
+    data["train"]["adaptive_training"] = bool(adaptive_training)
+    data["train"]["adaptive_min_epochs"] = int(total_epoch)
+    data["train"]["adaptive_max_epochs"] = min(
+        50,
+        max(int(total_epoch) + 5, int(total_epoch) * 2),
+    )
+    data["train"]["adaptive_patience"] = 3
+    data["train"]["adaptive_min_relative_improvement"] = 0.005
+    data["train"]["adaptive_validation_fraction"] = 0.10
+    data["train"]["adaptive_split_seed"] = 233333
     data["pretrained_s1"] = pretrained_s1
 
     base_grad_accum = int(
@@ -4203,6 +4228,7 @@ def _single_training_gpu(value):
 def run_gpt_then_sovits(
     batch_size_gpt,
     total_epoch_gpt,
+    adaptive_training_gpt,
     exp_name,
     inp_text,
     inp_wav_dir,
@@ -4220,6 +4246,7 @@ def run_gpt_then_sovits(
     version,
     batch_size_sovits,
     total_epoch_sovits,
+    adaptive_training_sovits,
     text_low_lr_rate,
     if_save_latest_sovits,
     if_save_every_weights_sovits,
@@ -4240,6 +4267,7 @@ def run_gpt_then_sovits(
         version,
         batch_size_gpt,
         total_epoch_gpt,
+        adaptive_training_gpt,
         exp_name,
         inp_text,
         inp_wav_dir,
@@ -4260,6 +4288,7 @@ def run_gpt_then_sovits(
         version,
         batch_size_sovits,
         total_epoch_sovits,
+        adaptive_training_sovits,
         exp_name,
         inp_text,
         inp_wav_dir,
@@ -7404,6 +7433,12 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         value=default_sovits_epoch,
                                         interactive=True,
                                     )
+                                    adaptive_training_sovits = gr.Checkbox(
+                                        label="SoVITS 자동 epoch 최적화 / early stop",
+                                        value=False,
+                                        interactive=True,
+                                        show_label=True,
+                                    )
                                 with gr.Row():
                                     text_low_lr_rate = gr.Slider(
                                         minimum=0.2,
@@ -7483,6 +7518,12 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         label=i18n("总训练轮数total_epoch"),
                                         value=15,
                                         interactive=True,
+                                    )
+                                    adaptive_training_gpt = gr.Checkbox(
+                                        label="GPT/S1 자동 epoch 최적화 / early stop",
+                                        value=False,
+                                        interactive=True,
+                                        show_label=True,
                                     )
                                 with gr.Row():
                                     save_every_epoch1Bb = gr.Slider(
@@ -7837,6 +7878,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                     [
                         batch_size1Bb,
                         total_epoch1Bb,
+                        adaptive_training_gpt,
                         exp_name,
                         inp_text,
                         inp_wav_dir,
@@ -7854,6 +7896,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         version_checkbox,
                         batch_size,
                         total_epoch,
+                        adaptive_training_sovits,
                         text_low_lr_rate,
                         if_save_latest,
                         if_save_every_weights,
@@ -7889,6 +7932,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         version_checkbox,
                         batch_size,
                         total_epoch,
+                        adaptive_training_sovits,
                         exp_name,
                         inp_text,
                         inp_wav_dir,
@@ -7910,6 +7954,7 @@ GPT/S1을 파인튜닝했다면 아래 체크포인트에는 **최종 GPT/S1 모
                         version_checkbox,
                         batch_size1Bb,
                         total_epoch1Bb,
+                        adaptive_training_gpt,
                         exp_name,
                         inp_text,
                         inp_wav_dir,
