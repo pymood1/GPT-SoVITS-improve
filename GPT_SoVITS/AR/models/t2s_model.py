@@ -682,10 +682,21 @@ class Text2SemanticDecoder(nn.Module):
             reference_free=reference_free,
         )
 
-        loss = loss_1 + preference_weight * loss_2
+        # CE is intentionally kept as the upstream token-summed loss.
+        # Convert the pair-mean preference loss into the same rough "token
+        # units" before applying a small auxiliary weight. This avoids making
+        # DPO vanish on long utterances without retuning the original S1 LR.
+        valid_target_tokens = (
+            y_lens.to(dtype=loss_2.dtype) + 1
+        ).sum().detach()
+        scaled_dpo_loss = (
+            preference_weight * valid_target_tokens * loss_2
+        )
+        loss = loss_1 + scaled_dpo_loss
         self.last_dpo_metrics = {
             "ce_loss": loss_1.detach(),
             "dpo_loss": loss_2.detach(),
+            "scaled_dpo_loss": scaled_dpo_loss.detach(),
             "dpo_weight": preference_weight,
             "chosen_logp": A_logits.detach().mean(),
             "rejected_logp": R_logits.detach().mean(),
