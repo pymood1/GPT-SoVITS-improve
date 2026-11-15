@@ -39,6 +39,7 @@ jobs:
             tools/auto_emotion_sidecar.py \
             tools/build_emotion_review_set.py \
             tools/calibrate_emotion_seed_thresholds.py \
+            tools/dev_experiment_harness.py \
             tools/emotion_label_refiner.py \
             tools/evaluate_emotion_review.py \
             tools/kaggle_training_preflight.py \
