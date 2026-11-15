@@ -381,7 +381,10 @@ def _run_sequence(namespace, inputs, output_root, routes=None, frozen_noise=None
                             vocoder=vocoder, is_v2pro=False,
                             prompt_cache={"prompt_semantic": base["prompt"].reshape(-1).clone(),
                                           "phones": list(base["phones1"])})
-                        spec = methods["_get_ref_spec"](engine, base["ref_wav_path"], cache_raw=True)
+                        # Execute the pinned upstream API exactly. At UPSTREAM
+                        # 6d51ffc, _get_ref_spec(self, path) caches raw_audio/raw_sr
+                        # unconditionally and returns (spec, optional_audio).
+                        spec = methods["_get_ref_spec"](engine, base["ref_wav_path"])
                         engine.prompt_cache["refer_spec"] = [spec]
                         audio = methods["using_vocoder_synthesis"](
                             engine, semantic.clone(),
