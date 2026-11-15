@@ -1869,6 +1869,24 @@ def get_tts_wav(
     for i_text, phones2, _, _ in prepared_texts:
         pred_semantic = cache[i_text]
         t3 = ttime()
+        acoustic_ab_dir = os.environ.get("GPT_SOVITS_V5_ACOUSTIC_AB_DIR", "")
+        if (
+            acoustic_ab_dir
+            and model_version in V5_VERSIONS
+            and i_text == prepared_texts[0][0]
+        ):
+            from tools.v5_acoustic_ab import run_from_webui
+
+            run_from_webui(
+                globals(),
+                dict(
+                    pred_semantic=pred_semantic, prompt=prompt,
+                    phones1=phones1, phones2=phones2,
+                    ref_wav_path=ref_wav_path, speed=speed,
+                    sample_steps=sample_steps, cfg_rate=cfg_rate,
+                ),
+                acoustic_ab_dir,
+            )
         is_v2pro = model_version in {"v2Pro", "v2ProPlus"}
         # print(23333,is_v2pro,model_version)
         ###v3不存在以下逻辑和inp_refs

@@ -1,5 +1,25 @@
 # CODEX ACTIVE RESEARCH HANDOFF
 
+## Acoustic-only noise isolation — 2026-11-15
+
+- Start point: latest main `a43dfd1`; its V5 WebUI routing/defaults fix is already
+  present and was not reapplied. S1 training/DPO/Controller code is untouched.
+- Current official upstream pin `6d51ffceafbf240145619af4c92408a6e54b7924`:
+  models_v5.py, models.py and mel_processing.py match byte-for-byte. No new
+  source-level acoustic defect has been established after the routing fix.
+- Opt-in `GPT_SOVITS_V5_ACOUSTIC_AB_DIR` runs acoustic-only A/A-repeat/B with
+  identical semantic/prompt/phones, same loaded S2/vocoder and RNG. B executes
+  pinned official TTS methods, including independent reference/mel extraction.
+- Captures shapes/dtypes/devices/statistics/exact differences through features,
+  CFM, denorm and vocoder; binds file hashes and loaded state, includes a
+  CFM-bypassing reference reconstruction and common-gain listening copies.
+- CPU fixture validation exercises actual source/helper on short and multi-chunk
+  inputs; a single mel perturbation is detected at its first stage. This is
+  diagnostic validation, NOT a real-model/acoustic-quality result.
+- Real Kaggle model A/B, first audible-noise stage, and causal precision/runtime
+  interventions remain pending. No private voice/tensor transfer or GPU run was
+  made. Instructions and interpretation: `docs/V5_ACOUSTIC_AB.md`.
+
 > Project: `pymood1/GPT-SoVITS-improve`
 >
 > Purpose: Codex should be able to read **this file alone**, understand the current research state, choose the next highest-value task, implement it, validate it, update the TODOs/decisions here, and continue without requiring step-by-step instructions.

@@ -40,6 +40,8 @@ jobs:
             tools/build_emotion_review_set.py \
             tools/calibrate_emotion_seed_thresholds.py \
             tools/dev_experiment_harness.py \
+            tools/v5_acoustic_ab.py \
+            tests/test_v5_acoustic_ab.py \
             tools/emotion_label_refiner.py \
             tools/evaluate_emotion_review.py \
             tools/kaggle_training_preflight.py \
