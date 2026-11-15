@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import wave
 from pathlib import Path
 
 import yaml
@@ -153,6 +154,159 @@ def output_root(gpt_weight_root: Path) -> Path:
     return Path(gpt_weight_root).resolve().parent
 
 
+def _wav_duration_seconds(path: Path) -> float | None:
+    try:
+        with wave.open(str(path), "rb") as handle:
+            rate = int(handle.getframerate())
+            frames = int(handle.getnframes())
+    except (OSError, wave.Error):
+        return None
+    if rate <= 0:
+        return None
+    return frames / rate
+
+
+def _resolve_list_audio(
+    audio_value: str,
+    list_path: Path,
+    wav_root: Path,
+) -> Path | None:
+    raw = Path(str(audio_value).replace("\\", "/")).expanduser()
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.extend(
+            [
+                list_path.parent / raw,
+                wav_root / raw,
+                wav_root / raw.name,
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+
+    matches = list(wav_root.rglob(raw.name))
+    if len(matches) == 1 and matches[0].is_file():
+        return matches[0].resolve()
+    return None
+
+
+def export_listening_reference(
+    list_path: Path,
+    wav_root: Path,
+    output_dir: Path,
+) -> dict:
+    """Persist one deterministic inference reference outside temporary data."""
+
+    list_path = Path(list_path).expanduser().resolve()
+    wav_root = Path(wav_root).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
+
+    if not list_path.is_file():
+        raise RuntimeError(
+            f"추론용 reference를 고를 .list가 없습니다: {list_path}"
+        )
+    if not wav_root.is_dir():
+        raise RuntimeError(
+            f"추론용 reference WAV 폴더가 없습니다: {wav_root}"
+        )
+
+    rows = []
+    for index, raw_line in enumerate(
+        list_path.read_text(encoding="utf-8-sig").splitlines()
+    ):
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split("|", 3)
+        if len(parts) < 4:
+            continue
+
+        audio = _resolve_list_audio(
+            parts[0],
+            list_path,
+            wav_root,
+        )
+        if audio is None:
+            continue
+
+        duration = _wav_duration_seconds(audio)
+        rows.append(
+            {
+                "index": index,
+                "audio": audio,
+                "speaker": parts[1].strip(),
+                "language": parts[2].strip(),
+                "text": parts[3].strip(),
+                "duration_seconds": duration,
+            }
+        )
+
+    if not rows:
+        raise RuntimeError(
+            "자동 생성된 .list에서 추론용 reference WAV를 찾지 못했습니다."
+        )
+
+    def score(item):
+        duration = item["duration_seconds"]
+        text = item["text"]
+        if duration is None:
+            band = 3
+            distance = 999.0
+        elif 3.0 <= duration <= 10.0:
+            band = 0
+            distance = abs(duration - 6.0)
+        elif 1.5 <= duration <= 15.0:
+            band = 1
+            distance = abs(duration - 6.0)
+        else:
+            band = 2
+            distance = abs(duration - 6.0)
+
+        text_penalty = 0 if 2 <= len(text) <= 120 else 1
+        return (
+            band,
+            text_penalty,
+            distance,
+            item["index"],
+        )
+
+    chosen = min(rows, key=score)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = chosen["audio"].suffix.lower() or ".wav"
+    copied_audio = output_dir / f"reference{suffix}"
+    shutil.copy2(chosen["audio"], copied_audio)
+
+    text_path = output_dir / "reference.txt"
+    text_path.write_text(
+        chosen["text"] + "\n",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "source_audio": str(chosen["audio"]),
+        "audio": str(copied_audio),
+        "text_file": str(text_path),
+        "text": chosen["text"],
+        "language": chosen["language"],
+        "speaker": chosen["speaker"],
+        "duration_seconds": chosen["duration_seconds"],
+        "selection": "prefer_3_to_10_seconds_closest_to_6",
+    }
+    (output_dir / "reference.json").write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return payload
+
+
 def controller_for_gpt(
     root: Path,
     gpt_checkpoint: Path,
@@ -195,6 +349,49 @@ def controller_for_gpt(
             return None
 
     return None
+
+def controller_bypass_for_gpt(
+    root: Path,
+    gpt_checkpoint: Path,
+) -> bool:
+    """Allow controllerless inference only for explicit dev acoustic ablations."""
+
+    root = Path(root)
+    try:
+        target = Path(gpt_checkpoint).expanduser().resolve()
+    except OSError:
+        return False
+
+    manifest_root = root / "dev_experiments"
+    if not manifest_root.is_dir():
+        return False
+
+    for manifest_path in manifest_root.glob("*/manifest.json"):
+        try:
+            payload = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        if not bool(payload.get("acoustic_ablation", False)):
+            continue
+
+        for item in payload.get("results") or []:
+            try:
+                candidate = Path(
+                    str(item.get("gpt_checkpoint") or "")
+                ).expanduser().resolve()
+            except OSError:
+                continue
+
+            if candidate != target:
+                continue
+
+            return not bool(item.get("controller_enabled", True))
+
+    return False
+
 
 def write_manifest(path: Path, payload: dict) -> None:
     path = Path(path)
