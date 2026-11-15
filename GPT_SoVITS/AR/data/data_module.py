@@ -44,16 +44,36 @@ class Text2SemanticDataModule(LightningDataModule):
             )
         )
 
-        self._train_dataset = Text2SemanticDataset(
-            phoneme_path=self.train_phoneme_path,
-            semantic_path=self.train_semantic_path,
-            max_sec=self.config["data"]["max_sec"],
-            pad_val=self.config["data"]["pad_val"],
-            adaptive_validation=adaptive,
-            validation_fraction=val_fraction,
-            split_role="train",
-            split_seed=split_seed,
-        )
+        try:
+            self._train_dataset = Text2SemanticDataset(
+                phoneme_path=self.train_phoneme_path,
+                semantic_path=self.train_semantic_path,
+                max_sec=self.config["data"]["max_sec"],
+                pad_val=self.config["data"]["pad_val"],
+                adaptive_validation=adaptive,
+                validation_fraction=val_fraction,
+                split_role="train",
+                split_seed=split_seed,
+            )
+        except RuntimeError as exc:
+            if not adaptive:
+                raise
+            print(
+                "[S1 adaptive] train holdout disabled: "
+                f"{exc}"
+            )
+            adaptive = False
+            self.config["train"]["adaptive_training"] = False
+            self._train_dataset = Text2SemanticDataset(
+                phoneme_path=self.train_phoneme_path,
+                semantic_path=self.train_semantic_path,
+                max_sec=self.config["data"]["max_sec"],
+                pad_val=self.config["data"]["pad_val"],
+                adaptive_validation=False,
+                split_role="train",
+                split_seed=split_seed,
+            )
+
         if adaptive:
             try:
                 self._dev_dataset = Text2SemanticDataset(
