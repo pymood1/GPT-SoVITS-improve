@@ -101,11 +101,27 @@ class Text2SemanticDataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
-        if not self.config["train"].get(
-            "adaptive_training",
-            False,
-        ):
-            return None
+        adaptive = bool(
+            self.config["train"].get(
+                "adaptive_training",
+                False,
+            )
+        )
+        if not adaptive:
+            # Trainer may already have been constructed with validation
+            # enabled before setup discovers that the few-shot dataset is too
+            # small for a trustworthy holdout. Return a harmless loader
+            # instead of None for Lightning-version compatibility;
+            # validation_step exits immediately while the adaptive callback
+            # stops at the requested minimum epoch.
+            return DataLoader(
+                self._dev_dataset,
+                batch_size=1,
+                shuffle=False,
+                collate_fn=self._dev_dataset.collate,
+                num_workers=0,
+            )
+
         workers = max(1, min(self.num_workers, 4))
         return DataLoader(
             self._dev_dataset,
