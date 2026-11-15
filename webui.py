@@ -5609,8 +5609,8 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
     wav_root = _clean_user_path(wav_root)
     if not experiment_name:
         raise RuntimeError("실험명이 비어 있습니다.")
-    if not source_list or not wav_root:
-        raise RuntimeError("학습 .list와 음성 폴더 경로가 필요합니다.")
+    if not wav_root:
+        raise RuntimeError("학습용 음성 폴더 경로가 필요합니다.")
 
     gpu_ids = dev_available_gpu_ids(set_gpu_numbers, default_gpu_numbers)
     preprocess_gpus = dev_preprocess_gpu_string(gpu_ids)
