@@ -20,6 +20,9 @@ class TinyS2(torch.nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor([.123456789]))
+        # Mirrors V5 DiT TextEmbedding.freqs_cis: runtime-cast by module.half(),
+        # intentionally absent from state_dict because persistent=False.
+        self.register_buffer("freqs_cis", torch.tensor([1.25], dtype=torch.float32), persistent=False)
         self.cfm = CFM()
         for key, value in dict(noise_temperature=.875, use_static_cache=True,
                                use_conditioner_cache=True, use_step_embedding=False,
@@ -60,7 +63,9 @@ class ControlsTests(unittest.TestCase):
             full, _ = factory(fp32=True)
             self.assertTrue(torch.equal(second.weight, s2.weight))
             self.assertEqual(second.weight.dtype, torch.float16)
+            self.assertEqual(second.freqs_cis.dtype, torch.float16)
             self.assertEqual(full.weight.dtype, torch.float32)
+            self.assertEqual(full.freqs_cis.dtype, torch.float32)
             self.assertTrue(torch.equal(full.weight, original_float))
             self.assertFalse(torch.equal(full.weight, s2.weight.float()))
             factory.close()
