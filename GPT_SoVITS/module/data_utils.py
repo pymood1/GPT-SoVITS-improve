@@ -644,6 +644,45 @@ class TextAudioSpeakerLoaderV4(torch.utils.data.Dataset):
             self.phoneme_data[tmp[0]] = [tmp[1]]
 
         self.audiopaths_sid_text = list(set(self.phoneme_data) & names4 & names5)
+        adaptive_validation = bool(
+            getattr(hparams, "adaptive_training", False)
+        )
+        validation_fraction = float(
+            getattr(
+                hparams,
+                "adaptive_validation_fraction",
+                0.10,
+            )
+        )
+        split_seed = int(
+            getattr(hparams, "adaptive_split_seed", 233333)
+        )
+        holdout_names = set()
+        if adaptive_validation:
+            holdout_names = deterministic_holdout_names(
+                self.audiopaths_sid_text,
+                fraction=validation_fraction,
+                seed=split_seed,
+            )
+            if val and not holdout_names:
+                raise RuntimeError(
+                    "SoVITS adaptive validation requires at least "
+                    "8 unique usable items."
+                )
+            if holdout_names:
+                if val:
+                    self.audiopaths_sid_text = [
+                        name
+                        for name in self.audiopaths_sid_text
+                        if name in holdout_names
+                    ]
+                else:
+                    self.audiopaths_sid_text = [
+                        name
+                        for name in self.audiopaths_sid_text
+                        if name not in holdout_names
+                    ]
+
         tmp = self.audiopaths_sid_text
         leng = len(tmp)
         min_num = 100
