@@ -238,20 +238,26 @@ class Text2SemanticLightningModule(LightningModule):
             use_dpo = self.current_epoch >= self._dpo_warmup_epochs()
 
         if use_dpo:
-            loss, acc = self.model.forward(
-                batch["phoneme_ids"],
-                batch["phoneme_ids_len"],
-                batch["semantic_ids"],
-                batch["semantic_ids_len"],
-                batch["bert_feature"],
-                dpo_beta=float(
-                    self.config["train"].get("dpo_beta", 0.2)
-                ),
-                dpo_reference_mode=self.config["train"].get(
-                    "dpo_reference_mode",
-                    "reference_free",
-                ),
-            )
+            # Preference ratios should compare weights, not independent
+            # stochastic dropout masks.
+            with self.model.dpo_dropout_disabled():
+                loss, acc = self.model.forward(
+                    batch["phoneme_ids"],
+                    batch["phoneme_ids_len"],
+                    batch["semantic_ids"],
+                    batch["semantic_ids_len"],
+                    batch["bert_feature"],
+                    dpo_beta=float(
+                        self.config["train"].get("dpo_beta", 0.2)
+                    ),
+                    dpo_reference_mode=self.config["train"].get(
+                        "dpo_reference_mode",
+                        "reference_free",
+                    ),
+                    dpo_weight=float(
+                        self.config["train"].get("dpo_weight", 0.2)
+                    ),
+                )
         else:
             loss, acc = self.model.forward_old(
                 batch["phoneme_ids"],
@@ -273,6 +279,32 @@ class Text2SemanticLightningModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+        if use_dpo and hasattr(self.model, "last_dpo_metrics"):
+            metrics = self.model.last_dpo_metrics
+            self.log(
+                "dpo_loss",
+                metrics["dpo_loss"],
+                on_step=True,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "dpo_chosen_logp",
+                metrics["chosen_logp"],
+                on_step=True,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
+            self.log(
+                "dpo_rejected_logp",
+                metrics["rejected_logp"],
+                on_step=True,
+                on_epoch=True,
+                prog_bar=False,
+                sync_dist=True,
+            )
         self.log(
             "lr",
             scheduler.get_last_lr()[0],
