@@ -140,7 +140,10 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
                 skipped_dur += 1
                 continue
 
-            if 54 > duration > 0.6 or self.val:
+            if (
+                54 > duration > 0.6
+                or (self.val and not adaptive_validation)
+            ):
                 audiopaths_sid_text_new.append([audiopath, phoneme_ids])
                 lengths.append(size // (2 * self.hop_length))
             else:
@@ -450,7 +453,10 @@ class TextAudioSpeakerLoaderV3(torch.utils.data.Dataset):
                 skipped_dur += 1
                 continue
 
-            if 54 > duration > 0.6 or self.val:
+            if (
+                54 > duration > 0.6
+                or (self.val and not adaptive_validation)
+            ):
                 audiopaths_sid_text_new.append([audiopath, phoneme_ids])
                 lengths.append(size // (2 * self.hop_length))
             else:
@@ -744,7 +750,10 @@ class TextAudioSpeakerLoaderV4(torch.utils.data.Dataset):
                 skipped_dur += 1
                 continue
 
-            if 54 > duration > 0.6 or self.val:
+            if (
+                54 > duration > 0.6
+                or (self.val and not adaptive_validation)
+            ):
                 audiopaths_sid_text_new.append([audiopath, phoneme_ids])
                 lengths.append(size // (2 * self.hop_length))
             else:
@@ -1011,7 +1020,10 @@ class TextAudioSpeakerLoaderV3b(torch.utils.data.Dataset):
                 skipped_dur += 1
                 continue
 
-            if 54 > duration > 0.6 or self.val:
+            if (
+                54 > duration > 0.6
+                or (self.val and not adaptive_validation)
+            ):
                 audiopaths_sid_text_new.append([audiopath, phoneme_ids])
                 lengths.append(size // (2 * self.hop_length))
             else:
