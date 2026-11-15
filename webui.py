@@ -423,6 +423,9 @@ def _training_process_running():
 
 
 def _preprocessing_process_running():
+    if globals().get("preprocess_1a_auto_asr_active", False):
+        return True
+
     for process_list_name in ("ps1a", "ps1b", "ps1c"):
         for process in globals().get(process_list_name, []) or []:
             if process is not None and process.poll() is None:
@@ -5362,7 +5365,7 @@ def close1abc():
 
     preprocess_1abc_cancel_requested = True
 
-    if ps1a:
+    if ps1a or preprocess_1a_auto_asr_active:
         close1a()
     if ps1b:
         close1b()
