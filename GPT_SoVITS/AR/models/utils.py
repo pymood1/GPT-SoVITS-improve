@@ -227,56 +227,157 @@ def get_batch_logps(
     logits_reject: torch.FloatTensor,
     labels_target: torch.LongTensor,
     labels_reject: torch.LongTensor,
+    target_lens: Optional[torch.LongTensor] = None,
+    reject_lens: Optional[torch.LongTensor] = None,
     average_log_prob: bool = False,
 ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-    # dummy token; we'll ignore the losses on these tokens later
+    """Return sequence log-probabilities over real tokens only.
+
+    S1 pads semantic batches to the longest item. Preference learning must not
+    score those padded EOS positions, otherwise short utterances receive an
+    artificial probability bonus/penalty. Lengths refer to semantic tokens;
+    one additional position is included for the true terminal EOS target.
+    """
 
     per_token_logps_target = torch.gather(
-        logits_target.log_softmax(-1), dim=2, index=labels_target.unsqueeze(2)
+        logits_target.log_softmax(-1),
+        dim=2,
+        index=labels_target.unsqueeze(2),
     ).squeeze(2)
     per_token_logps_reject = torch.gather(
-        logits_reject.log_softmax(-1), dim=2, index=labels_reject.unsqueeze(2)
+        logits_reject.log_softmax(-1),
+        dim=2,
+        index=labels_reject.unsqueeze(2),
     ).squeeze(2)
 
-    return per_token_logps_target.sum(-1), per_token_logps_reject.sum(-1)
+    def reduce_logps(per_token_logps, lengths):
+        if lengths is None:
+            if average_log_prob:
+                return per_token_logps.mean(-1)
+            return per_token_logps.sum(-1)
+
+        valid_lengths = lengths.to(
+            device=per_token_logps.device,
+            dtype=torch.long,
+        ) + 1  # include the terminal EOS target
+        valid_lengths = valid_lengths.clamp(
+            min=1,
+            max=per_token_logps.shape[1],
+        )
+        positions = torch.arange(
+            per_token_logps.shape[1],
+            device=per_token_logps.device,
+        ).unsqueeze(0)
+        mask = positions < valid_lengths.unsqueeze(1)
+        sequence_logps = (
+            per_token_logps * mask.to(per_token_logps.dtype)
+        ).sum(-1)
+        if average_log_prob:
+            sequence_logps = sequence_logps / valid_lengths.to(
+                per_token_logps.dtype
+            )
+        return sequence_logps
+
+    return (
+        reduce_logps(per_token_logps_target, target_lens),
+        reduce_logps(per_token_logps_reject, reject_lens),
+    )
 
 
 def make_reject_y(y_o, y_lens):
+    """Create a real, local repeat/drop corruption for every semantic item.
+
+    The upstream implementation sampled from the padded tensor width rather
+    than each sample's true semantic length and could also choose an empty
+    range. Both cases can produce a rejected sequence that is mostly padding
+    or even identical to the chosen sequence. Keep corruption inside the real
+    token span and guarantee at least one changed token.
+    """
+
+    def choose_span(length):
+        if length <= 0:
+            raise ValueError("semantic sequence length must be positive")
+        if length == 1:
+            return 0, 1
+
+        # Keep the synthetic negative local. Large random deletions/repeats are
+        # trivial negatives and teach less about realistic degeneration.
+        max_span = max(1, min(length - 1, int(round(length * 0.33))))
+        span = int(
+            torch.randint(
+                1,
+                max_span + 1,
+                size=(1,),
+                device=y_o.device,
+            ).item()
+        )
+        start = int(
+            torch.randint(
+                0,
+                length - span + 1,
+                size=(1,),
+                device=y_o.device,
+            ).item()
+        )
+        return start, start + span
+
     def repeat_P(y):
-        range_idx, _ = torch.randint(0, len(y), size=(2,)).sort()
-        pre = y[: range_idx[0]]
-        shf = y[range_idx[1] :]
-        range_text = y[range_idx[0] : range_idx[1]]
-        new_y = torch.cat([pre, range_text, range_text, shf])
-        return new_y
+        start, end = choose_span(len(y))
+        return torch.cat(
+            [y[:start], y[start:end], y[start:end], y[end:]],
+            dim=0,
+        )
 
     def lost_P(y):
-        range_idx, _ = torch.randint(0, len(y), size=(2,)).sort()
-        pre = y[: range_idx[0]]
-        shf = y[range_idx[1] :]
-        range_text = y[range_idx[0] : range_idx[1]]
-        new_y = torch.cat([pre, shf])
-        return new_y
+        # Never delete the entire sequence. A one-token sequence therefore
+        # falls back to repetition.
+        if len(y) <= 1:
+            return repeat_P(y)
+        start, end = choose_span(len(y))
+        if end - start >= len(y):
+            end = len(y) - 1
+        return torch.cat([y[:start], y[end:]], dim=0)
 
-    bs = len(y_lens)
     reject_y = []
     reject_y_lens = []
-    for b in range(bs):
-        process_item_idx = torch.randint(0, 2, size=(1,))[0]
-        if process_item_idx == 0:
-            new_y = repeat_P(y_o[b])
-            reject_y.append(new_y)
-            reject_y_lens.append(len(new_y))
-        elif process_item_idx == 1:
-            new_y = lost_P(y_o[b])
-            reject_y.append(new_y)
-            reject_y_lens.append(len(new_y))
+    for b in range(len(y_lens)):
+        true_len = int(y_lens[b].item())
+        if true_len <= 0:
+            raise ValueError("semantic sequence length must be positive")
+        valid_y = y_o[b, :true_len]
+
+        process_item_idx = int(
+            torch.randint(
+                0,
+                2,
+                size=(1,),
+                device=y_o.device,
+            ).item()
+        )
+        new_y = repeat_P(valid_y) if process_item_idx == 0 else lost_P(valid_y)
+        reject_y.append(new_y)
+        reject_y_lens.append(len(new_y))
+
     max_length = max(reject_y_lens)
-    for b in range(bs):
+    for b in range(len(reject_y)):
         pad_length = max_length - reject_y_lens[b]
-        reject_y[b] = torch.cat([reject_y[b], torch.zeros(pad_length, dtype=y_o.dtype, device=y_o.device)], dim=0)
+        if pad_length:
+            reject_y[b] = torch.cat(
+                [
+                    reject_y[b],
+                    torch.zeros(
+                        pad_length,
+                        dtype=y_o.dtype,
+                        device=y_o.device,
+                    ),
+                ],
+                dim=0,
+            )
 
     reject_y = torch.stack(reject_y, dim=0)
-    reject_y_lens = torch.tensor(reject_y_lens, device=y_lens.device)
-
+    reject_y_lens = torch.tensor(
+        reject_y_lens,
+        device=y_lens.device,
+        dtype=y_lens.dtype,
+    )
     return reject_y, reject_y_lens
