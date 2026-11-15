@@ -213,6 +213,33 @@ def _run(rank, n_gpus, hps, use_ddp):
                 f"{exc}"
             )
             adaptive_enabled = False
+            # Rebuild without a holdout so failed validation never removes
+            # scarce few-shot speaker examples from the real training set.
+            hps.data.adaptive_training = False
+            train_dataset = TextAudioSpeakerLoader(hps.data)
+            train_sampler = DistributedBucketSampler(
+                train_dataset,
+                hps.train.batch_size,
+                [
+                    32,
+                    300,
+                    400,
+                    500,
+                    600,
+                    700,
+                    800,
+                    900,
+                    1000,
+                ],
+                num_replicas=n_gpus,
+                rank=rank,
+                shuffle=True,
+            )
+            loader_kwargs["batch_sampler"] = train_sampler
+            train_loader = DataLoader(
+                train_dataset,
+                **loader_kwargs,
+            )
 
     if use_ddp:
         adaptive_enabled = _broadcast_bool(
