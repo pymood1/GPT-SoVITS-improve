@@ -464,15 +464,16 @@ def main(args):
                         old_weight.unlink()
                     except OSError:
                         pass
-                best_name = (
-                    f"{config['train']['exp_name']}-e"
-                    f"{best_epoch}.ckpt"
-                )
-            else:
-                best_name = (
-                    f"{config['train']['exp_name']}"
-                    f"-adaptive-best-e{best_epoch}.ckpt"
-                )
+
+            # Keep the canonical GPT-SoVITS filename contract even when
+            # retaining every checkpoint. Downstream controller/inference
+            # discovery only recognizes <experiment>-e<number>.ckpt and sorts
+            # by modification time, so rewriting the restored best epoch here
+            # makes it the selected checkpoint without inventing a new format.
+            best_name = (
+                f"{config['train']['exp_name']}-e"
+                f"{best_epoch}.ckpt"
+            )
 
             to_save = OrderedDict()
             to_save["weight"] = OrderedDict(
