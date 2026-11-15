@@ -1,6 +1,7 @@
 # modified from https://github.com/yangdongchao/SoundStorm/blob/master/soundstorm/s1/AR/models/t2s_model.py
 # reference: https://github.com/lifeiteng/vall-e
 import math
+from contextlib import contextmanager
 from typing import List, Optional
 
 import torch
@@ -420,6 +421,39 @@ class Text2SemanticDecoder(nn.Module):
         )
         return samples, emotion_state
 
+    @contextmanager
+    def _s1_lora_reference(self):
+        """Temporarily evaluate the frozen pretrained S1 without LoRA deltas.
+
+        This is intentionally only valid when training through the existing
+        S1 LoRA path. It gives DPO a true reference policy without allocating
+        a second Text2SemanticDecoder, which matters for low-data / low-VRAM
+        fine-tuning.
+        """
+        modules = [
+            module
+            for module in self.h.modules()
+            if getattr(module, "lora_enabled", False)
+            and hasattr(module, "suspend_lora")
+        ]
+        if not modules:
+            raise RuntimeError(
+                "dpo_reference_mode='lora_base' requires an active S1 LoRA "
+                "adapter (for example train.s1_adapter=lora_v_o)"
+            )
+
+        previous = [
+            bool(getattr(module, "_lora_suspended", False))
+            for module in modules
+        ]
+        for module in modules:
+            module.suspend_lora(True)
+        try:
+            yield
+        finally:
+            for module, was_suspended in zip(modules, previous):
+                module.suspend_lora(was_suspended)
+
     def make_input_data(self, x, x_lens, y, y_lens, bert_feature):
         x = self.ar_text_embedding(x)
         x = x + self.bert_proj(bert_feature.transpose(1, 2))
@@ -473,7 +507,16 @@ class Text2SemanticDecoder(nn.Module):
 
         return xy_pos, xy_attn_mask, targets
 
-    def forward(self, x, x_lens, y, y_lens, bert_feature):
+    def forward(
+        self,
+        x,
+        x_lens,
+        y,
+        y_lens,
+        bert_feature,
+        dpo_beta: float = 0.2,
+        dpo_reference_mode: str = "reference_free",
+    ):
         """
         x: phoneme_ids
         y: semantic_ids
@@ -508,8 +551,67 @@ class Text2SemanticDecoder(nn.Module):
         loss_1 = F.cross_entropy(logits.permute(0, 2, 1), targets, reduction="sum")
         acc = self.ar_accuracy_metric(logits.permute(0, 2, 1).detach(), targets).item()
 
-        A_logits, R_logits = get_batch_logps(logits, reject_logits, targets, reject_targets)
-        loss_2, _, _ = dpo_loss(A_logits, R_logits, 0, 0, 0.2, reference_free=True)
+        A_logits, R_logits = get_batch_logps(
+            logits,
+            reject_logits,
+            targets,
+            reject_targets,
+        )
+
+        reference_mode = str(
+            dpo_reference_mode or "reference_free"
+        ).strip().lower()
+        beta = float(dpo_beta)
+        if beta <= 0.0:
+            raise ValueError("dpo_beta must be positive")
+
+        if reference_mode in {"reference_free", "none", "legacy"}:
+            reference_A_logits = 0
+            reference_R_logits = 0
+            reference_free = True
+        elif reference_mode in {"lora_base", "base_lora", "pretrained_lora"}:
+            # Reuse the same frozen base weights under the LoRA adapters as
+            # the reference policy. No second S1 copy is needed.
+            with torch.no_grad():
+                with self._s1_lora_reference():
+                    reference_xy_dec, _ = self.h(
+                        (xy_pos.detach(), None),
+                        mask=xy_attn_mask,
+                    )
+                    reference_logits = self.ar_predict_layer(
+                        reference_xy_dec[:, x_len - 1 :]
+                    )
+                    reference_reject_xy_dec, _ = self.h(
+                        (reject_xy_pos.detach(), None),
+                        mask=reject_xy_attn_mask,
+                    )
+                    reference_reject_logits = self.ar_predict_layer(
+                        reference_reject_xy_dec[:, x_len - 1 :]
+                    )
+                    (
+                        reference_A_logits,
+                        reference_R_logits,
+                    ) = get_batch_logps(
+                        reference_logits,
+                        reference_reject_logits,
+                        targets,
+                        reject_targets,
+                    )
+            reference_free = False
+        else:
+            raise ValueError(
+                "unsupported dpo_reference_mode: "
+                f"{dpo_reference_mode!r}"
+            )
+
+        loss_2, _, _ = dpo_loss(
+            A_logits,
+            R_logits,
+            reference_A_logits,
+            reference_R_logits,
+            beta,
+            reference_free=reference_free,
+        )
 
         loss = loss_1 + loss_2
 
