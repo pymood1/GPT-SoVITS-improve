@@ -7450,7 +7450,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         interactive=True,
                                     )
                                     adaptive_training_sovits = gr.Checkbox(
-                                        label="SoVITS 자동 epoch 최적화 / early stop",
+                                        label="SoVITS 자동 epoch 최적화 / early stop (입력 epoch = 최소)",
                                         value=False,
                                         interactive=True,
                                         show_label=True,
@@ -7536,7 +7536,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                                         interactive=True,
                                     )
                                     adaptive_training_gpt = gr.Checkbox(
-                                        label="GPT/S1 자동 epoch 최적화 / early stop",
+                                        label="GPT/S1 자동 epoch 최적화 / early stop (입력 epoch = 최소)",
                                         value=False,
                                         interactive=True,
                                         show_label=True,
