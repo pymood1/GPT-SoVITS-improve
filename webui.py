@@ -5571,8 +5571,47 @@ def open1abc(
 ):
     """Run the canonical 1A -> 1B -> 1C implementations in order."""
     global preprocess_1abc_cancel_requested
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1abc_cancel_requested = False
+
+    requested_list = _resolve_repo_path(inp_text) if inp_text else None
+    if not _usable_training_list(requested_list):
+        preprocess_1a_auto_prepare_active = True
+        try:
+            auto_sources = _ensure_training_sources(
+                inp_text,
+                inp_wav_dir,
+            )
+            while True:
+                try:
+                    prep_status = next(auto_sources)
+                except StopIteration as stop:
+                    inp_text, inp_wav_dir = stop.value
+                    break
+
+                if preprocess_1abc_cancel_requested:
+                    close1abc()
+                    return
+
+                yield (
+                    i18n("进度")
+                    + ": 0-AutoPrepare\n\n"
+                    + str(prep_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
+            yield (
+                process_info(process_name_1abc, "failed")
+                + f": 자동 기초 전처리 실패: {exc}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
+        finally:
+            preprocess_1a_auto_prepare_active = False
+
     stages = [
         (
             "1A",
@@ -5706,34 +5745,64 @@ def open1abcd(
     emotion_auto_device,
 ):
     global preprocess_1abcd_cancel_requested
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1abcd_cancel_requested = False
     sidecar_update = {"__type__": "update"}
     list_update = {"__type__": "update"}
+    wav_update = {"__type__": "update"}
 
     requested_list = _resolve_repo_path(inp_text) if inp_text else None
     if not _usable_training_list(requested_list):
+        preprocess_1a_auto_prepare_active = True
         try:
-            inp_text = str(
-                _training_list_target_path(
-                    inp_text,
-                    inp_wav_dir,
-                )
+            auto_sources = _ensure_training_sources(
+                inp_text,
+                inp_wav_dir,
             )
+            while True:
+                try:
+                    prep_status = next(auto_sources)
+                except StopIteration as stop:
+                    inp_text, inp_wav_dir = stop.value
+                    break
+
+                if preprocess_1abcd_cancel_requested:
+                    return
+
+                yield (
+                    "### 전처리 일괄 실행\n\n"
+                    "**.list 없음 → 기본 전처리 중**\n\n"
+                    + str(prep_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    sidecar_update,
+                    list_update,
+                    wav_update,
+                )
         except (OSError, RuntimeError, ValueError) as exc:
+            if preprocess_1abcd_cancel_requested:
+                return
             yield (
                 "### 전처리 일괄 실행 실패\n\n"
-                f"자동 .list 경로 준비 실패: {exc}",
+                f"자동 기초 전처리 실패: {exc}",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
                 sidecar_update,
                 list_update,
+                wav_update,
             )
             return
+        finally:
+            preprocess_1a_auto_prepare_active = False
 
     list_update = {
         "__type__": "update",
         "value": str(inp_text),
+    }
+    wav_update = {
+        "__type__": "update",
+        "value": str(inp_wav_dir),
     }
 
     yield (
@@ -5742,6 +5811,7 @@ def open1abcd(
         {"__type__": "update", "visible": True},
         sidecar_update,
         list_update,
+        wav_update,
     )
 
     abc_finished = False
@@ -5774,6 +5844,7 @@ def open1abcd(
             {"__type__": "update", "visible": True},
             sidecar_update,
             list_update,
+            wav_update,
         )
 
     if not abc_finished:
@@ -5784,6 +5855,7 @@ def open1abcd(
             {"__type__": "update", "visible": False},
             sidecar_update,
             list_update,
+            wav_update,
         )
         return
 
@@ -5797,6 +5869,7 @@ def open1abcd(
         {"__type__": "update", "visible": True},
         sidecar_update,
         list_update,
+        wav_update,
     )
 
     d_finished = False
@@ -5832,6 +5905,7 @@ def open1abcd(
             {"__type__": "update", "visible": True},
             sidecar_update,
             list_update,
+            wav_update,
         )
 
     if not d_finished:
@@ -5842,6 +5916,7 @@ def open1abcd(
             {"__type__": "update", "visible": False},
             sidecar_update,
             list_update,
+            wav_update,
         )
         return
 
@@ -5852,6 +5927,7 @@ def open1abcd(
         {"__type__": "update", "visible": False},
         sidecar_update,
         list_update,
+        wav_update,
     )
 
 
@@ -5995,6 +6071,12 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 and result[4].get("value")
             ):
                 source_list = str(result[4]["value"])
+            if (
+                len(result) > 5
+                and isinstance(result[5], dict)
+                and result[5].get("value")
+            ):
+                wav_root = str(result[5]["value"])
 
             preprocess_finished = str(status).startswith(
                 "### 전처리 일괄 실행 완료"
@@ -7049,6 +7131,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         button1a_open,
                         button1a_close,
                         inp_text,
+                        inp_wav_dir,
                     ],
                 )
                 button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
@@ -7091,6 +7174,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         button1abc_close,
                         emotion_sidecar,
                         inp_text,
+                        inp_wav_dir,
                     ],
                 )
                 button1abc_close.click(
