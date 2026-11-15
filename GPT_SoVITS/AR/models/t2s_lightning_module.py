@@ -46,6 +46,7 @@ class Text2SemanticLightningModule(LightningModule):
             if self.grad_accum_steps <= 0:
                 raise ValueError("grad_accumulation_steps must be positive")
             self._grad_accum_count = 0
+            self._dpo_reference_announced = False
             self.save_hyperparameters()
             self.eval_dir = output_dir / "eval"
             self.eval_dir.mkdir(parents=True, exist_ok=True)
@@ -174,10 +175,68 @@ class Text2SemanticLightningModule(LightningModule):
             )
         return exported
 
+    def _dpo_warmup_epochs(self) -> int:
+        value = int(
+            self.config["train"].get("dpo_warmup_epochs", 1)
+        )
+        if value < 0:
+            raise ValueError("dpo_warmup_epochs must be >= 0")
+        return value
+
+    def _dpo_reference_mode(self) -> str:
+        return str(
+            self.config["train"].get(
+                "dpo_reference_mode",
+                "reference_free",
+            )
+            or "reference_free"
+        ).strip().lower()
+
+    def on_train_epoch_start(self):
+        if not self.config["train"].get("if_dpo", False):
+            return
+
+        mode = self._dpo_reference_mode()
+        if mode not in {
+            "speaker_snapshot",
+            "lora_snapshot",
+            "adapted_snapshot",
+        }:
+            return
+
+        warmup_epochs = self._dpo_warmup_epochs()
+        if self.current_epoch < warmup_epochs:
+            return
+
+        if not self.model.has_s1_lora_reference():
+            count = self.model.snapshot_s1_lora_reference()
+            print(
+                "[S1 DPO] captured speaker-adapted reference "
+                f"after {warmup_epochs} warmup epoch(s): "
+                f"{count} LoRA attention module(s)"
+            )
+        elif not self._dpo_reference_announced:
+            print(
+                "[S1 DPO] restored existing speaker-adapted "
+                "reference snapshot"
+            )
+        self._dpo_reference_announced = True
+
     def training_step(self, batch: Dict, batch_idx: int):
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
         use_dpo = self.config["train"].get("if_dpo", False) is True
+        if (
+            use_dpo
+            and self._dpo_reference_mode()
+            in {
+                "speaker_snapshot",
+                "lora_snapshot",
+                "adapted_snapshot",
+            }
+        ):
+            use_dpo = self.current_epoch >= self._dpo_warmup_epochs()
+
         if use_dpo:
             loss, acc = self.model.forward(
                 batch["phoneme_ids"],
