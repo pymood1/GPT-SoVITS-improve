@@ -5,6 +5,7 @@
 
 preset_id: s1_dpo_acoustic_ablation_round2
 version: v5dev
+acoustic_ablation: true
 
 preprocess:
   # Keep the same text feature path as the previous run so DPO is isolated.
