@@ -1,3 +1,4 @@
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -28,6 +29,45 @@ class AdaptiveTrainingTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertGreaterEqual(len(first), 2)
         self.assertLess(len(first), len(names))
+
+    def test_direct_training_calls_match_webui_function_signatures(self):
+        webui_path = ROOT / "webui.py"
+        tree = ast.parse(webui_path.read_text(encoding="utf-8"))
+
+        definitions = {}
+        for node in tree.body:
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name in {"open1Ba", "open1Bb"}
+            ):
+                definitions[node.name] = len(node.args.args)
+
+        self.assertEqual(set(definitions), {"open1Ba", "open1Bb"})
+
+        checked = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name):
+                continue
+            if node.func.id not in definitions:
+                continue
+            if any(isinstance(arg, ast.Starred) for arg in node.args):
+                continue
+
+            self.assertEqual(
+                len(node.args),
+                definitions[node.func.id],
+                (
+                    node.func.id,
+                    node.lineno,
+                    len(node.args),
+                    definitions[node.func.id],
+                ),
+            )
+            checked += 1
+
+        self.assertGreaterEqual(checked, 1)
 
     def test_adaptive_epoch_state_extends_while_improving(self):
         state = AdaptiveEpochState(
