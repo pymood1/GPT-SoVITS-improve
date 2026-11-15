@@ -144,7 +144,7 @@ class Text2SemanticDataset(Dataset):
             )
             if self.split_role == "val" and not holdout_names:
                 raise RuntimeError(
-                    "S1 adaptive validation requires at least 8 unique "
+                    "S1 adaptive validation requires at least 12 unique "
                     "usable items; fixed-epoch training should be used "
                     "for smaller few-shot datasets."
                 )
