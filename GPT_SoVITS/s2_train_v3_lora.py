@@ -201,6 +201,7 @@ def _run(rank, n_gpus, hps, use_ddp):
         dist.broadcast_object_list(flag, src=0)
         adaptive_enabled = bool(flag[0])
 
+    hps.train.adaptive_training = adaptive_enabled
     save_root = "%s/logs_s2_%s_lora_%s" % (hps.data.exp_dir, hps.model.version, hps.train.lora_rank)
     os.makedirs(save_root, exist_ok=True)
     lora_rank = int(hps.train.lora_rank)
