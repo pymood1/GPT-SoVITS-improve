@@ -238,26 +238,25 @@ class Text2SemanticLightningModule(LightningModule):
             use_dpo = self.current_epoch >= self._dpo_warmup_epochs()
 
         if use_dpo:
-            # Preference ratios should compare weights, not independent
-            # stochastic dropout masks.
-            with self.model.dpo_dropout_disabled():
-                loss, acc = self.model.forward(
-                    batch["phoneme_ids"],
-                    batch["phoneme_ids_len"],
-                    batch["semantic_ids"],
-                    batch["semantic_ids_len"],
-                    batch["bert_feature"],
-                    dpo_beta=float(
-                        self.config["train"].get("dpo_beta", 0.2)
-                    ),
-                    dpo_reference_mode=self.config["train"].get(
-                        "dpo_reference_mode",
-                        "reference_free",
-                    ),
-                    dpo_weight=float(
-                        self.config["train"].get("dpo_weight", 0.2)
-                    ),
-                )
+            # model.forward keeps the ordinary CE path stochastic and turns
+            # dropout off only for policy/reference preference ratios.
+            loss, acc = self.model.forward(
+                batch["phoneme_ids"],
+                batch["phoneme_ids_len"],
+                batch["semantic_ids"],
+                batch["semantic_ids_len"],
+                batch["bert_feature"],
+                dpo_beta=float(
+                    self.config["train"].get("dpo_beta", 0.2)
+                ),
+                dpo_reference_mode=self.config["train"].get(
+                    "dpo_reference_mode",
+                    "reference_free",
+                ),
+                dpo_weight=float(
+                    self.config["train"].get("dpo_weight", 0.2)
+                ),
+            )
         else:
             loss, acc = self.model.forward_old(
                 batch["phoneme_ids"],
