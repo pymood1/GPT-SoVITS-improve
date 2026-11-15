@@ -2953,6 +2953,25 @@ def _ensure_training_sources(inp_text, inp_wav_dir):
             )
             return str(requested), str(effective)
 
+        marker_original = _resolve_repo_path(
+            auto_source.get("original_wav_dir")
+        )
+        marker_effective = _resolve_repo_path(
+            auto_source.get("effective_wav_dir")
+        )
+        supplied = original_wav_dir.resolve()
+        if (
+            marker_original is not None
+            and marker_original.is_dir()
+            and marker_effective is not None
+            and supplied
+            in {
+                marker_original.resolve(),
+                marker_effective.resolve(),
+            }
+        ):
+            original_wav_dir = marker_original
+
         # Only stale files carrying our marker are safe to regenerate.
         requested.unlink(missing_ok=True)
         _auto_training_source_marker(requested).unlink(
