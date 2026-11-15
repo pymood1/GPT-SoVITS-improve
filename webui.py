@@ -3807,12 +3807,17 @@ def open1Bb(
         # GPT-SoVITS' few-shot character instead of anchoring preference
         # learning to the generic pretrained speaker distribution.
         dpo_reference_mode = "speaker_snapshot"
-        dpo_warmup_epochs = 1
-        if int(total_epoch) <= dpo_warmup_epochs:
-            print(
-                "[S1 DPO] only speaker-adaptation warmup will run because "
-                f"epochs={total_epoch}; preference refinement needs >=2 epochs"
-            )
+        epoch_count = max(2, int(total_epoch))
+        dpo_warmup_epochs = min(
+            3,
+            max(1, int(round(epoch_count * 0.20))),
+            epoch_count - 1,
+        )
+        print(
+            "[S1 DPO] low-data schedule: "
+            f"speaker_warmup={dpo_warmup_epochs} / "
+            f"total_epochs={epoch_count}"
+        )
 
     contract_1a = read_stage_contract(
         stage_contract_path(s1_dir, "1a")
@@ -3832,6 +3837,8 @@ def open1Bb(
         "if_dpo": bool(if_dpo),
         "dpo_reference_mode": dpo_reference_mode,
         "dpo_warmup_epochs": dpo_warmup_epochs,
+        "dpo_beta": 0.2,
+        "dpo_weight": 0.2,
         "s1_adapter": s1_adapter,
         "s1_lora_rank": (
             s1_lora_rank if s1_adapter != "full" else None
@@ -3893,6 +3900,7 @@ def open1Bb(
     data["train"]["dpo_reference_mode"] = dpo_reference_mode
     data["train"]["dpo_warmup_epochs"] = dpo_warmup_epochs
     data["train"]["dpo_beta"] = 0.2
+    data["train"]["dpo_weight"] = 0.2
     data["train"]["s1_adapter"] = s1_adapter
     data["train"]["s1_lora_rank"] = s1_lora_rank
     data["train"]["s1_lora_alpha"] = s1_lora_alpha
