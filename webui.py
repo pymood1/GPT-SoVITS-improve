@@ -2483,6 +2483,174 @@ AUTO_ASR_AUDIO_EXTENSIONS = {
     ".aac",
     ".wma",
 }
+AUTO_SLICE_LONG_AUDIO_SECONDS = 60.0
+AUTO_SLICE_SETTINGS = {
+    "threshold": "-34",
+    "min_length": "4000",
+    "min_interval": "300",
+    "hop_size": "10",
+    "max_sil_kept": "500",
+    "max": 0.9,
+    "alpha": 0.25,
+}
+
+
+def _audio_duration_seconds(path):
+    path = Path(path)
+    if path.suffix.lower() == ".wav":
+        try:
+            import wave
+
+            with wave.open(str(path), "rb") as handle:
+                frame_rate = int(handle.getframerate())
+                if frame_rate > 0:
+                    return float(handle.getnframes()) / frame_rate
+        except (OSError, EOFError, wave.Error):
+            pass
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            cwd=now_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            value = str(result.stdout or "").strip()
+            if value:
+                return float(value)
+    except (OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _long_training_audio_files(
+    wav_dir,
+    threshold_seconds=AUTO_SLICE_LONG_AUDIO_SECONDS,
+):
+    long_files = []
+    for path in _auto_asr_audio_files(wav_dir):
+        duration = _audio_duration_seconds(path)
+        if duration is not None and duration > float(threshold_seconds):
+            long_files.append((path, duration))
+    return long_files
+
+
+def _auto_slice_source_contract(wav_dir):
+    sources = []
+    for path in _auto_asr_audio_files(wav_dir):
+        stat = path.stat()
+        sources.append(
+            {
+                "name": path.name,
+                "size": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        )
+    return {
+        "format_version": 1,
+        "sources": sources,
+        "settings": dict(AUTO_SLICE_SETTINGS),
+        "long_audio_seconds": AUTO_SLICE_LONG_AUDIO_SECONDS,
+    }
+
+
+def _auto_slice_output_dir(
+    wav_dir,
+    slice_root="output/slicer_opt_auto",
+):
+    root = _resolve_repo_path(slice_root)
+    if root is None:
+        raise RuntimeError("자동 슬라이싱 출력 폴더를 결정하지 못했습니다.")
+    return (root / f"{Path(wav_dir).name}__auto").resolve()
+
+
+def _auto_slice_cache_valid(wav_dir, output_dir):
+    output_dir = Path(output_dir)
+    marker = output_dir / ".auto_slice.json"
+    if not marker.is_file():
+        return False
+    if not _auto_asr_audio_files(output_dir):
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return payload == _auto_slice_source_contract(wav_dir)
+
+
+def _ensure_auto_sliced_audio(wav_dir):
+    """Return a short-clip directory when long source recordings are present."""
+    wav_dir = Path(wav_dir)
+    long_files = _long_training_audio_files(wav_dir)
+    if not long_files:
+        return str(wav_dir)
+
+    output_dir = _auto_slice_output_dir(wav_dir)
+    if _auto_slice_cache_valid(wav_dir, output_dir):
+        longest = max(duration for _path, duration in long_files)
+        yield (
+            "긴 음성 자동 분할 캐시 재사용: "
+            f"{len(long_files)}개 / 최장 {longest / 60:.1f}분"
+        )
+        return str(output_dir)
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    longest = max(duration for _path, duration in long_files)
+    yield (
+        "긴 음성 감지 → 기존 slicer 자동 실행: "
+        f"{len(long_files)}개 / 최장 {longest / 60:.1f}분"
+    )
+
+    slice_finished = False
+    for result in open_slice(
+        str(wav_dir),
+        str(output_dir),
+        AUTO_SLICE_SETTINGS["threshold"],
+        AUTO_SLICE_SETTINGS["min_length"],
+        AUTO_SLICE_SETTINGS["min_interval"],
+        AUTO_SLICE_SETTINGS["hop_size"],
+        AUTO_SLICE_SETTINGS["max_sil_kept"],
+        AUTO_SLICE_SETTINGS["max"],
+        AUTO_SLICE_SETTINGS["alpha"],
+        min(4, max(1, int(n_cpu))),
+    ):
+        status = result[0] if result else ""
+        yield str(status)
+        slice_finished = (
+            status == process_info(process_name_slice, "finish")
+        )
+
+    sliced_files = _auto_asr_audio_files(output_dir)
+    if not slice_finished or not sliced_files:
+        raise RuntimeError(
+            "긴 음성 자동 분할이 완료되지 않았거나 결과 파일이 없습니다."
+        )
+
+    marker = output_dir / ".auto_slice.json"
+    marker.write_text(
+        json.dumps(
+            _auto_slice_source_contract(wav_dir),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return str(output_dir)
 
 
 def _usable_training_list(path):
@@ -2670,6 +2838,64 @@ def _ensure_training_list(
         )
 
     return str(final_path)
+
+
+def _ensure_training_sources(inp_text, inp_wav_dir):
+    """Prepare short training audio and a matching .list when needed."""
+    requested = (
+        _resolve_repo_path(my_utils.clean_path(inp_text))
+        if my_utils.clean_path(inp_text)
+        else None
+    )
+    original_wav_dir = _resolve_repo_path(inp_wav_dir)
+
+    if _usable_training_list(requested):
+        if original_wav_dir is None or not original_wav_dir.is_dir():
+            raise FileNotFoundError(
+                "학습용 음성 폴더가 없습니다: "
+                f"{original_wav_dir or '<empty>'}"
+            )
+        return str(requested), str(original_wav_dir)
+
+    if original_wav_dir is None or not original_wav_dir.is_dir():
+        raise FileNotFoundError(
+            "자동 전처리에 사용할 음성 폴더가 없습니다: "
+            f"{original_wav_dir or '<empty>'}"
+        )
+
+    target_list = _training_list_target_path(
+        inp_text,
+        original_wav_dir,
+    )
+
+    effective_wav_dir = original_wav_dir
+    auto_slice = _ensure_auto_sliced_audio(original_wav_dir)
+    while True:
+        try:
+            status = next(auto_slice)
+        except StopIteration as stop:
+            effective_wav_dir = _resolve_repo_path(stop.value)
+            break
+        yield str(status)
+
+    if effective_wav_dir is None or not effective_wav_dir.is_dir():
+        raise RuntimeError(
+            "자동 전처리 후 학습용 음성 폴더를 찾을 수 없습니다."
+        )
+
+    auto_list = _ensure_training_list(
+        str(target_list),
+        str(effective_wav_dir),
+    )
+    while True:
+        try:
+            status = next(auto_list)
+        except StopIteration as stop:
+            list_path = stop.value
+            break
+        yield str(status)
+
+    return str(list_path), str(effective_wav_dir)
 
 
 def close_asr():
