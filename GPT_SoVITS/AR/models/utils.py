@@ -284,6 +284,99 @@ def get_batch_logps(
     )
 
 
+def make_confusion_reject_y(
+    y_o: torch.LongTensor,
+    y_lens: torch.LongTensor,
+    chosen_logits: torch.FloatTensor,
+    eos_id: int,
+    max_fraction: float = 0.10,
+    max_span: int = 4,
+) -> Tuple[torch.LongTensor, torch.LongTensor]:
+    """Build same-length hard negatives from the policy own confusions.
+
+    chosen_logits come from teacher forcing on the correct sequence. For a
+    short local span, replace each target semantic token with a
+    high-probability alternative that is neither the ground-truth token nor
+    EOS. This produces plausible model mistakes without requiring more
+    speaker data or a separate reward model.
+    """
+
+    if chosen_logits.ndim != 3:
+        raise ValueError("chosen_logits must be [batch, time, vocab]")
+
+    rejected = y_o.clone()
+    rejected_lens = y_lens.clone()
+    vocab_size = int(chosen_logits.shape[-1])
+    eos_id = int(eos_id)
+
+    for batch_index in range(len(y_lens)):
+        length = int(y_lens[batch_index].item())
+        if length <= 0:
+            raise ValueError("semantic sequence length must be positive")
+
+        span_cap = max(
+            1,
+            min(
+                int(max_span),
+                length,
+                int(round(length * float(max_fraction))) or 1,
+            ),
+        )
+        span = int(
+            torch.randint(
+                1,
+                span_cap + 1,
+                size=(1,),
+                device=y_o.device,
+            ).item()
+        )
+        start = int(
+            torch.randint(
+                0,
+                length - span + 1,
+                size=(1,),
+                device=y_o.device,
+            ).item()
+        )
+
+        for position in range(start, start + span):
+            target = int(y_o[batch_index, position].item())
+            scores = chosen_logits[
+                batch_index,
+                position,
+            ].detach()
+            top_count = min(8, vocab_size)
+            candidates = torch.topk(
+                scores,
+                k=top_count,
+                dim=-1,
+            ).indices.tolist()
+
+            replacement = None
+            for candidate in candidates:
+                candidate = int(candidate)
+                if candidate != target and candidate != eos_id:
+                    replacement = candidate
+                    break
+
+            if replacement is None:
+                semantic_vocab = max(1, min(eos_id, vocab_size))
+                replacement = (target + 1) % semantic_vocab
+                if replacement == target and semantic_vocab > 1:
+                    replacement = (target + 2) % semantic_vocab
+
+            rejected[batch_index, position] = replacement
+
+        if torch.equal(
+            rejected[batch_index, :length],
+            y_o[batch_index, :length],
+        ):
+            raise RuntimeError(
+                "confusion negative failed to change a semantic token"
+            )
+
+    return rejected, rejected_lens
+
 def make_reject_y(y_o, y_lens):
     """Create a real, local repeat/drop corruption for every semantic item.
 
