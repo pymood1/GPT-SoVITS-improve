@@ -421,6 +421,28 @@ class Text2SemanticDecoder(nn.Module):
         )
         return samples, emotion_state
 
+    @contextmanager
+    def dpo_dropout_disabled(self):
+        """Temporarily disable dropout for deterministic preference ratios.
+
+        DPO compares small log-probability differences between policy and
+        reference. Different dropout masks would inject noise into that ratio.
+        Gradients remain enabled; only stochastic dropout is suspended.
+        """
+        dropouts = [
+            module
+            for module in self.modules()
+            if isinstance(module, nn.Dropout)
+        ]
+        previous = [module.p for module in dropouts]
+        for module in dropouts:
+            module.p = 0.0
+        try:
+            yield
+        finally:
+            for module, probability in zip(dropouts, previous):
+                module.p = probability
+
     def snapshot_s1_lora_reference(self) -> int:
         """Freeze the current LoRA policy as the speaker-adapted DPO anchor."""
         modules = [
@@ -546,6 +568,7 @@ class Text2SemanticDecoder(nn.Module):
         bert_feature,
         dpo_beta: float = 0.2,
         dpo_reference_mode: str = "reference_free",
+        dpo_weight: float = 1.0,
     ):
         """
         x: phoneme_ids
@@ -581,11 +604,17 @@ class Text2SemanticDecoder(nn.Module):
         loss_1 = F.cross_entropy(logits.permute(0, 2, 1), targets, reduction="sum")
         acc = self.ar_accuracy_metric(logits.permute(0, 2, 1).detach(), targets).item()
 
+        # Length-normalized log-probabilities remove the trivial bias
+        # where a repeated sequence loses simply because it contains more
+        # tokens. Only real tokens + one terminal EOS are scored.
         A_logits, R_logits = get_batch_logps(
             logits,
             reject_logits,
             targets,
             reject_targets,
+            target_lens=y_lens,
+            reject_lens=reject_y_lens,
+            average_log_prob=True,
         )
 
         reference_mode = str(
@@ -594,6 +623,9 @@ class Text2SemanticDecoder(nn.Module):
         beta = float(dpo_beta)
         if beta <= 0.0:
             raise ValueError("dpo_beta must be positive")
+        preference_weight = float(dpo_weight)
+        if preference_weight < 0.0:
+            raise ValueError("dpo_weight must be >= 0")
 
         if reference_mode in {"reference_free", "none", "legacy"}:
             reference_A_logits = 0
@@ -630,6 +662,9 @@ class Text2SemanticDecoder(nn.Module):
                         reference_reject_logits,
                         targets,
                         reject_targets,
+                        target_lens=y_lens,
+                        reject_lens=reject_y_lens,
+                        average_log_prob=True,
                     )
             reference_free = False
         else:
@@ -647,7 +682,14 @@ class Text2SemanticDecoder(nn.Module):
             reference_free=reference_free,
         )
 
-        loss = loss_1 + loss_2
+        loss = loss_1 + preference_weight * loss_2
+        self.last_dpo_metrics = {
+            "ce_loss": loss_1.detach(),
+            "dpo_loss": loss_2.detach(),
+            "dpo_weight": preference_weight,
+            "chosen_logp": A_logits.detach().mean(),
+            "rejected_logp": R_logits.detach().mean(),
+        }
 
         return loss, acc
 
