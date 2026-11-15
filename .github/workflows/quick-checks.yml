@@ -41,7 +41,9 @@ jobs:
             tools/calibrate_emotion_seed_thresholds.py \
             tools/emotion_label_refiner.py \
             tools/evaluate_emotion_review.py \
-            tools/kaggle_training_preflight.py
+            tools/kaggle_training_preflight.py \
+            tools/kaggle_dataset.py \
+            tools/kaggle_launch_webui.py
 
       - name: Validate notebooks as JSON
         run: |
