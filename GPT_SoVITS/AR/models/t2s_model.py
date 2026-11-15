@@ -421,38 +421,68 @@ class Text2SemanticDecoder(nn.Module):
         )
         return samples, emotion_state
 
+    def snapshot_s1_lora_reference(self) -> int:
+        """Freeze the current LoRA policy as the speaker-adapted DPO anchor."""
+        modules = [
+            module
+            for module in self.h.modules()
+            if getattr(module, "lora_enabled", False)
+            and hasattr(module, "snapshot_lora_reference")
+        ]
+        if not modules:
+            raise RuntimeError(
+                "speaker_snapshot DPO requires an active S1 LoRA adapter"
+            )
+        for module in modules:
+            module.snapshot_lora_reference()
+        return len(modules)
+
+    def has_s1_lora_reference(self) -> bool:
+        modules = [
+            module
+            for module in self.h.modules()
+            if getattr(module, "lora_enabled", False)
+            and hasattr(module, "has_lora_reference")
+        ]
+        return bool(modules) and all(
+            bool(module.has_lora_reference)
+            for module in modules
+        )
+
     @contextmanager
     def _s1_lora_reference(self):
-        """Temporarily evaluate the frozen pretrained S1 without LoRA deltas.
+        """Evaluate the frozen speaker-adapted LoRA snapshot in-place.
 
-        This is intentionally only valid when training through the existing
-        S1 LoRA path. It gives DPO a true reference policy without allocating
-        a second Text2SemanticDecoder, which matters for low-data / low-VRAM
-        fine-tuning.
+        Only the small LoRA tensors are duplicated. The frozen S1 backbone is
+        shared, so low-data preference refinement does not require a second
+        full reference model in VRAM.
         """
         modules = [
             module
             for module in self.h.modules()
             if getattr(module, "lora_enabled", False)
-            and hasattr(module, "suspend_lora")
+            and hasattr(module, "use_lora_reference")
         ]
-        if not modules:
+        if not modules or not all(
+            bool(module.has_lora_reference)
+            for module in modules
+        ):
             raise RuntimeError(
-                "dpo_reference_mode='lora_base' requires an active S1 LoRA "
-                "adapter (for example train.s1_adapter=lora_v_o)"
+                "speaker_snapshot DPO reference is not ready; run the "
+                "speaker-adaptation warmup before preference refinement"
             )
 
         previous = [
-            bool(getattr(module, "_lora_suspended", False))
+            bool(getattr(module, "_lora_use_reference", False))
             for module in modules
         ]
         for module in modules:
-            module.suspend_lora(True)
+            module.use_lora_reference(True)
         try:
             yield
         finally:
-            for module, was_suspended in zip(modules, previous):
-                module.suspend_lora(was_suspended)
+            for module, was_reference in zip(modules, previous):
+                module.use_lora_reference(was_reference)
 
     def make_input_data(self, x, x_lens, y, y_lens, bert_feature):
         x = self.ar_text_embedding(x)
@@ -569,9 +599,13 @@ class Text2SemanticDecoder(nn.Module):
             reference_A_logits = 0
             reference_R_logits = 0
             reference_free = True
-        elif reference_mode in {"lora_base", "base_lora", "pretrained_lora"}:
-            # Reuse the same frozen base weights under the LoRA adapters as
-            # the reference policy. No second S1 copy is needed.
+        elif reference_mode in {
+            "speaker_snapshot",
+            "lora_snapshot",
+            "adapted_snapshot",
+        }:
+            # Reuse the same frozen backbone with a tiny snapshot of the LoRA
+            # weights captured after speaker-adaptation warmup.
             with torch.no_grad():
                 with self._s1_lora_reference():
                     reference_xy_dec, _ = self.h(
