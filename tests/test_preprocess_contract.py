@@ -547,6 +547,18 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         )
         self.assertIn("preprocess_1a_auto_asr_active = True", open1a)
 
+        adapter_start = webui.index("def open1a_webui(")
+        adapter_end = webui.index("def close1a(", adapter_start)
+        adapter = webui[adapter_start:adapter_end]
+        self.assertIn("_training_list_target_path(", adapter)
+        self.assertIn('"value": list_value', adapter)
+
+        click_start = webui.index("button1a_open.click(")
+        click_end = webui.index("button1a_close.click(", click_start)
+        click_block = webui[click_start:click_end]
+        self.assertIn("open1a_webui,", click_block)
+        self.assertIn("inp_text,", click_block)
+
     def test_auto_list_one_click_propagates_generated_path(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
 
