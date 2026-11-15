@@ -423,7 +423,7 @@ def _training_process_running():
 
 
 def _preprocessing_process_running():
-    if globals().get("preprocess_1a_auto_asr_active", False):
+    if globals().get("preprocess_1a_auto_prepare_active", False):
         return True
 
     for process_list_name in ("ps1a", "ps1b", "ps1c"):
@@ -4558,7 +4558,7 @@ def close_slice():
 
 ps1a = []
 preprocess_1a_cancel_requested = False
-preprocess_1a_auto_asr_active = False
+preprocess_1a_auto_prepare_active = False
 process_name_1a = i18n("文本分词与特征提取")
 
 
@@ -4575,7 +4575,7 @@ def open1a(
 ):
     global ps1a
     global preprocess_1a_cancel_requested
-    global preprocess_1a_auto_asr_active
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1a_cancel_requested = False
 
@@ -4593,17 +4593,17 @@ def open1a(
 
     requested_list = _resolve_repo_path(inp_text) if inp_text else None
     if not _usable_training_list(requested_list):
-        preprocess_1a_auto_asr_active = True
+        preprocess_1a_auto_prepare_active = True
         try:
-            auto_list = _ensure_training_list(
+            auto_sources = _ensure_training_sources(
                 inp_text,
                 inp_wav_dir,
             )
             while True:
                 try:
-                    asr_status = next(auto_list)
+                    prep_status = next(auto_sources)
                 except StopIteration as stop:
-                    inp_text = stop.value
+                    inp_text, inp_wav_dir = stop.value
                     break
 
                 if preprocess_1a_cancel_requested:
@@ -4611,8 +4611,8 @@ def open1a(
 
                 yield (
                     process_info(process_name_1a, "running")
-                    + "\n.list 없음 → 자동 전사 중\n"
-                    + str(asr_status),
+                    + "\n.list 없음 → 기본 전처리 중\n"
+                    + str(prep_status),
                     {"__type__": "update", "visible": False},
                     {"__type__": "update", "visible": True},
                 )
@@ -4621,13 +4621,13 @@ def open1a(
                 return
             yield (
                 process_info(process_name_1a, "failed")
-                + f": 자동 .list 생성 실패: {exc}",
+                + f": 자동 기초 전처리 실패: {exc}",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
             )
             return
         finally:
-            preprocess_1a_auto_asr_active = False
+            preprocess_1a_auto_prepare_active = False
 
     if not check_for_existance(
         [inp_text, inp_wav_dir],
@@ -4836,26 +4836,52 @@ def open1a_webui(
     use_multilingual_bert,
     multilingual_bert_model,
 ):
-    """UI adapter that surfaces the auto-generated .list path."""
+    """UI adapter that surfaces auto-prepared list/audio paths."""
+    global preprocess_1a_auto_prepare_active
+
     list_value = my_utils.clean_path(inp_text)
+    wav_value = my_utils.clean_path(inp_wav_dir)
     requested_list = _resolve_repo_path(list_value) if list_value else None
 
-    if not _usable_training_list(requested_list):
+    if (
+        not _usable_training_list(requested_list)
+        and not _training_process_running()
+    ):
+        preprocess_1a_auto_prepare_active = True
         try:
-            list_value = str(
-                _training_list_target_path(
-                    inp_text,
-                    inp_wav_dir,
-                )
+            auto_sources = _ensure_training_sources(
+                list_value,
+                wav_value,
             )
+            while True:
+                try:
+                    prep_status = next(auto_sources)
+                except StopIteration as stop:
+                    list_value, wav_value = stop.value
+                    break
+
+                if preprocess_1a_cancel_requested:
+                    return
+
+                yield (
+                    process_info(process_name_1a, "running")
+                    + "\n.list 없음 → 기본 전처리 중\n"
+                    + str(prep_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    {"__type__": "update"},
+                    {"__type__": "update"},
+                )
         except (OSError, RuntimeError, ValueError):
-            # Canonical 1A owns validation/error reporting.
-            list_value = my_utils.clean_path(inp_text)
+            # Canonical 1A below owns the final user-facing validation.
+            pass
+        finally:
+            preprocess_1a_auto_prepare_active = False
 
     for result in open1a(
         version,
         list_value,
-        inp_wav_dir,
+        wav_value,
         exp_name,
         gpu_numbers,
         bert_pretrained_dir,
@@ -4868,19 +4894,24 @@ def open1a_webui(
                 "__type__": "update",
                 "value": list_value,
             },
+            {
+                "__type__": "update",
+                "value": wav_value,
+            },
         )
 
 
 def close1a():
     global ps1a
     global preprocess_1a_cancel_requested
-    global preprocess_1a_auto_asr_active
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1a_cancel_requested = True
 
-    if preprocess_1a_auto_asr_active:
+    if preprocess_1a_auto_prepare_active:
         close_asr()
-        preprocess_1a_auto_asr_active = False
+        close_slice()
+        preprocess_1a_auto_prepare_active = False
 
     if ps1a != []:
         for p1a in ps1a:
@@ -5636,7 +5667,7 @@ def close1abc():
 
     preprocess_1abc_cancel_requested = True
 
-    if ps1a or preprocess_1a_auto_asr_active:
+    if ps1a or preprocess_1a_auto_prepare_active:
         close1a()
     if ps1b:
         close1b()
