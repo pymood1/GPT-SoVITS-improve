@@ -1127,6 +1127,22 @@ This is a recommendation, not a rigid rule. Codex may reorder tasks when new evi
 
 ---
 
+## 2026-11-15: PR #45 headless Colab listening runner
+
+- Added `notebooks/GPT_SoVITS_V5_Acoustic_AB_Colab.ipynb`: one code cell,
+  GPU runtime + Run all, no Gradio interaction.
+- `tools/colab_v5_acoustic_ab.py` downloads only the public pretrained V5dev
+  assets and a SHA-256-pinned PyTorch VOiCES reference, drives the normal
+  semantic path once, waits for the complete A/B suite, displays players and
+  packages listening WAVs plus `report.json` without `private_inputs.pt`.
+- The existing fixed-semantic acoustic controls are unchanged. The suite report
+  now has an explicit `completed` flag so a partially written or failed report
+  cannot be presented as a finished listening result.
+- Local CPU/contract checks do not establish real Colab GPU audio quality. Do
+  not name the noise cause until the user runs the notebook and listens.
+
+---
+
 # 29. Current bottom line
 
 Current evidence supports:

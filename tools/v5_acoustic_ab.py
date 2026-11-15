@@ -495,7 +495,8 @@ def run_from_webui(namespace, inputs, output_root):
     original_runtime = runtime_profile(namespace["vq_model"], namespace["hifigan_model"])
     factory = namespace.get("_ab_factory") or FreshAcousticFactory(namespace, root)
     results, captures, folders = {}, {}, {}
-    report = {"suite": "v5_acoustic_order_and_precision_v2", "listening_performed": False,
+    report = {"suite": "v5_acoustic_order_and_precision_v2", "completed": False,
+              "listening_performed": False,
               "baseline": "a43dfd1", "sequences": {}, "comparisons": {}, "listening_files": [],
               "checkpoints": ns["_ab_bindings"],
               "sample_steps": inputs["sample_steps"], "cfg": inputs["cfg_rate"],
@@ -576,6 +577,7 @@ def run_from_webui(namespace, inputs, output_root):
                     results[sequence]["reference_vocoder_probe"]["listening_gain"] = gain
                 (folders[sequence] / "report.json").write_text(
                     json.dumps(results[sequence], indent=2, allow_nan=False), encoding="utf-8")
+        report["completed"] = True
     except Exception as exc:
         report["failure"] = {"type": type(exc).__name__, "message": str(exc)}
         raise

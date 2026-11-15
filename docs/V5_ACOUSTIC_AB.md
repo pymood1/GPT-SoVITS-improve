@@ -19,7 +19,33 @@ emotion-controller behavior are unchanged.
 - Source equality is not audio-quality evidence. Runtime checkpoint contents,
   input dtype, generated mel and the actual symptom require the user's runtime.
 
-## Enable in Kaggle
+## Run all in Google Colab (no WebUI interaction)
+
+Open [`notebooks/GPT_SoVITS_V5_Acoustic_AB_Colab.ipynb`](../notebooks/GPT_SoVITS_V5_Acoustic_AB_Colab.ipynb)
+in Google Colab, select a GPU runtime, then choose **Runtime -> Run all**. The
+notebook has one code cell. It automatically:
+
+1. clones/fast-forwards the PR branch in a separate `/content` checkout;
+2. installs the repository runtime and downloads only the pretrained assets
+   needed for `s1v3.ckpt`, `s2Gv5dev.pth`, the V5 vocoder, CNHuBERT and BERT;
+3. downloads the pinned PyTorch VOiCES reference WAV and verifies its SHA-256;
+4. runs the normal semantic path once with the fixed Korean sentence, without
+   starting a Gradio server;
+5. waits for all A/A-repeat/B/reverse/cold/FP32 controls and displays the
+   reference plus eight listening players in order; and
+6. creates `/content/v5_acoustic_ab_listening.zip` containing the listening
+   WAVs and `report.json` (the private semantic tensor file is excluded).
+
+The public reference transcript is exactly
+`I had that curiosity beside me at this moment.` and the target is
+**안녕하세요. 오늘은 날씨가 좋아서 잠깐 산책을 다녀오려고 합니다.**
+The first run downloads several pretrained assets and then performs eight
+acoustic passes plus two reference-vocoder probes, so the single cell may run
+for several minutes. Keep the tab connected until the players appear. No
+training data, Drive mount, uploaded reference, model selection or WebUI click
+is required.
+
+## Enable in an existing Kaggle session
 
 In the existing installed Kaggle GPU session, run this ONE cell:
 
