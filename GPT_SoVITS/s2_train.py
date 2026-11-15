@@ -141,7 +141,30 @@ def _run(rank, n_gpus, hps, use_ddp):
     if torch.cuda.is_available():
         torch.cuda.set_device(rank)
 
-    train_dataset = TextAudioSpeakerLoader(hps.data, version=hps.model.version)
+    adaptive_requested = bool(
+        getattr(hps.train, "adaptive_training", False)
+    )
+
+    try:
+        train_dataset = TextAudioSpeakerLoader(
+            hps.data,
+            version=hps.model.version,
+        )
+    except RuntimeError as exc:
+        if not adaptive_requested:
+            raise
+        if rank == 0:
+            print(
+                "[SoVITS adaptive] train holdout disabled: "
+                f"{exc}"
+            )
+        adaptive_requested = False
+        hps.train.adaptive_training = False
+        hps.data.adaptive_training = False
+        train_dataset = TextAudioSpeakerLoader(
+            hps.data,
+            version=hps.model.version,
+        )
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size,
@@ -181,9 +204,6 @@ def _run(rank, n_gpus, hps, use_ddp):
         prefetch_factor=2,
     )
 
-    adaptive_requested = bool(
-        getattr(hps.train, "adaptive_training", False)
-    )
     adaptive_enabled = adaptive_requested
     eval_loader = None
     if adaptive_enabled and rank == 0:
