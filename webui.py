@@ -4600,6 +4600,51 @@ def open1a(
         )
 
 
+def open1a_webui(
+    version,
+    inp_text,
+    inp_wav_dir,
+    exp_name,
+    gpu_numbers,
+    bert_pretrained_dir,
+    use_multilingual_bert,
+    multilingual_bert_model,
+):
+    """UI adapter that surfaces the auto-generated .list path."""
+    list_value = my_utils.clean_path(inp_text)
+    requested_list = _resolve_repo_path(list_value) if list_value else None
+
+    if not _usable_training_list(requested_list):
+        try:
+            list_value = str(
+                _training_list_target_path(
+                    inp_text,
+                    inp_wav_dir,
+                )
+            )
+        except (OSError, RuntimeError, ValueError):
+            # Canonical 1A owns validation/error reporting.
+            list_value = my_utils.clean_path(inp_text)
+
+    for result in open1a(
+        version,
+        list_value,
+        inp_wav_dir,
+        exp_name,
+        gpu_numbers,
+        bert_pretrained_dir,
+        use_multilingual_bert,
+        multilingual_bert_model,
+    ):
+        yield (
+            *result,
+            {
+                "__type__": "update",
+                "value": list_value,
+            },
+        )
+
+
 def close1a():
     global ps1a
     global preprocess_1a_cancel_requested
@@ -6731,7 +6776,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                 close_denoise_button.click(close_denoise, [], [denoise_info, open_denoise_button, close_denoise_button])
     
                 button1a_open.click(
-                    open1a,
+                    open1a_webui,
                     [
                         version_checkbox,
                         inp_text,
@@ -6742,7 +6787,12 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         use_multilingual_bert,
                         multilingual_bert_model,
                     ],
-                    [info1a, button1a_open, button1a_close],
+                    [
+                        info1a,
+                        button1a_open,
+                        button1a_close,
+                        inp_text,
+                    ],
                 )
                 button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
                 button1b_open.click(
