@@ -423,7 +423,7 @@ def _training_process_running():
 
 
 def _preprocessing_process_running():
-    if globals().get("preprocess_1a_auto_asr_active", False):
+    if globals().get("preprocess_1a_auto_prepare_active", False):
         return True
 
     for process_list_name in ("ps1a", "ps1b", "ps1c"):
@@ -2483,6 +2483,192 @@ AUTO_ASR_AUDIO_EXTENSIONS = {
     ".aac",
     ".wma",
 }
+AUTO_SLICE_LONG_AUDIO_SECONDS = 60.0
+AUTO_SLICE_MAX_RESULT_SECONDS = 90.0
+AUTO_SLICE_SETTINGS = {
+    "threshold": "-34",
+    "min_length": "4000",
+    "min_interval": "300",
+    "hop_size": "10",
+    "max_sil_kept": "500",
+    "max": 0.9,
+    "alpha": 0.25,
+}
+
+
+def _audio_duration_seconds(path):
+    path = Path(path)
+    if path.suffix.lower() == ".wav":
+        try:
+            import wave
+
+            with wave.open(str(path), "rb") as handle:
+                frame_rate = int(handle.getframerate())
+                if frame_rate > 0:
+                    return float(handle.getnframes()) / frame_rate
+        except (OSError, EOFError, wave.Error):
+            pass
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            cwd=now_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            value = str(result.stdout or "").strip()
+            if value:
+                return float(value)
+    except (OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _long_training_audio_files(
+    wav_dir,
+    threshold_seconds=AUTO_SLICE_LONG_AUDIO_SECONDS,
+):
+    long_files = []
+    for path in _auto_asr_audio_files(wav_dir):
+        duration = _audio_duration_seconds(path)
+        if duration is not None and duration > float(threshold_seconds):
+            long_files.append((path, duration))
+    return long_files
+
+
+def _auto_slice_source_contract(wav_dir):
+    sources = []
+    for path in _auto_asr_audio_files(wav_dir):
+        stat = path.stat()
+        sources.append(
+            {
+                "name": path.name,
+                "size": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        )
+    return {
+        "format_version": 1,
+        "sources": sources,
+        "settings": dict(AUTO_SLICE_SETTINGS),
+        "long_audio_seconds": AUTO_SLICE_LONG_AUDIO_SECONDS,
+    }
+
+
+def _auto_slice_output_dir(
+    wav_dir,
+    slice_root="output/slicer_opt_auto",
+):
+    root = _resolve_repo_path(slice_root)
+    if root is None:
+        raise RuntimeError("자동 슬라이싱 출력 폴더를 결정하지 못했습니다.")
+    return (root / f"{Path(wav_dir).name}__auto").resolve()
+
+
+def _auto_slice_cache_valid(wav_dir, output_dir):
+    output_dir = Path(output_dir)
+    marker = output_dir / ".auto_slice.json"
+    if not marker.is_file():
+        return False
+    if not _auto_asr_audio_files(output_dir):
+        return False
+    if _long_training_audio_files(
+        output_dir,
+        threshold_seconds=AUTO_SLICE_MAX_RESULT_SECONDS,
+    ):
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return payload == _auto_slice_source_contract(wav_dir)
+
+
+def _ensure_auto_sliced_audio(wav_dir):
+    """Return a short-clip directory when long source recordings are present."""
+    wav_dir = Path(wav_dir)
+    long_files = _long_training_audio_files(wav_dir)
+    if not long_files:
+        return str(wav_dir)
+
+    output_dir = _auto_slice_output_dir(wav_dir)
+    if _auto_slice_cache_valid(wav_dir, output_dir):
+        longest = max(duration for _path, duration in long_files)
+        yield (
+            "긴 음성 자동 분할 캐시 재사용: "
+            f"{len(long_files)}개 / 최장 {longest / 60:.1f}분"
+        )
+        return str(output_dir)
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    longest = max(duration for _path, duration in long_files)
+    yield (
+        "긴 음성 감지 → 기존 slicer 자동 실행: "
+        f"{len(long_files)}개 / 최장 {longest / 60:.1f}분"
+    )
+
+    slice_finished = False
+    for result in open_slice(
+        str(wav_dir),
+        str(output_dir),
+        AUTO_SLICE_SETTINGS["threshold"],
+        AUTO_SLICE_SETTINGS["min_length"],
+        AUTO_SLICE_SETTINGS["min_interval"],
+        AUTO_SLICE_SETTINGS["hop_size"],
+        AUTO_SLICE_SETTINGS["max_sil_kept"],
+        AUTO_SLICE_SETTINGS["max"],
+        AUTO_SLICE_SETTINGS["alpha"],
+        min(4, max(1, int(n_cpu))),
+    ):
+        status = result[0] if result else ""
+        yield str(status)
+        slice_finished = (
+            status == process_info(process_name_slice, "finish")
+        )
+
+    sliced_files = _auto_asr_audio_files(output_dir)
+    if not slice_finished or not sliced_files:
+        raise RuntimeError(
+            "긴 음성 자동 분할이 완료되지 않았거나 결과 파일이 없습니다."
+        )
+
+    residual_long = _long_training_audio_files(
+        output_dir,
+        threshold_seconds=AUTO_SLICE_MAX_RESULT_SECONDS,
+    )
+    if residual_long:
+        longest = max(duration for _path, duration in residual_long)
+        raise RuntimeError(
+            "자동 분할 후에도 너무 긴 구간이 남았습니다 "
+            f"(최장 {longest:.1f}초). "
+            "무음 구간이 적은 원본은 수동 slicer 설정이 필요합니다."
+        )
+
+    marker = output_dir / ".auto_slice.json"
+    marker.write_text(
+        json.dumps(
+            _auto_slice_source_contract(wav_dir),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return str(output_dir)
 
 
 def _usable_training_list(path):
@@ -2670,6 +2856,166 @@ def _ensure_training_list(
         )
 
     return str(final_path)
+
+
+def _auto_training_source_marker(list_path):
+    return Path(str(Path(list_path).resolve()) + ".auto_source.json")
+
+
+def _read_auto_training_source(list_path):
+    marker = _auto_training_source_marker(list_path)
+    if not marker.is_file():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _auto_training_source_is_current(
+    payload,
+    supplied_wav_dir,
+):
+    if not payload:
+        return False
+
+    supplied = Path(supplied_wav_dir).resolve()
+    original = _resolve_repo_path(payload.get("original_wav_dir"))
+    effective = _resolve_repo_path(payload.get("effective_wav_dir"))
+    if (
+        original is None
+        or effective is None
+        or not original.is_dir()
+        or not effective.is_dir()
+    ):
+        return False
+
+    if supplied not in {original.resolve(), effective.resolve()}:
+        return False
+
+    return payload.get("source_contract") == _auto_slice_source_contract(
+        original
+    )
+
+
+def _write_auto_training_source(
+    list_path,
+    original_wav_dir,
+    effective_wav_dir,
+):
+    original = Path(original_wav_dir).resolve()
+    effective = Path(effective_wav_dir).resolve()
+    marker = _auto_training_source_marker(list_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "original_wav_dir": str(original),
+                "effective_wav_dir": str(effective),
+                "source_contract": _auto_slice_source_contract(original),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _ensure_training_sources(inp_text, inp_wav_dir):
+    """Prepare short training audio and a matching .list when needed."""
+    requested = (
+        _resolve_repo_path(my_utils.clean_path(inp_text))
+        if my_utils.clean_path(inp_text)
+        else None
+    )
+    original_wav_dir = _resolve_repo_path(inp_wav_dir)
+
+    if original_wav_dir is None or not original_wav_dir.is_dir():
+        raise FileNotFoundError(
+            "학습용 음성 폴더가 없습니다: "
+            f"{original_wav_dir or '<empty>'}"
+        )
+
+    if _usable_training_list(requested):
+        auto_source = _read_auto_training_source(requested)
+        if auto_source is None:
+            return str(requested), str(original_wav_dir)
+
+        if _auto_training_source_is_current(
+            auto_source,
+            original_wav_dir,
+        ):
+            effective = _resolve_repo_path(
+                auto_source["effective_wav_dir"]
+            )
+            return str(requested), str(effective)
+
+        marker_original = _resolve_repo_path(
+            auto_source.get("original_wav_dir")
+        )
+        marker_effective = _resolve_repo_path(
+            auto_source.get("effective_wav_dir")
+        )
+        supplied = original_wav_dir.resolve()
+        if (
+            marker_original is not None
+            and marker_original.is_dir()
+            and marker_effective is not None
+            and supplied
+            in {
+                marker_original.resolve(),
+                marker_effective.resolve(),
+            }
+        ):
+            original_wav_dir = marker_original
+
+        # Only stale files carrying our marker are safe to regenerate.
+        requested.unlink(missing_ok=True)
+        _auto_training_source_marker(requested).unlink(
+            missing_ok=True
+        )
+
+    target_list = _training_list_target_path(
+        inp_text,
+        original_wav_dir,
+    )
+
+    effective_wav_dir = original_wav_dir
+    auto_slice = _ensure_auto_sliced_audio(original_wav_dir)
+    while True:
+        try:
+            status = next(auto_slice)
+        except StopIteration as stop:
+            effective_wav_dir = _resolve_repo_path(stop.value)
+            break
+        yield str(status)
+
+    if effective_wav_dir is None or not effective_wav_dir.is_dir():
+        raise RuntimeError(
+            "자동 전처리 후 학습용 음성 폴더를 찾을 수 없습니다."
+        )
+
+    auto_list = _ensure_training_list(
+        str(target_list),
+        str(effective_wav_dir),
+    )
+    while True:
+        try:
+            status = next(auto_list)
+        except StopIteration as stop:
+            list_path = stop.value
+            break
+        yield str(status)
+
+    _write_auto_training_source(
+        list_path,
+        original_wav_dir,
+        effective_wav_dir,
+    )
+    return str(list_path), str(effective_wav_dir)
 
 
 def close_asr():
@@ -4332,7 +4678,7 @@ def close_slice():
 
 ps1a = []
 preprocess_1a_cancel_requested = False
-preprocess_1a_auto_asr_active = False
+preprocess_1a_auto_prepare_active = False
 process_name_1a = i18n("文本分词与特征提取")
 
 
@@ -4349,7 +4695,7 @@ def open1a(
 ):
     global ps1a
     global preprocess_1a_cancel_requested
-    global preprocess_1a_auto_asr_active
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1a_cancel_requested = False
 
@@ -4367,17 +4713,17 @@ def open1a(
 
     requested_list = _resolve_repo_path(inp_text) if inp_text else None
     if not _usable_training_list(requested_list):
-        preprocess_1a_auto_asr_active = True
+        preprocess_1a_auto_prepare_active = True
         try:
-            auto_list = _ensure_training_list(
+            auto_sources = _ensure_training_sources(
                 inp_text,
                 inp_wav_dir,
             )
             while True:
                 try:
-                    asr_status = next(auto_list)
+                    prep_status = next(auto_sources)
                 except StopIteration as stop:
-                    inp_text = stop.value
+                    inp_text, inp_wav_dir = stop.value
                     break
 
                 if preprocess_1a_cancel_requested:
@@ -4385,8 +4731,8 @@ def open1a(
 
                 yield (
                     process_info(process_name_1a, "running")
-                    + "\n.list 없음 → 자동 전사 중\n"
-                    + str(asr_status),
+                    + "\n.list 없음 → 기본 전처리 중\n"
+                    + str(prep_status),
                     {"__type__": "update", "visible": False},
                     {"__type__": "update", "visible": True},
                 )
@@ -4395,13 +4741,13 @@ def open1a(
                 return
             yield (
                 process_info(process_name_1a, "failed")
-                + f": 자동 .list 생성 실패: {exc}",
+                + f": 자동 기초 전처리 실패: {exc}",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
             )
             return
         finally:
-            preprocess_1a_auto_asr_active = False
+            preprocess_1a_auto_prepare_active = False
 
     if not check_for_existance(
         [inp_text, inp_wav_dir],
@@ -4610,26 +4956,52 @@ def open1a_webui(
     use_multilingual_bert,
     multilingual_bert_model,
 ):
-    """UI adapter that surfaces the auto-generated .list path."""
+    """UI adapter that surfaces auto-prepared list/audio paths."""
+    global preprocess_1a_auto_prepare_active
+
     list_value = my_utils.clean_path(inp_text)
+    wav_value = my_utils.clean_path(inp_wav_dir)
     requested_list = _resolve_repo_path(list_value) if list_value else None
 
-    if not _usable_training_list(requested_list):
+    if (
+        not _usable_training_list(requested_list)
+        and not _training_process_running()
+    ):
+        preprocess_1a_auto_prepare_active = True
         try:
-            list_value = str(
-                _training_list_target_path(
-                    inp_text,
-                    inp_wav_dir,
-                )
+            auto_sources = _ensure_training_sources(
+                list_value,
+                wav_value,
             )
+            while True:
+                try:
+                    prep_status = next(auto_sources)
+                except StopIteration as stop:
+                    list_value, wav_value = stop.value
+                    break
+
+                if preprocess_1a_cancel_requested:
+                    return
+
+                yield (
+                    process_info(process_name_1a, "running")
+                    + "\n.list 없음 → 기본 전처리 중\n"
+                    + str(prep_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    {"__type__": "update"},
+                    {"__type__": "update"},
+                )
         except (OSError, RuntimeError, ValueError):
-            # Canonical 1A owns validation/error reporting.
-            list_value = my_utils.clean_path(inp_text)
+            # Canonical 1A below owns the final user-facing validation.
+            pass
+        finally:
+            preprocess_1a_auto_prepare_active = False
 
     for result in open1a(
         version,
         list_value,
-        inp_wav_dir,
+        wav_value,
         exp_name,
         gpu_numbers,
         bert_pretrained_dir,
@@ -4642,19 +5014,24 @@ def open1a_webui(
                 "__type__": "update",
                 "value": list_value,
             },
+            {
+                "__type__": "update",
+                "value": wav_value,
+            },
         )
 
 
 def close1a():
     global ps1a
     global preprocess_1a_cancel_requested
-    global preprocess_1a_auto_asr_active
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1a_cancel_requested = True
 
-    if preprocess_1a_auto_asr_active:
+    if preprocess_1a_auto_prepare_active:
         close_asr()
-        preprocess_1a_auto_asr_active = False
+        close_slice()
+        preprocess_1a_auto_prepare_active = False
 
     if ps1a != []:
         for p1a in ps1a:
@@ -5314,8 +5691,47 @@ def open1abc(
 ):
     """Run the canonical 1A -> 1B -> 1C implementations in order."""
     global preprocess_1abc_cancel_requested
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1abc_cancel_requested = False
+
+    requested_list = _resolve_repo_path(inp_text) if inp_text else None
+    if not _usable_training_list(requested_list):
+        preprocess_1a_auto_prepare_active = True
+        try:
+            auto_sources = _ensure_training_sources(
+                inp_text,
+                inp_wav_dir,
+            )
+            while True:
+                try:
+                    prep_status = next(auto_sources)
+                except StopIteration as stop:
+                    inp_text, inp_wav_dir = stop.value
+                    break
+
+                if preprocess_1abc_cancel_requested:
+                    close1abc()
+                    return
+
+                yield (
+                    i18n("进度")
+                    + ": 0-AutoPrepare\n\n"
+                    + str(prep_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
+            yield (
+                process_info(process_name_1abc, "failed")
+                + f": 자동 기초 전처리 실패: {exc}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
+        finally:
+            preprocess_1a_auto_prepare_active = False
+
     stages = [
         (
             "1A",
@@ -5410,7 +5826,7 @@ def close1abc():
 
     preprocess_1abc_cancel_requested = True
 
-    if ps1a or preprocess_1a_auto_asr_active:
+    if ps1a or preprocess_1a_auto_prepare_active:
         close1a()
     if ps1b:
         close1b()
@@ -5449,34 +5865,64 @@ def open1abcd(
     emotion_auto_device,
 ):
     global preprocess_1abcd_cancel_requested
+    global preprocess_1a_auto_prepare_active
 
     preprocess_1abcd_cancel_requested = False
     sidecar_update = {"__type__": "update"}
     list_update = {"__type__": "update"}
+    wav_update = {"__type__": "update"}
 
     requested_list = _resolve_repo_path(inp_text) if inp_text else None
     if not _usable_training_list(requested_list):
+        preprocess_1a_auto_prepare_active = True
         try:
-            inp_text = str(
-                _training_list_target_path(
-                    inp_text,
-                    inp_wav_dir,
-                )
+            auto_sources = _ensure_training_sources(
+                inp_text,
+                inp_wav_dir,
             )
+            while True:
+                try:
+                    prep_status = next(auto_sources)
+                except StopIteration as stop:
+                    inp_text, inp_wav_dir = stop.value
+                    break
+
+                if preprocess_1abcd_cancel_requested:
+                    return
+
+                yield (
+                    "### 전처리 일괄 실행\n\n"
+                    "**.list 없음 → 기본 전처리 중**\n\n"
+                    + str(prep_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                    sidecar_update,
+                    list_update,
+                    wav_update,
+                )
         except (OSError, RuntimeError, ValueError) as exc:
+            if preprocess_1abcd_cancel_requested:
+                return
             yield (
                 "### 전처리 일괄 실행 실패\n\n"
-                f"자동 .list 경로 준비 실패: {exc}",
+                f"자동 기초 전처리 실패: {exc}",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
                 sidecar_update,
                 list_update,
+                wav_update,
             )
             return
+        finally:
+            preprocess_1a_auto_prepare_active = False
 
     list_update = {
         "__type__": "update",
         "value": str(inp_text),
+    }
+    wav_update = {
+        "__type__": "update",
+        "value": str(inp_wav_dir),
     }
 
     yield (
@@ -5485,6 +5931,7 @@ def open1abcd(
         {"__type__": "update", "visible": True},
         sidecar_update,
         list_update,
+        wav_update,
     )
 
     abc_finished = False
@@ -5517,6 +5964,7 @@ def open1abcd(
             {"__type__": "update", "visible": True},
             sidecar_update,
             list_update,
+            wav_update,
         )
 
     if not abc_finished:
@@ -5527,6 +5975,7 @@ def open1abcd(
             {"__type__": "update", "visible": False},
             sidecar_update,
             list_update,
+            wav_update,
         )
         return
 
@@ -5540,6 +5989,7 @@ def open1abcd(
         {"__type__": "update", "visible": True},
         sidecar_update,
         list_update,
+        wav_update,
     )
 
     d_finished = False
@@ -5575,6 +6025,7 @@ def open1abcd(
             {"__type__": "update", "visible": True},
             sidecar_update,
             list_update,
+            wav_update,
         )
 
     if not d_finished:
@@ -5585,6 +6036,7 @@ def open1abcd(
             {"__type__": "update", "visible": False},
             sidecar_update,
             list_update,
+            wav_update,
         )
         return
 
@@ -5595,6 +6047,7 @@ def open1abcd(
         {"__type__": "update", "visible": False},
         sidecar_update,
         list_update,
+        wav_update,
     )
 
 
@@ -5738,6 +6191,12 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 and result[4].get("value")
             ):
                 source_list = str(result[4]["value"])
+            if (
+                len(result) > 5
+                and isinstance(result[5], dict)
+                and result[5].get("value")
+            ):
+                wav_root = str(result[5]["value"])
 
             preprocess_finished = str(status).startswith(
                 "### 전처리 일괄 실행 완료"
@@ -6382,8 +6841,10 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 기초 `.list`를 생성합니다. 아래 수동 ASR UI는 엔진·언어·정밀도를
 직접 고르고 싶을 때 사용하면 됩니다.
 
-긴 원본 녹음은 자동으로 자르지 않습니다. 필요하면
-0-데이터셋 준비 도구의 음성 자르기를 먼저 사용하세요.
+60초를 넘는 긴 원본이 감지되면 기존 slicer 기본 설정으로 먼저
+자동 분할한 뒤, 분할된 음성을 Faster Whisper로 전사합니다.
+자동 분할 후에도 90초를 넘는 구간이 남으면 무음 구간이 부족한
+원본으로 판단하고 중단하므로 그 경우에만 수동 slicer 설정을 조정하세요.
 """
                         )
 
@@ -6792,6 +7253,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         button1a_open,
                         button1a_close,
                         inp_text,
+                        inp_wav_dir,
                     ],
                 )
                 button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
@@ -6834,6 +7296,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         button1abc_close,
                         emotion_sidecar,
                         inp_text,
+                        inp_wav_dir,
                     ],
                 )
                 button1abc_close.click(

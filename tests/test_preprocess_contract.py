@@ -527,7 +527,10 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
 
         helper_start = webui.index("def _ensure_training_list(")
-        helper_end = webui.index("\n\ndef close_asr(", helper_start)
+        helper_end = webui.index(
+            "\n\ndef _auto_training_source_marker(",
+            helper_start,
+        )
         helper = webui[helper_start:helper_end]
         self.assertIn("open_asr(", helper)
         self.assertIn("DEFAULT_ASR_MODEL", helper)
@@ -537,50 +540,147 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("_auto_asr_list_is_fresh(", helper)
         self.assertIn("shutil.copy2(", helper)
 
-        open1a_start = webui.index("def open1a(")
-        open1a_end = webui.index("def close1a(", open1a_start)
-        open1a = webui[open1a_start:open1a_end]
-        self.assertIn("_ensure_training_list(", open1a)
+        source_start = webui.index("def _ensure_training_sources(")
+        source_end = webui.index("\n\ndef close_asr(", source_start)
+        source_block = webui[source_start:source_end]
+        self.assertIn("_ensure_auto_sliced_audio(", source_block)
+        self.assertIn("_ensure_training_list(", source_block)
         self.assertLess(
-            open1a.index("_ensure_training_list("),
+            source_block.index("_ensure_auto_sliced_audio("),
+            source_block.index("_ensure_training_list("),
+        )
+        self.assertIn("_write_auto_training_source(", source_block)
+
+        open1a_start = webui.index("def open1a(")
+        open1a_end = webui.index("def open1a_webui(", open1a_start)
+        open1a = webui[open1a_start:open1a_end]
+        self.assertIn("_ensure_training_sources(", open1a)
+        self.assertLess(
+            open1a.index("_ensure_training_sources("),
             open1a.index("check_for_existance("),
         )
-        self.assertIn("preprocess_1a_auto_asr_active = True", open1a)
+        self.assertIn("preprocess_1a_auto_prepare_active = True", open1a)
 
         adapter_start = webui.index("def open1a_webui(")
         adapter_end = webui.index("def close1a(", adapter_start)
         adapter = webui[adapter_start:adapter_end]
-        self.assertIn("_training_list_target_path(", adapter)
+        self.assertIn("_ensure_training_sources(", adapter)
         self.assertIn('"value": list_value', adapter)
+        self.assertIn('"value": wav_value', adapter)
 
         click_start = webui.index("button1a_open.click(")
         click_end = webui.index("button1a_close.click(", click_start)
         click_block = webui[click_start:click_end]
         self.assertIn("open1a_webui,", click_block)
-        self.assertIn("inp_text,", click_block)
+        outputs_start = click_block.index(
+            "[\n                        info1a"
+        )
+        outputs = click_block[outputs_start:]
+        self.assertIn("inp_text,", outputs)
+        self.assertIn("inp_wav_dir,", outputs)
 
-    def test_auto_list_one_click_propagates_generated_path(self):
+    def test_missing_list_auto_slices_long_recordings_before_asr(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "AUTO_SLICE_LONG_AUDIO_SECONDS = 60.0",
+            webui,
+        )
+        self.assertIn(
+            "AUTO_SLICE_MAX_RESULT_SECONDS = 90.0",
+            webui,
+        )
+
+        start = webui.index("def _ensure_auto_sliced_audio(")
+        end = webui.index("\n\ndef _usable_training_list(", start)
+        block = webui[start:end]
+        self.assertIn("_long_training_audio_files(", block)
+        self.assertIn("open_slice(", block)
+        self.assertIn('AUTO_SLICE_SETTINGS["threshold"]', block)
+        self.assertIn('AUTO_SLICE_SETTINGS["min_length"]', block)
+        self.assertIn('AUTO_SLICE_SETTINGS["min_interval"]', block)
+        self.assertIn('AUTO_SLICE_SETTINGS["max_sil_kept"]', block)
+        self.assertIn("_auto_slice_cache_valid(", block)
+        self.assertIn("residual_long", block)
+        self.assertIn("AUTO_SLICE_MAX_RESULT_SECONDS", block)
+
+        settings_start = webui.index("AUTO_SLICE_SETTINGS = {")
+        settings_end = webui.index("\n}", settings_start) + 2
+        settings = webui[settings_start:settings_end]
+        self.assertIn('"threshold": "-34"', settings)
+        self.assertIn('"min_length": "4000"', settings)
+        self.assertIn('"min_interval": "300"', settings)
+        self.assertIn('"max_sil_kept": "500"', settings)
+
+    def test_auto_list_restores_sliced_audio_provenance(self):
+        webui = (ROOT / "webui.py").read_text(encoding="utf-8")
+
+        current_start = webui.index(
+            "def _auto_training_source_is_current("
+        )
+        current_end = webui.index(
+            "\n\ndef _write_auto_training_source(",
+            current_start,
+        )
+        current = webui[current_start:current_end]
+        self.assertIn("original_wav_dir", current)
+        self.assertIn("effective_wav_dir", current)
+        self.assertIn("_auto_slice_source_contract(", current)
+        self.assertIn(
+            "supplied not in {original.resolve(), effective.resolve()}",
+            current,
+        )
+
+        writer_start = webui.index(
+            "def _write_auto_training_source("
+        )
+        writer_end = webui.index(
+            "\n\ndef _ensure_training_sources(",
+            writer_start,
+        )
+        writer = webui[writer_start:writer_end]
+        self.assertIn('"source_contract"', writer)
+        self.assertIn("_auto_slice_source_contract(original)", writer)
+
+        source_start = webui.index("def _ensure_training_sources(")
+        source_end = webui.index("\n\ndef close_asr(", source_start)
+        source = webui[source_start:source_end]
+        self.assertIn("_read_auto_training_source(", source)
+        self.assertIn("_auto_training_source_is_current(", source)
+        self.assertIn('auto_source["effective_wav_dir"]', source)
+        self.assertIn("marker_original = _resolve_repo_path(", source)
+        self.assertIn("marker_effective = _resolve_repo_path(", source)
+        self.assertIn("original_wav_dir = marker_original", source)
+
+    def test_auto_list_one_click_propagates_generated_paths(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
 
         start = webui.index("def open1abcd(")
         end = webui.index("def close1abcd(", start)
         block = webui[start:end]
-        self.assertIn("_training_list_target_path(", block)
+        self.assertIn("_ensure_training_sources(", block)
         self.assertIn('"value": str(inp_text)', block)
+        self.assertIn('"value": str(inp_wav_dir)', block)
         self.assertIn("list_update", block)
+        self.assertIn("wav_update", block)
 
         click_start = webui.index("button1abc_open.click(")
         click_end = webui.index("button1abc_close.click(", click_start)
         click_block = webui[click_start:click_end]
-        outputs_start = click_block.index("[\n                        info1abc")
+        outputs_start = click_block.index(
+            "[\n                        info1abc"
+        )
         outputs = click_block[outputs_start:]
         self.assertIn("inp_text,", outputs)
+        self.assertIn("inp_wav_dir,", outputs)
 
         dev_start = webui.index("def run_dev_one_click_experiment(")
         dev_end = webui.index("\n\ndef ", dev_start + 10)
         dev_block = webui[dev_start:dev_end]
         self.assertIn("len(result) > 4", dev_block)
         self.assertIn('source_list = str(result[4]["value"])', dev_block)
+        self.assertIn("len(result) > 5", dev_block)
+        self.assertIn('wav_root = str(result[5]["value"])', dev_block)
         self.assertNotIn(
             "if not source_list or not wav_root:",
             dev_block,
@@ -590,19 +690,34 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
             dev_block,
         )
 
-    def test_auto_asr_is_owned_by_preprocessing_cancel_flow(self):
+    def test_auto_prepare_is_owned_by_preprocessing_cancel_flow(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
 
         running_start = webui.index("def _preprocessing_process_running(")
-        running_end = webui.index("\n\nclass EmotionTaskCancelled", running_start)
+        running_end = webui.index(
+            "\n\nclass EmotionTaskCancelled",
+            running_start,
+        )
         running_block = webui[running_start:running_end]
-        self.assertIn("preprocess_1a_auto_asr_active", running_block)
+        self.assertIn(
+            "preprocess_1a_auto_prepare_active",
+            running_block,
+        )
+
+        close1a_start = webui.index("def close1a(")
+        close1a_end = webui.index("\n\nsv_path =", close1a_start)
+        close1a_block = webui[close1a_start:close1a_end]
+        self.assertIn("close_asr()", close1a_block)
+        self.assertIn("close_slice()", close1a_block)
 
         close_start = webui.index("def close1abc(")
-        close_end = webui.index("preprocess_1abcd_cancel_requested", close_start)
+        close_end = webui.index(
+            "preprocess_1abcd_cancel_requested",
+            close_start,
+        )
         close_block = webui[close_start:close_end]
         self.assertIn(
-            "if ps1a or preprocess_1a_auto_asr_active:",
+            "if ps1a or preprocess_1a_auto_prepare_active:",
             close_block,
         )
         self.assertIn("close1a()", close_block)
