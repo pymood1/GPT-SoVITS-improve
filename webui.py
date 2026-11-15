@@ -3423,6 +3423,9 @@ def open1Ba(
     data["train"]["adaptive_patience"] = 3
     data["train"]["adaptive_min_relative_improvement"] = 0.005
     data["train"]["adaptive_validation_fraction"] = 0.10
+    data["data"]["adaptive_training"] = bool(adaptive_training)
+    data["data"]["adaptive_validation_fraction"] = 0.10
+    data["data"]["adaptive_split_seed"] = 233333
     data["train"]["text_low_lr_rate"] = text_low_lr_rate
     data["train"]["pretrained_s2G"] = pretrained_s2G
     data["train"]["pretrained_s2D"] = pretrained_s2D
