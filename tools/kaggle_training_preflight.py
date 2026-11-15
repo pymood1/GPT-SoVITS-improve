@@ -25,18 +25,13 @@ from typing import Any
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.kaggle_dataset import AUDIO_EXTENSIONS
+
 DEFAULT_OUTPUT_ROOT = Path("/kaggle/working/gpt_sovits_output")
 DEFAULT_EMOTION_ROOT = Path("/kaggle/tmp/emotion_opt")
-AUDIO_EXTENSIONS = {
-    ".wav",
-    ".flac",
-    ".mp3",
-    ".m4a",
-    ".ogg",
-    ".opus",
-    ".aac",
-    ".wma",
-}
 
 KEY_FILES = (
     "webui.py",
@@ -55,6 +50,8 @@ KEY_FILES = (
     "tools/build_emotion_review_set.py",
     "tools/evaluate_emotion_review.py",
     "tools/calibrate_emotion_seed_thresholds.py",
+    "tools/kaggle_dataset.py",
+    "tools/kaggle_launch_webui.py",
 )
 
 SELF_TESTS = (
