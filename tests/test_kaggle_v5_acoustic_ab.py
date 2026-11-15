@@ -5,6 +5,7 @@ import unittest
 
 from tools.kaggle_v5_acoustic_ab import (
     TEST_TEXT,
+    _has_pretrained,
     _runtime_environment,
     link_assets,
     select_reference,
@@ -30,6 +31,25 @@ class LauncherTests(unittest.TestCase):
     def test_reference_without_metadata_does_not_invent_transcript(self):
         self.assertEqual(select_reference([], lambda p: None), ("", "", ""))
         self.assertNotIn("[", TEST_TEXT)
+
+    def test_pretrained_detection_requires_complete_base_asset_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pretrained = root / "GPT_SoVITS/pretrained_models"
+            required = [
+                pretrained / "s1v3.ckpt",
+                pretrained / "gsv-v5-pretrained/s2Gv5dev.pth",
+                pretrained / "gsv-v5-pretrained/vocoder.pth",
+                pretrained / "chinese-hubert-base/config.json",
+                pretrained / "chinese-roberta-wwm-ext-large/config.json",
+            ]
+            for path in required:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture")
+
+            self.assertTrue(_has_pretrained(root))
+            (pretrained / "gsv-v5-pretrained/vocoder.pth").unlink()
+            self.assertFalse(_has_pretrained(root))
 
     def test_runtime_environment_uses_existing_korean_reference_only(self):
         repo = Path("/kaggle/working/GPT-SoVITS-improve-diagnostic")
