@@ -2484,6 +2484,7 @@ AUTO_ASR_AUDIO_EXTENSIONS = {
     ".wma",
 }
 AUTO_SLICE_LONG_AUDIO_SECONDS = 60.0
+AUTO_SLICE_MAX_RESULT_SECONDS = 90.0
 AUTO_SLICE_SETTINGS = {
     "threshold": "-34",
     "min_length": "4000",
@@ -2582,6 +2583,11 @@ def _auto_slice_cache_valid(wav_dir, output_dir):
         return False
     if not _auto_asr_audio_files(output_dir):
         return False
+    if _long_training_audio_files(
+        output_dir,
+        threshold_seconds=AUTO_SLICE_MAX_RESULT_SECONDS,
+    ):
+        return False
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -2638,6 +2644,18 @@ def _ensure_auto_sliced_audio(wav_dir):
     if not slice_finished or not sliced_files:
         raise RuntimeError(
             "긴 음성 자동 분할이 완료되지 않았거나 결과 파일이 없습니다."
+        )
+
+    residual_long = _long_training_audio_files(
+        output_dir,
+        threshold_seconds=AUTO_SLICE_MAX_RESULT_SECONDS,
+    )
+    if residual_long:
+        longest = max(duration for _path, duration in residual_long)
+        raise RuntimeError(
+            "자동 분할 후에도 너무 긴 구간이 남았습니다 "
+            f"(최장 {longest:.1f}초). "
+            "무음 구간이 적은 원본은 수동 slicer 설정이 필요합니다."
         )
 
     marker = output_dir / ".auto_slice.json"
@@ -2857,19 +2875,28 @@ def _read_auto_training_source(list_path):
 
 def _auto_training_source_is_current(
     payload,
-    original_wav_dir,
+    supplied_wav_dir,
 ):
     if not payload:
         return False
 
-    original = Path(original_wav_dir).resolve()
-    if payload.get("original_wav_dir") != str(original):
-        return False
-    if payload.get("source_signature") != quick_path_signature(original):
+    supplied = Path(supplied_wav_dir).resolve()
+    original = _resolve_repo_path(payload.get("original_wav_dir"))
+    effective = _resolve_repo_path(payload.get("effective_wav_dir"))
+    if (
+        original is None
+        or effective is None
+        or not original.is_dir()
+        or not effective.is_dir()
+    ):
         return False
 
-    effective = _resolve_repo_path(payload.get("effective_wav_dir"))
-    return effective is not None and effective.is_dir()
+    if supplied not in {original.resolve(), effective.resolve()}:
+        return False
+
+    return payload.get("source_contract") == _auto_slice_source_contract(
+        original
+    )
 
 
 def _write_auto_training_source(
@@ -2887,7 +2914,7 @@ def _write_auto_training_source(
                 "format_version": 1,
                 "original_wav_dir": str(original),
                 "effective_wav_dir": str(effective),
-                "source_signature": quick_path_signature(original),
+                "source_contract": _auto_slice_source_contract(original),
             },
             ensure_ascii=False,
             indent=2,
@@ -6795,8 +6822,10 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
 기초 `.list`를 생성합니다. 아래 수동 ASR UI는 엔진·언어·정밀도를
 직접 고르고 싶을 때 사용하면 됩니다.
 
-긴 원본 녹음은 자동으로 자르지 않습니다. 필요하면
-0-데이터셋 준비 도구의 음성 자르기를 먼저 사용하세요.
+60초를 넘는 긴 원본이 감지되면 기존 slicer 기본 설정으로 먼저
+자동 분할한 뒤, 분할된 음성을 Faster Whisper로 전사합니다.
+자동 분할 후에도 90초를 넘는 구간이 남으면 무음 구간이 부족한
+원본으로 판단하고 중단하므로 그 경우에만 수동 slicer 설정을 조정하세요.
 """
                         )
 
