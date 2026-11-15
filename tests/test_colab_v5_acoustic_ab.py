@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from tools.colab_v5_acoustic_ab import (
     find_completed_suite,
@@ -14,6 +15,20 @@ from tools.colab_v5_acoustic_ab import (
 
 
 class ColabAcousticABTests(unittest.TestCase):
+    def test_notebook_bootstrap_supplies_source_location_to_legacy_loader(self):
+        notebook = json.loads(
+            Path("notebooks/GPT_SoVITS_V5_Acoustic_AB_Colab.ipynb").read_text(encoding="utf-8")
+        )
+        code = next("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
+        legacy_script = b"def run_colab_all(): return globals().get('__file__')"
+        response = SimpleNamespace(read=lambda: legacy_script)
+        namespace = {}
+
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            exec(compile(code, "colab-cell", "exec"), namespace)
+
+        self.assertEqual(namespace["result_folder"], namespace["url"])
+
     def test_raw_bootstrap_without_dunder_file_is_treated_as_external_loader(self):
         script = Path("tools/colab_v5_acoustic_ab.py")
         scope = {"__name__": "colab_v5_ab_bootstrap"}
