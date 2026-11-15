@@ -121,13 +121,13 @@ def ensure_nltk_frontend_resources() -> None:
         nltk.download("averaged_perceptron_tagger", quiet=True)
         nltk.pos_tag(["frontend", "check"])
 
-    # g2p_en additionally consumes cmudict; instantiate and execute a tiny probe.
-    from g2p_en import G2p
+    # The GPT-SoVITS English frontend subclasses g2p_en but uses its own
+    # TweetTokenizer path. Verify only the resources that path actually consumes.
+    from nltk.corpus import cmudict
 
-    probe = G2p()
-    if not probe("frontend check"):
-        raise RuntimeError("g2p_en frontend self-check returned no phones")
-    print("NLTK/g2p_en frontend self-check: OK", flush=True)
+    if not cmudict.dict():
+        raise RuntimeError("NLTK cmudict self-check returned an empty dictionary")
+    print("NLTK English frontend resources: OK", flush=True)
 
 
 def select_korean_reference(list_paths, info):
@@ -284,7 +284,6 @@ def _install_runtime(repo: Path) -> None:
         _run(["apt-get", "update"])
         _run(["apt-get", "install", "-y", "ffmpeg", "libsox-dev"])
     _run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=repo)
-    ensure_nltk_frontend_resources()
 
 
 def _download_models(repo: Path) -> None:
@@ -339,12 +338,20 @@ def _headless_main(repo: Path, output: Path, reference: Path) -> None:
 
     if not torch.cuda.is_available():
         raise RuntimeError("Colab 런타임 유형을 GPU로 설정한 뒤 Run all을 다시 실행하세요.")
+    reference_text = os.environ.get("GPT_SOVITS_AB_REFERENCE_TEXT", REFERENCE_TEXT)
+    reference_language = os.environ.get("GPT_SOVITS_AB_REFERENCE_LANGUAGE", "en")
+    if reference_language == "en":
+        ensure_nltk_frontend_resources()
+        from text import english
+
+        phones = english.g2p(english.text_normalize(reference_text))
+        if not phones:
+            raise RuntimeError("GPT-SoVITS English frontend self-check returned no phones")
+        print(f"GPT-SoVITS English phone conversion: OK ({len(phones)} phones)", flush=True)
     import inference_webui as webui
 
     print("GPU:", torch.cuda.get_device_name(0), flush=True)
     print("자동 합성 문장:", TEST_TEXT, flush=True)
-    reference_text = os.environ.get("GPT_SOVITS_AB_REFERENCE_TEXT", REFERENCE_TEXT)
-    reference_language = os.environ.get("GPT_SOVITS_AB_REFERENCE_LANGUAGE", "en")
     print("참조 언어:", reference_language, flush=True)
     run_headless(webui, str(reference), reference_text, reference_language)
     folder = find_completed_suite(output)
