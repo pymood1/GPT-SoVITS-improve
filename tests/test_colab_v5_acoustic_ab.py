@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ import unittest
 from unittest import mock
 
 from tools.colab_v5_acoustic_ab import (
+    _run,
     find_completed_suite,
     run_headless,
     runtime_environment,
@@ -15,6 +17,20 @@ from tools.colab_v5_acoustic_ab import (
 
 
 class ColabAcousticABTests(unittest.TestCase):
+    def test_child_failure_keeps_stderr_in_exception_and_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "child.log"
+            command = [
+                sys.executable,
+                "-c",
+                "import sys; print('actual child cause', file=sys.stderr); raise SystemExit(7)",
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "exit code 7[\\s\\S]*actual child cause"):
+                _run(command, log_path=log_path)
+
+            self.assertIn("actual child cause", log_path.read_text(encoding="utf-8"))
+
     def test_notebook_bootstrap_supplies_source_location_to_legacy_loader(self):
         notebook = json.loads(
             Path("notebooks/GPT_SoVITS_V5_Acoustic_AB_Colab.ipynb").read_text(encoding="utf-8")

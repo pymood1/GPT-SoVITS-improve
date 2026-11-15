@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import json
 import os
@@ -133,9 +134,44 @@ def find_completed_suite(output: Path, not_before_ns: int = 0) -> Path:
     return max(candidates, key=lambda item: item[0])[1]
 
 
-def _run(command: list[str], *, cwd: Path | None = None, env=None) -> None:
+def _run(
+    command: list[str], *, cwd: Path | None = None, env=None, log_path: Path | None = None
+) -> None:
     print("+", " ".join(map(str, command)), flush=True)
-    subprocess.run(command, cwd=cwd, env=env, check=True)
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        bufsize=1,
+    )
+    tail = deque(maxlen=200)
+    log = None
+    try:
+        if log_path is not None:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log = log_path.open("w", encoding="utf-8")
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            tail.append(line)
+            if log is not None:
+                log.write(line)
+                log.flush()
+    finally:
+        process.stdout.close()
+        if log is not None:
+            log.close()
+    return_code = process.wait()
+    if return_code:
+        location = f"\n전체 자식 로그: {log_path}" if log_path is not None else ""
+        raise RuntimeError(
+            f"자식 프로세스 실패 (exit code {return_code}).{location}\n"
+            f"마지막 출력:\n{''.join(tail)}"
+        )
 
 
 def _prepare_checkout(repo: Path) -> None:
@@ -271,6 +307,7 @@ def run_colab_all() -> Path:
         ],
         cwd=COLAB_REPO,
         env=env,
+        log_path=COLAB_OUTPUT / "headless.log",
     )
     folder = find_completed_suite(COLAB_OUTPUT, started)
     _display_results(reference, folder)
