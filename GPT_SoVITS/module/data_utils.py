@@ -149,11 +149,17 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if len(audiopaths_sid_text_new) <= 1:
+        if (
+            (not val and len(audiopaths_sid_text_new) <= 1)
+            or (val and len(audiopaths_sid_text_new) == 0)
+        ):
+            role = "validation" if val else "training"
+            minimum = 1 if val else 2
             raise RuntimeError(
-                "Too few usable S2 training samples remain after duration/phone "
-                f"filtering: {len(audiopaths_sid_text_new)}. "
-                "Need at least 2 usable samples."
+                f"Too few usable S2 {role} samples remain after "
+                "duration/phone filtering: "
+                f"{len(audiopaths_sid_text_new)}. "
+                f"Need at least {minimum} usable sample(s)."
             )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
@@ -453,11 +459,17 @@ class TextAudioSpeakerLoaderV3(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if len(audiopaths_sid_text_new) <= 1:
+        if (
+            (not val and len(audiopaths_sid_text_new) <= 1)
+            or (val and len(audiopaths_sid_text_new) == 0)
+        ):
+            role = "validation" if val else "training"
+            minimum = 1 if val else 2
             raise RuntimeError(
-                "Too few usable S2 training samples remain after duration/phone "
-                f"filtering: {len(audiopaths_sid_text_new)}. "
-                "Need at least 2 usable samples."
+                f"Too few usable S2 {role} samples remain after "
+                "duration/phone filtering: "
+                f"{len(audiopaths_sid_text_new)}. "
+                f"Need at least {minimum} usable sample(s)."
             )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
@@ -741,11 +753,17 @@ class TextAudioSpeakerLoaderV4(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if len(audiopaths_sid_text_new) <= 1:
+        if (
+            (not val and len(audiopaths_sid_text_new) <= 1)
+            or (val and len(audiopaths_sid_text_new) == 0)
+        ):
+            role = "validation" if val else "training"
+            minimum = 1 if val else 2
             raise RuntimeError(
-                "Too few usable S2 training samples remain after duration/phone "
-                f"filtering: {len(audiopaths_sid_text_new)}. "
-                "Need at least 2 usable samples."
+                f"Too few usable S2 {role} samples remain after "
+                "duration/phone filtering: "
+                f"{len(audiopaths_sid_text_new)}. "
+                f"Need at least {minimum} usable sample(s)."
             )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
@@ -963,11 +981,17 @@ class TextAudioSpeakerLoaderV3b(torch.utils.data.Dataset):
 
         print("skipped_phone: ", skipped_phone, ", skipped_dur: ", skipped_dur)
         print("total left: ", len(audiopaths_sid_text_new))
-        if len(audiopaths_sid_text_new) <= 1:
+        if (
+            (not val and len(audiopaths_sid_text_new) <= 1)
+            or (val and len(audiopaths_sid_text_new) == 0)
+        ):
+            role = "validation" if val else "training"
+            minimum = 1 if val else 2
             raise RuntimeError(
-                "Too few usable S2 training samples remain after duration/phone "
-                f"filtering: {len(audiopaths_sid_text_new)}. "
-                "Need at least 2 usable samples."
+                f"Too few usable S2 {role} samples remain after "
+                "duration/phone filtering: "
+                f"{len(audiopaths_sid_text_new)}. "
+                f"Need at least {minimum} usable sample(s)."
             )
         self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
