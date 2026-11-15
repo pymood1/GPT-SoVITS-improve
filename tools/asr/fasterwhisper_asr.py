@@ -243,13 +243,14 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
     def transcribe(file_path):
         nonlocal model, device, compute_type, cpu_fallback_used
         try:
-            return model.transcribe(
+            segments, info = model.transcribe(
                 audio=file_path,
                 beam_size=5,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=700),
                 language=language,
             )
+            return list(segments), info
         except RuntimeError as exc:
             if (
                 device != "cuda"
@@ -272,13 +273,14 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 device=device,
                 compute_type=compute_type,
             )
-            return model.transcribe(
+            segments, info = model.transcribe(
                 audio=file_path,
                 beam_size=5,
                 vad_filter=True,
                 vad_parameters=dict(min_silence_duration_ms=700),
                 language=language,
             )
+            return list(segments), info
 
     for file_name in tqdm(input_file_names):
         try:
@@ -336,8 +338,6 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
         print(f"ASR 任务完成->标注文件路径: {output_file_path}\n")
     return output_file_path
 
-
-load_cudnn()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
