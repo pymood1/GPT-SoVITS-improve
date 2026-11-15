@@ -72,6 +72,18 @@ class Text2SemanticDataModule(LightningDataModule):
                     f"{exc}"
                 )
                 self.config["train"]["adaptive_training"] = False
+                # The first train dataset was already created with holdout
+                # names removed. Rebuild it with every usable sample so a
+                # failed validation split never costs few-shot speaker data.
+                self._train_dataset = Text2SemanticDataset(
+                    phoneme_path=self.train_phoneme_path,
+                    semantic_path=self.train_semantic_path,
+                    max_sec=self.config["data"]["max_sec"],
+                    pad_val=self.config["data"]["pad_val"],
+                    adaptive_validation=False,
+                    split_role="train",
+                    split_seed=split_seed,
+                )
                 self._dev_dataset = self._train_dataset
         else:
             self._dev_dataset = self._train_dataset
