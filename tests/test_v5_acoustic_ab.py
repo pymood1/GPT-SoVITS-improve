@@ -173,6 +173,15 @@ def get_tts_wav():
         self.assertEqual(trace["ge"][0].sum(), 2)
         self.assertEqual(tensor_stats(torch.tensor([float("nan"), 1.0]))["nonfinite"], 1)
 
+    def test_run_sequence_uses_pinned_ref_spec_without_fork_only_keyword(self):
+        from tools import v5_acoustic_ab as ab
+        source = Path(ab.__file__).read_text(encoding="utf-8")
+        self.assertIn('methods["_get_ref_spec"](engine, base["ref_wav_path"])', source)
+        self.assertNotIn(
+            'methods["_get_ref_spec"](engine, base["ref_wav_path"], cache_raw=True)',
+            source,
+        )
+
     def test_official_method_is_executed_not_reimplemented(self):
         source = '''
 class TTS:
