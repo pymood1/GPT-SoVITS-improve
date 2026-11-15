@@ -3389,6 +3389,16 @@ def open1Ba(
             "was cleared; exported SoVITS_weights are untouched"
         )
 
+    if bool(adaptive_training) and resume_dir.exists():
+        # Adaptive epoch selection depends on validation-history state that
+        # legacy SoVITS resume checkpoints do not persist. A clean adaptive
+        # run is more correct than resuming with reset best-loss/patience.
+        shutil.rmtree(resume_dir)
+        print(
+            "[SoVITS adaptive] full resume state cleared; "
+            "adaptive runs start clean so epoch selection is consistent"
+        )
+
     try:
         data = json.loads(
             config_path.read_text(encoding="utf-8")
@@ -3881,6 +3891,17 @@ def open1Bb(
             "[GPT resume] incompatible previous full checkpoint state "
             "was cleared; exported GPT_weights are untouched"
         )
+
+    if bool(adaptive_training):
+        adaptive_ckpt_dir = (
+            s1_dir / f"logs_s1_{version}" / "ckpt"
+        )
+        if adaptive_ckpt_dir.exists():
+            shutil.rmtree(adaptive_ckpt_dir)
+            print(
+                "[GPT adaptive] full resume checkpoints cleared; "
+                "adaptive runs start clean so best-epoch state is valid"
+            )
 
     try:
         data = yaml.load(
