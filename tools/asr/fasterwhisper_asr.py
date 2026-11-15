@@ -10,10 +10,34 @@ from modelscope import snapshot_download as snapshot_download_ms
 from tqdm import tqdm
 
 from tools.asr.config import get_models
-from tools.my_utils import load_cudnn
+from tools.my_utils import load_cublas, load_cudnn
 
 # fmt: off
 GPT_SOVITS_LANGUAGES = {"zh", "en", "ja", "ko"}
+AUDIO_EXTENSIONS = {
+    ".wav",
+    ".flac",
+    ".mp3",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".wma",
+}
+
+
+def _is_cuda_runtime_library_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    markers = (
+        "libcublas",
+        "cublas64",
+        "libcudnn",
+        "cudnn64",
+        "cuda runtime",
+        "cuda driver",
+    )
+    return any(marker in message for marker in markers)
+
 
 language_code_list = [
     "af", "am", "ar", "as", "az", 
@@ -178,14 +202,85 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
 
     if language == "auto":
         language = None  # 不设置语种由模型自动输出概率最高的语种
-    print("loading faster whisper model:", model_path, model_path)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = WhisperModel(model_path, device=device, compute_type=precision)
 
-    input_file_names = os.listdir(input_folder)
-    input_file_names.sort()
+    cuda_ready = False
+    if torch.cuda.is_available():
+        cuda_ready = bool(load_cublas())
+        load_cudnn()
+
+    device = "cuda" if cuda_ready else "cpu"
+    compute_type = precision if device == "cuda" else "int8"
+    print(
+        "loading faster whisper model:",
+        model_path,
+        f"device={device}",
+        f"compute_type={compute_type}",
+    )
+    model = WhisperModel(
+        model_path,
+        device=device,
+        compute_type=compute_type,
+    )
+
+    input_file_names = sorted(
+        file_name
+        for file_name in os.listdir(input_folder)
+        if (
+            os.path.isfile(os.path.join(input_folder, file_name))
+            and os.path.splitext(file_name)[1].lower()
+            in AUDIO_EXTENSIONS
+        )
+    )
+
+    if not input_file_names:
+        raise RuntimeError(
+            "Faster Whisper input folder has no supported audio files"
+        )
 
     output = []
+    cpu_fallback_used = device == "cpu"
+
+    def transcribe(file_path):
+        nonlocal model, device, compute_type, cpu_fallback_used
+        try:
+            segments, info = model.transcribe(
+                audio=file_path,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=700),
+                language=language,
+            )
+            return list(segments), info
+        except RuntimeError as exc:
+            if (
+                device != "cuda"
+                or cpu_fallback_used
+                or not _is_cuda_runtime_library_error(exc)
+            ):
+                raise
+
+            print(
+                "[Faster Whisper] CUDA runtime library unavailable; "
+                "falling back to CPU int8 once. "
+                f"Original error: {exc}",
+                flush=True,
+            )
+            device = "cpu"
+            compute_type = "int8"
+            cpu_fallback_used = True
+            model = WhisperModel(
+                model_path,
+                device=device,
+                compute_type=compute_type,
+            )
+            segments, info = model.transcribe(
+                audio=file_path,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=700),
+                language=language,
+            )
+            return list(segments), info
 
     for file_name in tqdm(input_file_names):
         try:
@@ -198,13 +293,7 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
                 )
                 continue
 
-            segments, info = model.transcribe(
-                audio=file_path,
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=700),
-                language=language,
-            )
+            segments, info = transcribe(file_path)
             detected_language = str(
                 info.language or language or ""
             ).lower()
@@ -249,8 +338,6 @@ def execute_asr(input_folder, output_folder, model_path, language, precision):
         print(f"ASR 任务完成->标注文件路径: {output_file_path}\n")
     return output_file_path
 
-
-load_cudnn()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

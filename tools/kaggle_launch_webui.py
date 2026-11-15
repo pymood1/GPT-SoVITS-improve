@@ -16,6 +16,55 @@ if str(ROOT) not in sys.path:
 from tools.kaggle_dataset import prepare_kaggle_dataset
 
 
+def nvidia_library_dirs(
+    search_paths: list[str] | None = None,
+) -> list[Path]:
+    """Find pip-installed NVIDIA shared-library directories."""
+
+    roots = search_paths if search_paths is not None else sys.path
+    found: list[Path] = []
+
+    for raw_root in roots:
+        if not raw_root:
+            continue
+        nvidia_root = Path(raw_root).expanduser() / "nvidia"
+        if not nvidia_root.is_dir():
+            continue
+
+        for pattern in ("*/lib", "*/lib64"):
+            for directory in sorted(nvidia_root.glob(pattern)):
+                if directory.is_dir() and directory not in found:
+                    found.append(directory.resolve())
+
+    return found
+
+
+def apply_nvidia_library_path(
+    env: dict[str, str],
+    *,
+    search_paths: list[str] | None = None,
+) -> list[Path]:
+    """Expose pip CUDA libraries to CTranslate2 subprocesses."""
+
+    directories = nvidia_library_dirs(search_paths)
+    if not directories:
+        return []
+
+    existing = [
+        item
+        for item in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+        if item
+    ]
+    merged = [str(path) for path in directories]
+    merged.extend(
+        item
+        for item in existing
+        if item not in merged
+    )
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(merged)
+    return directories
+
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -111,6 +160,20 @@ def main() -> int:
         )
 
     env = os.environ.copy()
+    nvidia_dirs = apply_nvidia_library_path(env)
+    if nvidia_dirs:
+        print(
+            "[cuda] NVIDIA library paths:",
+            os.pathsep.join(str(path) for path in nvidia_dirs),
+            flush=True,
+        )
+    else:
+        print(
+            "[cuda] pip NVIDIA library paths not found; "
+            "ASR will use its runtime fallback if needed.",
+            flush=True,
+        )
+
     python_path = [
         str(ROOT),
         str(ROOT / "GPT_SoVITS"),
