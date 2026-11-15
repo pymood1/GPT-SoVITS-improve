@@ -134,6 +134,34 @@ def initial_noise_override(cfm, noise):
             cfm.inference = saved
 
 
+def _nonpersistent_buffer_dtypes(module):
+    """Record runtime dtypes omitted from state_dict (for example DiT freqs_cis)."""
+    result = {}
+    for prefix, child in module.named_modules():
+        for key in child._non_persistent_buffers_set:
+            value = child._buffers.get(key)
+            if value is None:
+                continue
+            name = f"{prefix}.{key}" if prefix else key
+            result[name] = value.dtype
+    return result
+
+
+def _align_nonpersistent_buffer_dtypes(module, expected):
+    """Match runtime-only buffer dtypes without copying warmed/cache values."""
+    for prefix, child in module.named_modules():
+        for key in child._non_persistent_buffers_set:
+            value = child._buffers.get(key)
+            if value is None:
+                continue
+            name = f"{prefix}.{key}" if prefix else key
+            dtype = expected.get(name)
+            if dtype is None:
+                continue
+            if value.is_floating_point() or value.is_complex():
+                child._buffers[key] = value.to(dtype=dtype)
+
+
 class FreshAcousticFactory:
     """Reconstruct one CPU-born pair at a time; never deepcopy CUDA modules."""
     def __init__(self, namespace, root):
@@ -143,6 +171,11 @@ class FreshAcousticFactory:
         self.device = namespace["device"]
         self.current_s2 = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
         self.current_vocoder = {k: v.detach().cpu().clone() for k, v in self.vocoder.state_dict().items()}
+        # state_dict excludes persistent=False buffers. V5 DiT uses one for
+        # TextEmbedding.freqs_cis; the live WebUI's model.half() casts it, while
+        # a fresh constructor leaves it FP32 unless we explicitly align it.
+        self.current_s2_nonpersistent_dtypes = _nonpersistent_buffer_dtypes(self.model)
+        self.current_vocoder_nonpersistent_dtypes = _nonpersistent_buffer_dtypes(self.vocoder)
         self.s2 = namespace["load_sovits_new"](namespace["sovits_path_global"])["weight"]
         self.voc = torch.load(root / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/vocoder.pth",
                               map_location="cpu", weights_only=True)
@@ -176,6 +209,9 @@ class FreshAcousticFactory:
         else:
             model.load_state_dict(self.current_s2, strict=True, assign=True)
         vocoder.load_state_dict(self.voc if fp32 else self.current_vocoder, strict=True, assign=True)
+        if not fp32:
+            _align_nonpersistent_buffer_dtypes(model, self.current_s2_nonpersistent_dtypes)
+            _align_nonpersistent_buffer_dtypes(vocoder, self.current_vocoder_nonpersistent_dtypes)
         # Clone assigned CPU storage so no pair can mutate the factory baseline.
         import torch
         for module in (model, vocoder):
