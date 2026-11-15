@@ -476,6 +476,25 @@ def _run(rank, n_gpus, hps, use_ddp):
                     f"{adaptive_state.patience}"
                 )
 
+            publish_activity(
+                task="SoVITS LoRA 학습",
+                stage="validation",
+                progress=min(
+                    epoch / max(adaptive_state.max_epochs, 1),
+                    1.0,
+                ),
+                epoch=epoch,
+                total_epochs=adaptive_state.max_epochs,
+                loss=val_loss,
+                metric=(
+                    f"val {val_loss:.5f} · best "
+                    f"{adaptive_state.best_loss:.5f}@"
+                    f"{adaptive_state.best_epoch} · patience "
+                    f"{adaptive_state.bad_epochs}/"
+                    f"{adaptive_state.patience}"
+                ),
+            )
+
         if use_ddp:
             stop_training = _broadcast_bool(
                 stop_training if rank == 0 else False,
