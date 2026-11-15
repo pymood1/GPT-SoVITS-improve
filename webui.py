@@ -423,6 +423,9 @@ def _training_process_running():
 
 
 def _preprocessing_process_running():
+    if globals().get("preprocess_1a_auto_asr_active", False):
+        return True
+
     for process_list_name in ("ps1a", "ps1b", "ps1c"):
         for process in globals().get(process_list_name, []) or []:
             if process is not None and process.poll() is None:
@@ -2470,6 +2473,205 @@ def open_asr(
     )
 
 
+AUTO_ASR_AUDIO_EXTENSIONS = {
+    ".wav",
+    ".flac",
+    ".mp3",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".wma",
+}
+
+
+def _usable_training_list(path):
+    path = Path(path) if path is not None else None
+    if path is None or not path.is_file():
+        return False
+    try:
+        return _nonempty_line_count(path) > 0
+    except OSError:
+        return False
+
+
+def _auto_asr_audio_files(wav_dir):
+    wav_dir = Path(wav_dir)
+    return [
+        path
+        for path in sorted(wav_dir.iterdir())
+        if (
+            path.is_file()
+            and path.suffix.lower() in AUTO_ASR_AUDIO_EXTENSIONS
+        )
+    ]
+
+
+def _auto_asr_list_path(wav_dir, output_dir):
+    wav_dir = Path(wav_dir)
+    output_dir = Path(output_dir)
+    return (output_dir / f"{wav_dir.name}.list").resolve()
+
+
+def _auto_asr_list_is_fresh(list_path, wav_dir):
+    list_path = Path(list_path)
+    if not _usable_training_list(list_path):
+        return False
+
+    audio_files = _auto_asr_audio_files(wav_dir)
+    if not audio_files:
+        return False
+
+    list_mtime = list_path.stat().st_mtime_ns
+    return all(
+        path.stat().st_mtime_ns <= list_mtime
+        for path in audio_files
+    )
+
+
+def _training_list_target_path(
+    inp_text,
+    inp_wav_dir,
+    *,
+    asr_output_dir="output/asr_opt",
+):
+    requested_text = my_utils.clean_path(inp_text)
+    requested_path = (
+        _resolve_repo_path(requested_text)
+        if requested_text
+        else None
+    )
+    if _usable_training_list(requested_path):
+        return requested_path
+
+    if requested_path is not None and requested_path.suffix.lower() != ".list":
+        raise ValueError(
+            "텍스트 표기 파일은 .list 확장자를 사용해야 합니다: "
+            f"{requested_path}"
+        )
+
+    wav_dir = _resolve_repo_path(inp_wav_dir)
+    if wav_dir is None or not wav_dir.is_dir():
+        raise FileNotFoundError(
+            "자동 .list 생성에 사용할 음성 폴더가 없습니다: "
+            f"{wav_dir or '<empty>'}"
+        )
+
+    fallback_root = _resolve_repo_path(asr_output_dir)
+    if fallback_root is None:
+        raise RuntimeError("자동 ASR 출력 폴더를 결정하지 못했습니다.")
+    fallback_root.mkdir(parents=True, exist_ok=True)
+
+    target_path = requested_path
+    if (
+        target_path is not None
+        and os.name != "nt"
+        and str(target_path).startswith("/content/drive/")
+        and not os.path.ismount("/content/drive")
+    ):
+        target_path = None
+
+    if target_path is not None:
+        try:
+            target_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+        except OSError:
+            target_path = None
+
+    return target_path or _auto_asr_list_path(
+        wav_dir,
+        fallback_root,
+    )
+
+
+def _ensure_training_list(
+    inp_text,
+    inp_wav_dir,
+    *,
+    asr_output_dir="output/asr_opt",
+):
+    """Return an existing .list or create one with the existing ASR flow."""
+    requested_path = (
+        _resolve_repo_path(my_utils.clean_path(inp_text))
+        if my_utils.clean_path(inp_text)
+        else None
+    )
+    if _usable_training_list(requested_path):
+        return str(requested_path)
+
+    wav_dir = _resolve_repo_path(inp_wav_dir)
+    target_path = _training_list_target_path(
+        inp_text,
+        inp_wav_dir,
+        asr_output_dir=asr_output_dir,
+    )
+
+    audio_files = _auto_asr_audio_files(wav_dir)
+    if not audio_files:
+        raise RuntimeError(
+            "자동 .list 생성에 사용할 음성 파일을 찾지 못했습니다: "
+            f"{wav_dir}"
+        )
+
+    output_root = target_path.parent
+
+    generated_path = _auto_asr_list_path(
+        wav_dir,
+        output_root,
+    )
+
+    if _auto_asr_list_is_fresh(generated_path, wav_dir):
+        yield f"기존 자동 전사 .list 재사용: {generated_path}"
+    else:
+        generated_path = None
+        for result in open_asr(
+            str(wav_dir),
+            str(output_root),
+            DEFAULT_ASR_MODEL,
+            DEFAULT_ASR_SIZE,
+            DEFAULT_ASR_LANGUAGE,
+            DEFAULT_ASR_PRECISION,
+        ):
+            status = result[0] if result else ""
+            yield str(status)
+
+            if (
+                result
+                and len(result) > 3
+                and isinstance(result[3], dict)
+                and result[3].get("value")
+            ):
+                generated_path = _resolve_repo_path(
+                    result[3]["value"]
+                )
+
+        if not _usable_training_list(generated_path):
+            raise RuntimeError(
+                "ASR가 완료됐지만 사용 가능한 .list가 생성되지 않았습니다."
+            )
+
+    if generated_path is None:
+        generated_path = _auto_asr_list_path(
+            wav_dir,
+            output_root,
+        )
+
+    final_path = target_path or generated_path
+    if final_path != generated_path:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(generated_path, final_path)
+
+    if not _usable_training_list(final_path):
+        raise RuntimeError(
+            "자동 생성된 .list가 비어 있거나 읽을 수 없습니다: "
+            f"{final_path}"
+        )
+
+    return str(final_path)
+
+
 def close_asr():
     global p_asr
     global asr_cancel_requested
@@ -4130,6 +4332,7 @@ def close_slice():
 
 ps1a = []
 preprocess_1a_cancel_requested = False
+preprocess_1a_auto_asr_active = False
 process_name_1a = i18n("文本分词与特征提取")
 
 
@@ -4146,6 +4349,7 @@ def open1a(
 ):
     global ps1a
     global preprocess_1a_cancel_requested
+    global preprocess_1a_auto_asr_active
 
     preprocess_1a_cancel_requested = False
 
@@ -4160,6 +4364,44 @@ def open1a(
 
     inp_text = my_utils.clean_path(inp_text)
     inp_wav_dir = my_utils.clean_path(inp_wav_dir)
+
+    requested_list = _resolve_repo_path(inp_text) if inp_text else None
+    if not _usable_training_list(requested_list):
+        preprocess_1a_auto_asr_active = True
+        try:
+            auto_list = _ensure_training_list(
+                inp_text,
+                inp_wav_dir,
+            )
+            while True:
+                try:
+                    asr_status = next(auto_list)
+                except StopIteration as stop:
+                    inp_text = stop.value
+                    break
+
+                if preprocess_1a_cancel_requested:
+                    return
+
+                yield (
+                    process_info(process_name_1a, "running")
+                    + "\n.list 없음 → 자동 전사 중\n"
+                    + str(asr_status),
+                    {"__type__": "update", "visible": False},
+                    {"__type__": "update", "visible": True},
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
+            if preprocess_1a_cancel_requested:
+                return
+            yield (
+                process_info(process_name_1a, "failed")
+                + f": 자동 .list 생성 실패: {exc}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+            )
+            return
+        finally:
+            preprocess_1a_auto_asr_active = False
 
     if not check_for_existance(
         [inp_text, inp_wav_dir],
@@ -4358,11 +4600,61 @@ def open1a(
         )
 
 
+def open1a_webui(
+    version,
+    inp_text,
+    inp_wav_dir,
+    exp_name,
+    gpu_numbers,
+    bert_pretrained_dir,
+    use_multilingual_bert,
+    multilingual_bert_model,
+):
+    """UI adapter that surfaces the auto-generated .list path."""
+    list_value = my_utils.clean_path(inp_text)
+    requested_list = _resolve_repo_path(list_value) if list_value else None
+
+    if not _usable_training_list(requested_list):
+        try:
+            list_value = str(
+                _training_list_target_path(
+                    inp_text,
+                    inp_wav_dir,
+                )
+            )
+        except (OSError, RuntimeError, ValueError):
+            # Canonical 1A owns validation/error reporting.
+            list_value = my_utils.clean_path(inp_text)
+
+    for result in open1a(
+        version,
+        list_value,
+        inp_wav_dir,
+        exp_name,
+        gpu_numbers,
+        bert_pretrained_dir,
+        use_multilingual_bert,
+        multilingual_bert_model,
+    ):
+        yield (
+            *result,
+            {
+                "__type__": "update",
+                "value": list_value,
+            },
+        )
+
+
 def close1a():
     global ps1a
     global preprocess_1a_cancel_requested
+    global preprocess_1a_auto_asr_active
 
     preprocess_1a_cancel_requested = True
+
+    if preprocess_1a_auto_asr_active:
+        close_asr()
+        preprocess_1a_auto_asr_active = False
 
     if ps1a != []:
         for p1a in ps1a:
@@ -5118,7 +5410,7 @@ def close1abc():
 
     preprocess_1abc_cancel_requested = True
 
-    if ps1a:
+    if ps1a or preprocess_1a_auto_asr_active:
         close1a()
     if ps1b:
         close1b()
@@ -5160,12 +5452,39 @@ def open1abcd(
 
     preprocess_1abcd_cancel_requested = False
     sidecar_update = {"__type__": "update"}
+    list_update = {"__type__": "update"}
+
+    requested_list = _resolve_repo_path(inp_text) if inp_text else None
+    if not _usable_training_list(requested_list):
+        try:
+            inp_text = str(
+                _training_list_target_path(
+                    inp_text,
+                    inp_wav_dir,
+                )
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            yield (
+                "### 전처리 일괄 실행 실패\n\n"
+                f"자동 .list 경로 준비 실패: {exc}",
+                {"__type__": "update", "visible": True},
+                {"__type__": "update", "visible": False},
+                sidecar_update,
+                list_update,
+            )
+            return
+
+    list_update = {
+        "__type__": "update",
+        "value": str(inp_text),
+    }
 
     yield (
         "### 전처리 일괄 실행\n\n**a → b → c 실행 중**",
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
         sidecar_update,
+        list_update,
     )
 
     abc_finished = False
@@ -5197,6 +5516,7 @@ def open1abcd(
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
             sidecar_update,
+            list_update,
         )
 
     if not abc_finished:
@@ -5206,6 +5526,7 @@ def open1abcd(
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             sidecar_update,
+            list_update,
         )
         return
 
@@ -5218,6 +5539,7 @@ def open1abcd(
         {"__type__": "update", "visible": False},
         {"__type__": "update", "visible": True},
         sidecar_update,
+        list_update,
     )
 
     d_finished = False
@@ -5252,6 +5574,7 @@ def open1abcd(
             {"__type__": "update", "visible": False},
             {"__type__": "update", "visible": True},
             sidecar_update,
+            list_update,
         )
 
     if not d_finished:
@@ -5261,6 +5584,7 @@ def open1abcd(
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             sidecar_update,
+            list_update,
         )
         return
 
@@ -5270,6 +5594,7 @@ def open1abcd(
         {"__type__": "update", "visible": True},
         {"__type__": "update", "visible": False},
         sidecar_update,
+        list_update,
     )
 
 
@@ -5329,8 +5654,8 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
     wav_root = _clean_user_path(wav_root)
     if not experiment_name:
         raise RuntimeError("실험명이 비어 있습니다.")
-    if not source_list or not wav_root:
-        raise RuntimeError("학습 .list와 음성 폴더 경로가 필요합니다.")
+    if not wav_root:
+        raise RuntimeError("학습용 음성 폴더 경로가 필요합니다.")
 
     gpu_ids = dev_available_gpu_ids(set_gpu_numbers, default_gpu_numbers)
     preprocess_gpus = dev_preprocess_gpu_string(gpu_ids)
@@ -5407,6 +5732,12 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 and result[3].get("value")
             ):
                 sidecar_path = str(result[3]["value"])
+            if (
+                len(result) > 4
+                and isinstance(result[4], dict)
+                and result[4].get("value")
+            ):
+                source_list = str(result[4]["value"])
 
             preprocess_finished = str(status).startswith(
                 "### 전처리 일괄 실행 완료"
@@ -6044,12 +6375,15 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                     ):
                         gr.Markdown(
                             """
-이미 GPT-SoVITS 형식의 `.list` 파일이 있으면 이 단계는 건너뛰면 됩니다.
+이미 GPT-SoVITS 형식의 `.list` 파일이 있으면 그대로 사용합니다.
 
-음성 파일만 있는 경우 폴더를 지정하고 ASR로 전사하면 아래의
-**텍스트 표기 파일**과 **학습용 음성 폴더**가 자동으로 채워집니다.
-다국어 사용을 고려해 Faster Whisper를 기본값으로 둡니다.
-긴 원본 녹음은 필요하면 0-데이터셋 준비 도구의 음성 자르기를 먼저 사용하세요.
+`.list` 파일이 없거나 비어 있으면 **1A 또는 a→b→c→d 실행 시**
+학습용 음성 폴더를 Faster Whisper 기본 설정으로 자동 전사해
+기초 `.list`를 생성합니다. 아래 수동 ASR UI는 엔진·언어·정밀도를
+직접 고르고 싶을 때 사용하면 됩니다.
+
+긴 원본 녹음은 자동으로 자르지 않습니다. 필요하면
+0-데이터셋 준비 도구의 음성 자르기를 먼저 사용하세요.
 """
                         )
 
@@ -6442,7 +6776,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                 close_denoise_button.click(close_denoise, [], [denoise_info, open_denoise_button, close_denoise_button])
     
                 button1a_open.click(
-                    open1a,
+                    open1a_webui,
                     [
                         version_checkbox,
                         inp_text,
@@ -6453,7 +6787,12 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         use_multilingual_bert,
                         multilingual_bert_model,
                     ],
-                    [info1a, button1a_open, button1a_close],
+                    [
+                        info1a,
+                        button1a_open,
+                        button1a_close,
+                        inp_text,
+                    ],
                 )
                 button1a_close.click(close1a, [], [info1a, button1a_open, button1a_close])
                 button1b_open.click(
@@ -6494,6 +6833,7 @@ controller는 비-neutral 방향만 학습합니다. 동일 전사문 pair는 �
                         button1abc_open,
                         button1abc_close,
                         emotion_sidecar,
+                        inp_text,
                     ],
                 )
                 button1abc_close.click(
