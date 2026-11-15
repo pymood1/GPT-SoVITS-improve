@@ -648,6 +648,9 @@ class WebUiDatasetContractIntegrationTests(unittest.TestCase):
         self.assertIn("_read_auto_training_source(", source)
         self.assertIn("_auto_training_source_is_current(", source)
         self.assertIn('auto_source["effective_wav_dir"]', source)
+        self.assertIn("marker_original = _resolve_repo_path(", source)
+        self.assertIn("marker_effective = _resolve_repo_path(", source)
+        self.assertIn("original_wav_dir = marker_original", source)
 
     def test_auto_list_one_click_propagates_generated_paths(self):
         webui = (ROOT / "webui.py").read_text(encoding="utf-8")
