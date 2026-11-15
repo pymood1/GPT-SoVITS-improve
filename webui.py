@@ -157,6 +157,15 @@ from tools.preprocess_contract import (
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+DEFAULT_TRAINING_LIST_PATH = os.environ.get(
+    "GPT_SOVITS_DEFAULT_TRAINING_LIST",
+    "/content/drive/MyDrive/audio_input/training.list",
+)
+DEFAULT_TRAINING_AUDIO_DIR = os.environ.get(
+    "GPT_SOVITS_DEFAULT_DATAS_DIR",
+    "/content/drive/MyDrive/audio_input/datas",
+)
+
 # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1' # 当遇到mps不支持的步骤时使用cpu
 import gradio as gr
 
@@ -6924,7 +6933,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 inp_text = gr.Textbox(
                                     label=i18n("*文本标注文件"),
-                                    value="/content/drive/MyDrive/audio_input/training.list",
+                                    value=DEFAULT_TRAINING_LIST_PATH,
                                     placeholder="/content/drive/MyDrive/audio_input/training.list",
                                     interactive=True,
                                     scale=10,
@@ -6932,7 +6941,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
                             with gr.Row():
                                 inp_wav_dir = gr.Textbox(
                                     label=i18n("*训练集音频文件目录"),
-                                    value="/content/drive/MyDrive/audio_input/datas",
+                                    value=DEFAULT_TRAINING_AUDIO_DIR,
                                     interactive=True,
                                     placeholder="/content/drive/MyDrive/audio_input/datas",
                                     scale=10,
