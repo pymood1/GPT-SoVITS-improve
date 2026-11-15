@@ -12,7 +12,7 @@ def deterministic_holdout_names(
     names: Iterable[str],
     fraction: float = 0.10,
     seed: int = 233333,
-    min_unique: int = 8,
+    min_unique: int = 12,
     max_holdout: int = 8,
 ) -> set[str]:
     """Return a stable file-level validation split.
@@ -29,7 +29,7 @@ def deterministic_holdout_names(
     if fraction <= 0.0:
         return set()
 
-    desired = max(1, int(round(len(unique) * fraction)))
+    desired = max(2, int(round(len(unique) * fraction)))
     desired = min(desired, int(max_holdout), len(unique) - 2)
 
     def score(name: str) -> bytes:
