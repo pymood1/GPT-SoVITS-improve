@@ -576,7 +576,7 @@ class Text2SemanticDecoder(nn.Module):
 
         return xy_pos, xy_attn_mask, targets
 
-    def forward(
+    def preference_loss(
         self,
         x,
         x_lens,
@@ -585,46 +585,35 @@ class Text2SemanticDecoder(nn.Module):
         bert_feature,
         dpo_beta: float = 0.2,
         dpo_reference_mode: str = "reference_free",
-        dpo_weight: float = 1.0,
     ):
-        """
-        x: phoneme_ids
-        y: semantic_ids
-        """
-
+        """Compute only the deterministic preference objective."""
         reject_y, reject_y_lens = make_reject_y(y, y_lens)
 
-        xy_pos, xy_attn_mask, targets = self.make_input_data(x, x_lens, y, y_lens, bert_feature)
-
-        xy_dec, _ = self.h(
-            (xy_pos, None),
-            mask=xy_attn_mask,
+        xy_pos, xy_attn_mask, targets = self.make_input_data(
+            x, x_lens, y, y_lens, bert_feature
         )
+        xy_dec, _ = self.h((xy_pos, None), mask=xy_attn_mask)
         x_len = x_lens.max()
-        logits = self.ar_predict_layer(xy_dec[:, x_len-1:])
+        logits = self.ar_predict_layer(xy_dec[:, x_len - 1 :])
 
-        ###### DPO #############
-        reject_xy_pos, reject_xy_attn_mask, reject_targets = self.make_input_data(
-            x, x_lens, reject_y, reject_y_lens, bert_feature
+        reject_xy_pos, reject_xy_attn_mask, reject_targets = (
+            self.make_input_data(
+                x,
+                x_lens,
+                reject_y,
+                reject_y_lens,
+                bert_feature,
+            )
         )
-
         reject_xy_dec, _ = self.h(
             (reject_xy_pos, None),
             mask=reject_xy_attn_mask,
         )
-        x_len = x_lens.max()
-        reject_logits = self.ar_predict_layer(reject_xy_dec[:, x_len-1:])
+        reject_logits = self.ar_predict_layer(
+            reject_xy_dec[:, x_len - 1 :]
+        )
 
-        # loss
-        # from feiteng: 每次 duration 越多, 梯度更新也应该更多, 所以用 sum
-
-        loss_1 = F.cross_entropy(logits.permute(0, 2, 1), targets, reduction="sum")
-        acc = self.ar_accuracy_metric(logits.permute(0, 2, 1).detach(), targets).item()
-
-        # Length-normalized log-probabilities remove the trivial bias
-        # where a repeated sequence loses simply because it contains more
-        # tokens. Only real tokens + one terminal EOS are scored.
-        A_logits, R_logits = get_batch_logps(
+        chosen_logps, rejected_logps = get_batch_logps(
             logits,
             reject_logits,
             targets,
@@ -640,21 +629,16 @@ class Text2SemanticDecoder(nn.Module):
         beta = float(dpo_beta)
         if beta <= 0.0:
             raise ValueError("dpo_beta must be positive")
-        preference_weight = float(dpo_weight)
-        if preference_weight < 0.0:
-            raise ValueError("dpo_weight must be >= 0")
 
         if reference_mode in {"reference_free", "none", "legacy"}:
-            reference_A_logits = 0
-            reference_R_logits = 0
+            reference_chosen_logps = 0
+            reference_rejected_logps = 0
             reference_free = True
         elif reference_mode in {
             "speaker_snapshot",
             "lora_snapshot",
             "adapted_snapshot",
         }:
-            # Reuse the same frozen backbone with a tiny snapshot of the LoRA
-            # weights captured after speaker-adaptation warmup.
             with torch.no_grad():
                 with self._s1_lora_reference():
                     reference_xy_dec, _ = self.h(
@@ -672,8 +656,8 @@ class Text2SemanticDecoder(nn.Module):
                         reference_reject_xy_dec[:, x_len - 1 :]
                     )
                     (
-                        reference_A_logits,
-                        reference_R_logits,
+                        reference_chosen_logps,
+                        reference_rejected_logps,
                     ) = get_batch_logps(
                         reference_logits,
                         reference_reject_logits,
@@ -690,19 +674,54 @@ class Text2SemanticDecoder(nn.Module):
                 f"{dpo_reference_mode!r}"
             )
 
-        loss_2, _, _ = dpo_loss(
-            A_logits,
-            R_logits,
-            reference_A_logits,
-            reference_R_logits,
+        loss, _, _ = dpo_loss(
+            chosen_logps,
+            rejected_logps,
+            reference_chosen_logps,
+            reference_rejected_logps,
             beta,
             reference_free=reference_free,
         )
+        return loss, {
+            "chosen_logp": chosen_logps.detach().mean(),
+            "rejected_logp": rejected_logps.detach().mean(),
+        }
 
-        # CE is intentionally kept as the upstream token-summed loss.
-        # Convert the pair-mean preference loss into the same rough "token
-        # units" before applying a small auxiliary weight. This avoids making
-        # DPO vanish on long utterances without retuning the original S1 LR.
+    def forward(
+        self,
+        x,
+        x_lens,
+        y,
+        y_lens,
+        bert_feature,
+        dpo_beta: float = 0.2,
+        dpo_reference_mode: str = "reference_free",
+        dpo_weight: float = 1.0,
+    ):
+        """Run original S1 CE plus deterministic auxiliary DPO."""
+        loss_1, acc = self.forward_old(
+            x,
+            x_lens,
+            y,
+            y_lens,
+            bert_feature,
+        )
+
+        preference_weight = float(dpo_weight)
+        if preference_weight < 0.0:
+            raise ValueError("dpo_weight must be >= 0")
+
+        with self.dpo_dropout_disabled():
+            loss_2, preference_metrics = self.preference_loss(
+                x,
+                x_lens,
+                y,
+                y_lens,
+                bert_feature,
+                dpo_beta=dpo_beta,
+                dpo_reference_mode=dpo_reference_mode,
+            )
+
         valid_target_tokens = (
             y_lens.to(dtype=loss_2.dtype) + 1
         ).sum().detach()
@@ -710,6 +729,7 @@ class Text2SemanticDecoder(nn.Module):
             preference_weight * valid_target_tokens * loss_2
         )
         loss = loss_1 + scaled_dpo_loss
+
         dpo_to_ce_ratio = (
             scaled_dpo_loss.detach()
             / loss_1.detach().abs().clamp_min(1e-8)
@@ -720,10 +740,8 @@ class Text2SemanticDecoder(nn.Module):
             "scaled_dpo_loss": scaled_dpo_loss.detach(),
             "dpo_to_ce_ratio": dpo_to_ce_ratio,
             "dpo_weight": preference_weight,
-            "chosen_logp": A_logits.detach().mean(),
-            "rejected_logp": R_logits.detach().mean(),
+            **preference_metrics,
         }
-
         return loss, acc
 
     def forward_old(self, x, x_lens, y, y_lens, bert_feature):
