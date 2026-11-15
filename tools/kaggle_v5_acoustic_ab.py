@@ -13,8 +13,120 @@ import zipfile
 BRANCH = "codex/v5-acoustic-ab"
 REPOSITORY = "https://github.com/pymood1/GPT-SoVITS-improve.git"
 TEST_TEXT = "안녕하세요. 오늘은 날씨가 좋아서 잠깐 산책을 다녀오려고 합니다."
-DEFAULT_SOURCE = Path("/kaggle/tmp/GPT-SoVITS")
 DEFAULT_OUTPUT = Path("/kaggle/working/v5_acoustic_ab")
+HF_REPOSITORY = "lj1995/GPT-SoVITS"
+MODEL_PATTERNS = (
+    "s1v3.ckpt",
+    "gsv-v5-pretrained/s2Gv5dev.pth",
+    "gsv-v5-pretrained/vocoder.pth",
+    "chinese-hubert-base/*",
+    "chinese-roberta-wwm-ext-large/*",
+)
+
+
+def _required_pretrained(root):
+    pretrained = Path(root) / "GPT_SoVITS/pretrained_models"
+    return [
+        pretrained / "s1v3.ckpt",
+        pretrained / "gsv-v5-pretrained/s2Gv5dev.pth",
+        pretrained / "gsv-v5-pretrained/vocoder.pth",
+        pretrained / "chinese-hubert-base",
+        pretrained / "chinese-roberta-wwm-ext-large",
+    ]
+
+
+def _has_pretrained(root):
+    return all(path.exists() for path in _required_pretrained(root))
+
+
+def discover_existing_install(exclude=None):
+    """Find a usable prior checkout instead of assuming one Kaggle path."""
+    exclude = Path(exclude).resolve() if exclude else None
+    explicit = os.environ.get("GPT_SOVITS_ROOT", "").strip()
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend(
+        [
+            Path("/kaggle/tmp/GPT-SoVITS"),
+            Path("/kaggle/working/GPT-SoVITS"),
+            Path("/kaggle/tmp/gpt_sovits_all_in_one/GPT-SoVITS"),
+            Path("/kaggle/working/gpt_sovits_all_in_one/GPT-SoVITS"),
+            Path("/kaggle/tmp/gpt_sovits_all_in_one"),
+            Path("/kaggle/working/gpt_sovits_all_in_one"),
+        ]
+    )
+    for root in (Path("/kaggle/tmp"), Path("/kaggle/working")):
+        if not root.is_dir():
+            continue
+        try:
+            for pretrained in root.glob("**/GPT_SoVITS/pretrained_models"):
+                candidates.append(pretrained.parents[1])
+        except OSError:
+            pass
+
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = str(resolved)
+        if key in seen or (exclude is not None and resolved == exclude):
+            continue
+        seen.add(key)
+        if (resolved / "GPT_SoVITS").is_dir() and _has_pretrained(resolved):
+            return resolved
+    return None
+
+
+def ensure_runtime(repo, reuse_source=None):
+    """Prefer the existing environment; install repo requirements only as fallback."""
+    probe = [
+        sys.executable,
+        "-c",
+        "import torch, torchaudio, transformers, peft, librosa, soundfile, x_transformers",
+    ]
+    if subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        return
+    print("필수 Python 패키지가 부족해 Git checkout의 requirements를 설치합니다.", flush=True)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"],
+        cwd=repo,
+        check=True,
+    )
+
+
+def ensure_pretrained(repo, reuse_source=None):
+    """Reuse existing pretrained assets or download only the missing public base assets."""
+    repo = Path(repo)
+    if _has_pretrained(repo):
+        print("진단 checkout의 기존 pretrained 자산을 재사용합니다.", flush=True)
+        return
+    if reuse_source is not None and _has_pretrained(reuse_source):
+        print("기존 GPT-SoVITS 설치의 pretrained 자산을 재사용합니다:", reuse_source, flush=True)
+        link_assets(reuse_source, repo)
+        if _has_pretrained(repo):
+            return
+
+    print("기존 pretrained 설치를 찾지 못해 기본 V5dev 자산만 자동 준비합니다.", flush=True)
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "huggingface_hub>=0.32,<1", "hf_xet>=1.7"],
+            check=True,
+        )
+        from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        repo_id=HF_REPOSITORY,
+        allow_patterns=list(MODEL_PATTERNS),
+        local_dir=str(repo / "GPT_SoVITS/pretrained_models"),
+    )
+    missing = [str(path) for path in _required_pretrained(repo) if not path.exists()]
+    if missing:
+        raise RuntimeError("pretrained 자동 준비가 불완전합니다: " + ", ".join(missing))
 
 
 def link_assets(source, target):
@@ -57,7 +169,7 @@ def discover_training_lists():
     for root in (
         Path("/kaggle/tmp"),
         Path("/kaggle/working"),
-        Path("/kaggle/input/datasets/pymood1"),
+        Path("/kaggle/input"),
     ):
         if not root.is_dir():
             continue
@@ -283,26 +395,18 @@ def run_kaggle_all(repo=None):
     if not torch.cuda.is_available():
         raise RuntimeError("Kaggle GPU를 활성화하세요.")
 
-    repo = Path(repo or Path(__file__).resolve().parents[1])
-    source = DEFAULT_SOURCE
+    repo = Path(repo or Path(__file__).resolve().parents[1]).resolve()
     output = DEFAULT_OUTPUT
-    if not source.is_dir():
-        raise RuntimeError(
-            "기존 GPT-SoVITS 설치 /kaggle/tmp/GPT-SoVITS가 없습니다. "
-            "평소 설치/학습 셀을 먼저 실행하세요."
-        )
 
-    link_assets(source, repo)
-    required = [
-        repo / "GPT_SoVITS/pretrained_models/s1v3.ckpt",
-        repo / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth",
-        repo / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/vocoder.pth",
-        repo / "GPT_SoVITS/pretrained_models/chinese-hubert-base",
-        repo / "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large",
-    ]
-    missing = [str(path) for path in required if not path.exists()]
-    if missing:
-        raise RuntimeError("기존 설치에서 pretrained 자산을 찾지 못했습니다: " + ", ".join(missing))
+    source = discover_existing_install(exclude=repo)
+    if source is not None:
+        print("기존 GPT-SoVITS 설치 자동 탐지:", source, flush=True)
+        link_assets(source, repo)
+    else:
+        print("기존 GPT-SoVITS 설치 checkout은 찾지 못했습니다. Git 진단 checkout을 직접 사용합니다.", flush=True)
+
+    ensure_runtime(repo, source)
+    ensure_pretrained(repo, source)
 
     lists = discover_training_lists()
     reference, transcript, used_list = select_reference(lists, soundfile.info)
