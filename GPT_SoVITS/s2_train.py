@@ -17,6 +17,7 @@ from tools.runtime_status import clear_activity, publish_activity
 hps = utils.get_hparams(stage=2)
 os.environ["CUDA_VISIBLE_DEVICES"] = hps.train.gpu_numbers.replace("-", ",")
 import logging
+import random
 
 import torch
 import torch.distributed as dist
@@ -208,11 +209,15 @@ def _run(rank, n_gpus, hps, use_ddp):
     eval_loader = None
     if adaptive_enabled and rank == 0:
         try:
-            eval_dataset = TextAudioSpeakerLoader(
-                hps.data,
-                version=hps.model.version,
-                val=True,
-            )
+            python_rng_state = random.getstate()
+            try:
+                eval_dataset = TextAudioSpeakerLoader(
+                    hps.data,
+                    version=hps.model.version,
+                    val=True,
+                )
+            finally:
+                random.setstate(python_rng_state)
             eval_loader = DataLoader(
                 eval_dataset,
                 num_workers=0,
@@ -611,7 +616,7 @@ def evaluate_validation_loss(rank, hps, net_g, eval_loader):
     with torch.random.fork_rng(devices=devices):
         torch.manual_seed(233333)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(233333)
+            torch.cuda.manual_seed(233333)
 
         with torch.no_grad():
             for data in eval_loader:
