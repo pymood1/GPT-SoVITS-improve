@@ -195,6 +195,7 @@ def _run(rank, n_gpus, hps, use_ddp):
         dist.broadcast_object_list(flag, src=0)
         adaptive_enabled = bool(flag[0])
 
+    hps.train.adaptive_training = adaptive_enabled
     # if rank == 0:
     #     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data, val=True)
     #     eval_loader = DataLoader(eval_dataset, num_workers=0, shuffle=False,
