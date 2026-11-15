@@ -188,14 +188,26 @@ class MultiheadAttention(Module):
         self.register_parameter("lora_in_B", None)
         self.register_parameter("lora_out_A", None)
         self.register_parameter("lora_out_B", None)
+        # Training can temporarily suspend LoRA to evaluate the frozen
+        # pretrained S1 as a reference policy without keeping a second model
+        # copy in VRAM.
+        self._lora_suspended = False
 
     @property
     def lora_enabled(self) -> bool:
         return self.lora_target is not None
 
     @property
+    def lora_applied(self) -> bool:
+        return self.lora_enabled and not self._lora_suspended
+
+    def suspend_lora(self, suspended: bool = True) -> None:
+        """Temporarily bypass LoRA deltas while keeping adapters registered."""
+        self._lora_suspended = bool(suspended)
+
+    @property
     def lora_scale(self) -> float:
-        if not self.lora_enabled or self.lora_rank <= 0:
+        if not self.lora_applied or self.lora_rank <= 0:
             return 0.0
         return float(self.lora_alpha) / float(self.lora_rank)
 
@@ -297,12 +309,12 @@ class MultiheadAttention(Module):
         ) * self.lora_scale
 
     def merged_in_proj_weight(self) -> Tensor:
-        if not self.lora_enabled:
+        if not self.lora_applied:
             return self.in_proj_weight
         return self.in_proj_weight + self.lora_in_proj_delta()
 
     def merged_out_proj_weight(self) -> Tensor:
-        if not self.lora_enabled:
+        if not self.lora_applied:
             return self.out_proj.weight
         return self.out_proj.weight + self.lora_out_proj_delta()
 
@@ -494,12 +506,12 @@ class MultiheadAttention(Module):
 
         effective_in_proj_weight = (
             self.merged_in_proj_weight()
-            if self.lora_enabled
+            if self.lora_applied
             else self.in_proj_weight
         )
         effective_out_proj_weight = (
             self.merged_out_proj_weight()
-            if self.lora_enabled
+            if self.lora_applied
             else self.out_proj.weight
         )
 
