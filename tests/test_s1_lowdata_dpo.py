@@ -15,6 +15,22 @@ from AR.modules.activation import MultiheadAttention
 
 
 class S1LowDataDPOTest(unittest.TestCase):
+    def test_legacy_attention_state_dict_surface_is_unchanged(self):
+        attention = MultiheadAttention(
+            embed_dim=8,
+            num_heads=2,
+            batch_first=True,
+        )
+        keys = set(attention.state_dict())
+        self.assertFalse(
+            any("lora_reference" in key for key in keys),
+            keys,
+        )
+        self.assertFalse(
+            any(key.startswith("lora_") for key in keys),
+            keys,
+        )
+
     def test_rejected_sequences_ignore_batch_padding_and_always_change(self):
         torch.manual_seed(20261115)
         padded = torch.tensor(
