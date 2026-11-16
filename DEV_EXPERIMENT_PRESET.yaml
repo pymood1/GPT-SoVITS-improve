@@ -1,18 +1,12 @@
 # Temporary development-only experiment preset.
-# This round isolates the custom multilingual BERT path after DPO ON/OFF
-# produced the same acoustic degradation.
-# Remove together with the temporary WebUI harness after the research direction
-# is fixed.
+# Edit this file in Git to define what the Kaggle one-click experiment runs.
+# Remove it when the research direction is fixed.
 
-preset_id: s1_multilingual_bert_ablation_round3
+preset_id: s1_retention_round1
 version: v5dev
-acoustic_ablation: true
 
 preprocess:
-  # Disable the fork's multilingual BERT path and fall back to the original
-  # GPT-SoVITS text-feature path. This is the only intended variable changed
-  # from the previous Full FT / DPO OFF result.
-  multilingual_bert: false
+  multilingual_bert: true
   multilingual_bert_model: google-bert/bert-base-multilingual-cased
   emotion_model: iic/emotion2vec_plus_large
   emotion_confidence: 0.35
@@ -21,17 +15,28 @@ preprocess:
 training:
   batch_size: 7
   epochs: 15
+  dpo: true
   save_every_epoch: 5
   cases:
-    - id: full_nodpo_upstream_bert
-      label: Full FT / DPO OFF / Upstream BERT
+    - id: full
+      label: Full FT
       adapter: full
-      dpo: false
+      gpu: auto
+    - id: vout
+      label: V + Attention Out LoRA
+      adapter: lora_v_o
+      lora_rank: 8
+      lora_alpha: 16
+      gpu: auto
+    - id: qkvout
+      label: QKV + Attention Out LoRA
+      adapter: lora_qkv_o
+      lora_rank: 8
+      lora_alpha: 16
       gpu: auto
 
 controller:
-  # Keep Controller out of the acoustic comparison.
-  enabled: false
+  enabled: true
   steps: 500
   reuse_dataset: true
   emotion_names: ""
