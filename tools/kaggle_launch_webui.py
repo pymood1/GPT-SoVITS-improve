@@ -129,36 +129,6 @@ def main() -> int:
     )
     emotion_root.mkdir(parents=True, exist_ok=True)
 
-    if not args.skip_preflight:
-        preflight = [
-            sys.executable,
-            "-u",
-            str(ROOT / "tools" / "kaggle_training_preflight.py"),
-            "--datas-dir",
-            datas_dir,
-            "--output-root",
-            str(output_root),
-            "--emotion-root",
-            str(emotion_root),
-        ]
-        if training_list:
-            preflight.extend(
-                [
-                    "--training-list",
-                    training_list,
-                ]
-            )
-
-        print(
-            "[preflight] 자동 실행",
-            flush=True,
-        )
-        subprocess.run(
-            preflight,
-            cwd=ROOT,
-            check=True,
-        )
-
     env = os.environ.copy()
     nvidia_dirs = apply_nvidia_library_path(env)
     if nvidia_dirs:
@@ -202,8 +172,43 @@ def main() -> int:
             "PYTHONUNBUFFERED": "1",
             "GRADIO_ANALYTICS_ENABLED": "False",
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "NLTK_DATA": os.pathsep.join(
+                [str(ROOT / "runtime" / "nltk_data")]
+                + ([env["NLTK_DATA"]] if env.get("NLTK_DATA") else [])
+            ),
         }
     )
+
+    if not args.skip_preflight:
+        preflight = [
+            sys.executable,
+            "-u",
+            str(ROOT / "tools" / "kaggle_training_preflight.py"),
+            "--datas-dir",
+            datas_dir,
+            "--output-root",
+            str(output_root),
+            "--emotion-root",
+            str(emotion_root),
+        ]
+        if training_list:
+            preflight.extend(
+                [
+                    "--training-list",
+                    training_list,
+                ]
+            )
+
+        print(
+            "[preflight] 자동 실행",
+            flush=True,
+        )
+        subprocess.run(
+            preflight,
+            cwd=ROOT,
+            env=env,
+            check=True,
+        )
 
     print("[run] 파인튜닝 WebUI 시작 — 한국어", flush=True)
     print(

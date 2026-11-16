@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import unittest
@@ -126,7 +127,7 @@ class KaggleDatasetTests(unittest.TestCase):
 
             self.assertEqual(applied, directories)
             self.assertEqual(
-                env["LD_LIBRARY_PATH"].split(":"),
+                env["LD_LIBRARY_PATH"].split(os.pathsep),
                 [
                     str(cublas.resolve()),
                     str(cudnn.resolve()),

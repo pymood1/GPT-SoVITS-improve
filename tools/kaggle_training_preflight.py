@@ -256,6 +256,21 @@ def run_self_tests(
 
 def gpu_summary() -> dict[str, Any]:
     count = int(torch.cuda.device_count())
+    if torch.cuda.is_available():
+        for index in range(count):
+            try:
+                # Device enumeration alone does not exercise the CUDA/cuBLAS
+                # runtime needed by WebUI children.
+                for dtype in (torch.float32, torch.float16):
+                    matrix = torch.ones((2, 2), device=f"cuda:{index}", dtype=dtype)
+                    result = matrix @ matrix
+                    torch.cuda.synchronize(index)
+                    if not bool(torch.all(result == 2).item()):
+                        raise PreflightError("incorrect CUDA matrix result")
+            except Exception as exc:
+                raise PreflightError(
+                    f"CUDA/cuBLAS check failed on GPU {index}: {exc}"
+                ) from exc
     return {
         "torch": torch.__version__,
         "cuda_available": bool(torch.cuda.is_available()),
@@ -355,6 +370,16 @@ def main() -> int:
             f"[OK] compiled {len(compiled)} key files",
             flush=True,
         )
+        import nltk
+
+        try:
+            nltk.pos_tag(["hello", "world"])
+            nltk.corpus.cmudict.words()
+        except LookupError as exc:
+            raise PreflightError(
+                "NLTK resources are missing; rerun the dependency setup cell."
+            ) from exc
+        print("[OK] NLTK English tagger and CMU dictionary", flush=True)
 
         print("[preflight 3/5] CUDA/GPU", flush=True)
         gpus = gpu_summary()
