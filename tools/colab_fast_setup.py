@@ -1,5 +1,6 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 import os
 import shutil
 import subprocess
@@ -73,6 +74,60 @@ def run(cmd, *, cwd=None, env=None, check=True, quiet=False, capture=False):
         text=True,
         capture_output=capture,
     )
+
+
+def runtime_constraints(package_version=pkg_version):
+    """Keep the hosted PyTorch stack and select its matching TorchCodec ABI.
+
+    Compatibility table: https://github.com/meta-pytorch/torchcodec#installing-torchcodec
+    """
+    torch_version = package_version("torch")
+    minor = ".".join(torch_version.split("+", 1)[0].split(".")[:2])
+    codec_versions = {
+        "2.4": "0.0.3", "2.5": "0.1", "2.6": "0.2", "2.7": "0.5",
+        "2.8": "0.7", "2.9": "0.9", "2.10": "0.10", "2.11": "0.11",
+    }
+    if minor not in codec_versions:
+        raise RuntimeError(
+            f"No verified TorchCodec pairing for PyTorch {torch_version}; "
+            "update the setup compatibility table before installing."
+        )
+    constraints = [
+        f"torch=={torch_version}",
+        f"torchcodec=={codec_versions[minor]}.*",
+    ]
+    for name in ("torchaudio", "torchvision"):
+        try:
+            constraints.append(f"{name}=={package_version(name)}")
+        except PackageNotFoundError:
+            pass
+    return constraints
+
+
+def prepare_nltk(data_dir):
+    """Complete legacy archives with resources required by current NLTK."""
+    import nltk
+
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    existing = os.environ.get("NLTK_DATA", "")
+    os.environ["NLTK_DATA"] = os.pathsep.join(
+        [str(data_dir)] + ([existing] if existing else [])
+    )
+    if str(data_dir) not in nltk.data.path:
+        nltk.data.path.insert(0, str(data_dir))
+    for resource, location in (
+        ("cmudict", "corpora/cmudict"),
+        ("averaged_perceptron_tagger", "taggers/averaged_perceptron_tagger"),
+        ("averaged_perceptron_tagger_eng", "taggers/averaged_perceptron_tagger_eng"),
+    ):
+        try:
+            nltk.data.find(location)
+        except LookupError:
+            nltk.download(resource, download_dir=str(data_dir), raise_on_error=True)
+        nltk.data.find(location)
+    nltk.pos_tag(["hello", "world"])
+    nltk.corpus.cmudict.words()
 
 
 # 0. Fast runtime check.
@@ -153,6 +208,7 @@ run(
         "pip",
         "install",
         "--system",
+        "--python", sys.executable,
         "--quiet",
         "huggingface_hub>=0.32,<1",
         "hf_xet>=1.7",
@@ -176,6 +232,10 @@ lines = repo_req.read_text(encoding="utf-8").splitlines()
 
 full_req = Path("/content/gpt_sovits_full_requirements.txt")
 full_req.write_text("\n".join(lines) + "\n", encoding="utf-8")
+constraints_file = full_req.with_name("gpt_sovits_runtime_constraints.txt")
+constraints_file.write_text(
+    "\n".join(runtime_constraints()) + "\n", encoding="utf-8"
+)
 
 print("[setup] preparing full requirements...", flush=True)
 print("Full requirements retained:", sum(
@@ -308,7 +368,9 @@ def download_emotion_models():
 
 pip_cmd = [
     UV, "pip", "install", "--system", "--quiet",
+    "--python", sys.executable,
     "-r", str(full_req),
+    "--constraint", str(constraints_file),
     "torchcodec",
 ]
 pip_log_path = Path("/content/gpt_sovits_dependency_install.log")
@@ -373,11 +435,24 @@ if rc:
 
 print("[deps] full Python dependency install complete", flush=True)
 
+# Audio decoding does not need a second CUDA stack. Use the official CPU
+# TorchCodec wheel, matched to the runtime's existing PyTorch ABI.
+codec_requirement = next(
+    item for item in runtime_constraints() if item.startswith("torchcodec==")
+)
+run([
+    UV, "pip", "install", "--system", "--python", sys.executable,
+    "--quiet", "--reinstall", "--no-deps",
+    "--index-url", "https://download.pytorch.org/whl/cpu",
+    codec_requirement,
+], env=uv_env)
+
 # Same behavior as upstream install.sh for faster-whisper, but keep normal
 # successful output out of the Colab cell.
 extra = subprocess.run(
     [
         UV, "pip", "install", "--system", "--quiet",
+        "--python", sys.executable,
         "-r", str(repo_extra), "--no-deps",
     ],
     cwd=str(REPO_DIR),
@@ -494,6 +569,14 @@ for source, destination in v5_files.items():
 t = elapsed("parallel asset extraction + V5 install", t)
 
 
+# Child interpreters need these paths before importing native libraries/G2P.
+sys.path.insert(0, str(REPO_DIR))
+from tools.kaggle_launch_webui import apply_nvidia_library_path
+
+apply_nvidia_library_path(os.environ)
+prepare_nltk(REPO_DIR / "runtime" / "nltk_data")
+
+
 print("[check] Python syntax for WebUI/emotion pipeline", flush=True)
 
 syntax_targets = [
@@ -589,6 +672,8 @@ if verify.returncode != 0:
         )
         run([
             UV, "pip", "install", "--system", "--reinstall",
+            "--python", sys.executable,
+            "--constraint", str(constraints_file),
             numpy_repair,
             "pandas>=2.2.2,<4",
             "scipy>=1.13,<2",
@@ -657,6 +742,9 @@ assert sandhi.modified_tone("你好", "l", ["i3", "ao3"]) == ["i2", "ao3"]
 phones, _, normalized = clean_text("안녕하세요", "ko", "v2")
 if not phones:
     raise RuntimeError("Korean G2P smoke test returned no phones")
+english_phones, _, _ = clean_text("Hello world.", "en", "v2")
+if not english_phones:
+    raise RuntimeError("English G2P smoke test returned no phones")
 
 controller = LowRankEmotionPreference(
     hidden_dim=16,
