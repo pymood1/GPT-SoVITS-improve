@@ -1,5 +1,18 @@
 # CODEX ACTIVE RESEARCH HANDOFF
 
+## Preprocessing error visibility repair — 2026-11-15
+
+- The reported Kaggle traceback only contains the outer one-click failure.
+  It does not establish why preprocessing failed.
+- Preserve the last child diagnostic through `open1abc`, `open1abcd`, and
+  the dev one-click exception, so the persistent Gradio error/console traceback
+  contains the failed stage and its reported cause. Empty generators still fail.
+- A cancellation at the end of preprocessing returns without reporting failure.
+- Local validation: 5 orchestration regression tests and 40 preprocessing
+  contract tests pass. No model/GPU/private-data execution was performed.
+- The actual Kaggle preprocessing failure remains unresolved until the updated
+  error exposes its child cause; do not claim preprocessing or training passed.
+
 > Project: `pymood1/GPT-SoVITS-improve`
 >
 > Purpose: Codex should be able to read **this file alone**, understand the current research state, choose the next highest-value task, implement it, validate it, update the TODOs/decisions here, and continue without requiring step-by-step instructions.

@@ -5791,6 +5791,7 @@ def open1abc(
             return
 
         stage_finished = False
+        child_status = "하위 단계가 상태를 반환하지 않았습니다."
         for result in runner(*args):
             if preprocess_1abc_cancel_requested:
                 close1abc()
@@ -5816,7 +5817,7 @@ def open1abc(
         if not stage_finished:
             yield (
                 process_info(process_name_1abc, "failed")
-                + f": {label} did not complete successfully",
+                + f": {label} did not complete successfully\n\n{child_status}",
                 {"__type__": "update", "visible": True},
                 {"__type__": "update", "visible": False},
             )
@@ -5944,6 +5945,7 @@ def open1abcd(
     )
 
     abc_finished = False
+    child_status = "a/b/c 단계가 상태를 반환하지 않았습니다."
     for result in open1abc(
         version,
         inp_text,
@@ -5979,7 +5981,8 @@ def open1abcd(
     if not abc_finished:
         yield (
             "### 전처리 일괄 실행 실패\n\n"
-            "a/b/c 중 하나가 완료되지 않아 d 단계는 실행하지 않습니다.",
+            "a/b/c 중 하나가 완료되지 않아 d 단계는 실행하지 않습니다.\n\n"
+            f"{child_status}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             sidecar_update,
@@ -6002,6 +6005,7 @@ def open1abcd(
     )
 
     d_finished = False
+    child_status = "d 단계가 상태를 반환하지 않았습니다."
     for result in run_auto_emotion_sidecar(
         inp_text,
         inp_wav_dir,
@@ -6040,7 +6044,8 @@ def open1abcd(
     if not d_finished:
         yield (
             "### 전처리 일괄 실행 실패\n\n"
-            "d 감정 sidecar가 생성되지 않았습니다.",
+            "d 감정 sidecar가 생성되지 않았습니다.\n\n"
+            f"{child_status}",
             {"__type__": "update", "visible": True},
             {"__type__": "update", "visible": False},
             sidecar_update,
@@ -6162,6 +6167,7 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
         )
 
         preprocess_finished = False
+        status = "전처리 단계가 상태를 반환하지 않았습니다."
         for result in open1abcd(
             "v5dev",
             source_list,
@@ -6221,8 +6227,13 @@ def run_dev_one_click_experiment(source_list, wav_root, experiment_name):
                 {"__type__": "update"},
             )
 
+        if dev_experiment_cancel_requested or preprocess_1abcd_cancel_requested:
+            return
         if not preprocess_finished:
-            raise RuntimeError("원클릭 전처리가 완료되지 않았습니다.")
+            raise RuntimeError(
+                "원클릭 전처리가 완료되지 않았습니다.\n\n"
+                f"마지막 전처리 상태:\n{status}"
+            )
 
         for case_index, case in enumerate(cases):
             if dev_experiment_cancel_requested:
