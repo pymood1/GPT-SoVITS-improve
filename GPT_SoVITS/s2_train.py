@@ -546,7 +546,7 @@ def _run(rank, n_gpus, hps, use_ddp):
             step=global_step,
             total_steps=total_steps,
             epoch=epoch_str,
-            total_epochs=int(hps.train.epochs),
+            total_epochs=effective_epochs,
         )
     best_grokking_val = float("inf")
     for epoch in range(epoch_str, effective_epochs + 1):
