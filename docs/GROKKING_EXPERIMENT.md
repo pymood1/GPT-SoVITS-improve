@@ -50,6 +50,7 @@ read from the training process environment.
 - S1 experimental optimizer: AdamW
 - S1 learning rate: 1e-4
 - S1 weight decay: 0.01
+- S1 DPO during grokking: off by default (explicit opt-in available)
 - S1 post-fit window: 20 epochs
 - S1 precision in grokking mode: FP32
 - S1 LR in grokking mode: fixed at the configured 1e-4 by default
@@ -128,6 +129,10 @@ has already seen the utterances selected for the new held-out split. Generic
 upstream pretrained weights are acceptable. S1 Lightning resume checkpoints
 are isolated by split seed/fraction/minimum-validation settings, and S2
 grokking mode intentionally ignores existing experiment checkpoints.
+
+The S1 grokking path uses the deterministic CE objective by default even when
+the normal training config enables DPO. Set
+`GPT_SOVITS_GROKKING_S1_KEEP_DPO=1` only for a separate DPO ablation.
 
 The S1 grokking path intentionally does not use this fork's legacy
 WarmupCosineLRSchedule because that implementation hard-locks the learning rate
