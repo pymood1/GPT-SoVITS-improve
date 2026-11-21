@@ -102,6 +102,10 @@ def resolve_grokking_config(train_config: Mapping, stage: str) -> Dict[str, obje
             "GPT_SOVITS_GROKKING_S1_OPTIMIZER",
             str(_cfg_get(nested, "s1_optimizer", "adamw")),
         ).strip().lower(),
+        "s1_keep_dpo": _env_bool(
+            "GPT_SOVITS_GROKKING_S1_KEEP_DPO",
+            bool(_cfg_get(nested, "s1_keep_dpo", False)),
+        ),
         "s1_lr": _env_float(
             "GPT_SOVITS_GROKKING_S1_LR",
             float(_cfg_get(nested, "s1_lr", 1.0e-4)),
