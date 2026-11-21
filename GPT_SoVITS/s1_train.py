@@ -33,7 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.grokking import (\n    GrokkingPhaseTracker,\n    parameter_l2_norm,\n    resolve_grokking_config,\n)
+from tools.grokking import (
+    GrokkingPhaseTracker,
+    parameter_l2_norm,
+    resolve_grokking_config,
+)
 from tools.runtime_status import clear_activity, publish_activity
 
 
