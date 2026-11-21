@@ -31,6 +31,15 @@ def _env_int(name: str, default: int) -> int:
     return int(raw) if raw is not None else int(default)
 
 
+def _cfg_get(config, key, default=None):
+    if hasattr(config, "get"):
+        return config.get(key, default)
+    try:
+        return config[key]
+    except (KeyError, TypeError, AttributeError):
+        return getattr(config, key, default)
+
+
 def resolve_grokking_config(train_config: Mapping, stage: str) -> Dict[str, object]:
     """Resolve grokking settings from config and environment.
 
@@ -42,13 +51,13 @@ def resolve_grokking_config(train_config: Mapping, stage: str) -> Dict[str, obje
     if stage not in {"s1", "s2"}:
         raise ValueError(f"unsupported grokking stage: {stage!r}")
 
-    nested = train_config.get("grokking", {}) if hasattr(train_config, "get") else {}
+    nested = _cfg_get(train_config, "grokking", {})
     if nested is None:
         nested = {}
 
     global_enabled = _env_bool(
         "GPT_SOVITS_GROKKING",
-        bool(nested.get("enabled", False)),
+        bool(_cfg_get(nested, "enabled", False)),
     )
     stage_enabled = _env_bool(
         f"GPT_SOVITS_GROKKING_{stage.upper()}",
@@ -59,59 +68,59 @@ def resolve_grokking_config(train_config: Mapping, stage: str) -> Dict[str, obje
         "enabled": stage_enabled,
         "validation_fraction": _env_float(
             "GPT_SOVITS_GROKKING_VALIDATION_FRACTION",
-            float(nested.get("validation_fraction", 0.10)),
+            float(_cfg_get(nested, "validation_fraction", 0.10)),
         ),
         "min_validation_samples": _env_int(
             "GPT_SOVITS_GROKKING_MIN_VALIDATION_SAMPLES",
-            int(nested.get("min_validation_samples", 8)),
+            int(_cfg_get(nested, "min_validation_samples", 8)),
         ),
         "seed": _env_int(
             "GPT_SOVITS_GROKKING_SEED",
-            int(nested.get("seed", train_config.get("seed", 1234))),
+            int(_cfg_get(nested, "seed", _cfg_get(train_config, "seed", 1234))),
         ),
         "grokfast_enabled": _env_bool(
             "GPT_SOVITS_GROKFAST",
-            bool(nested.get("grokfast_enabled", True)),
+            bool(_cfg_get(nested, "grokfast_enabled", True)),
         ),
         "grokfast_alpha": _env_float(
             "GPT_SOVITS_GROKFAST_ALPHA",
-            float(nested.get("grokfast_alpha", 0.98)),
+            float(_cfg_get(nested, "grokfast_alpha", 0.98)),
         ),
         "grokfast_lambda": _env_float(
             "GPT_SOVITS_GROKFAST_LAMBDA",
-            float(nested.get("grokfast_lambda", 0.5)),
+            float(_cfg_get(nested, "grokfast_lambda", 0.5)),
         ),
         "memorization_top3": _env_float(
             "GPT_SOVITS_GROKKING_MEMORIZATION_TOP3",
-            float(nested.get("memorization_top3", 0.97)),
+            float(_cfg_get(nested, "memorization_top3", 0.97)),
         ),
         "s1_post_fit_epochs": _env_int(
             "GPT_SOVITS_GROKKING_S1_POST_FIT_EPOCHS",
-            int(nested.get("s1_post_fit_epochs", 20)),
+            int(_cfg_get(nested, "s1_post_fit_epochs", 20)),
         ),
         "s1_optimizer": os.environ.get(
             "GPT_SOVITS_GROKKING_S1_OPTIMIZER",
-            str(nested.get("s1_optimizer", "adamw")),
+            str(_cfg_get(nested, "s1_optimizer", "adamw")),
         ).strip().lower(),
         "s1_lr": _env_float(
             "GPT_SOVITS_GROKKING_S1_LR",
-            float(nested.get("s1_lr", 1.0e-4)),
+            float(_cfg_get(nested, "s1_lr", 1.0e-4)),
         ),
         "s1_weight_decay": _env_float(
             "GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY",
-            float(nested.get("s1_weight_decay", 1.0e-2)),
+            float(_cfg_get(nested, "s1_weight_decay", 1.0e-2)),
         ),
         "s2_post_fit_epochs": _env_int(
             "GPT_SOVITS_GROKKING_S2_POST_FIT_EPOCHS",
-            int(nested.get("s2_post_fit_epochs", 8)),
+            int(_cfg_get(nested, "s2_post_fit_epochs", 8)),
         ),
         "s2_weight_decay": _env_float(
             "GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY",
-            float(nested.get("s2_weight_decay", 1.0e-2)),
+            float(_cfg_get(nested, "s2_weight_decay", 1.0e-2)),
         ),
         "max_validation_batches": _env_int(
             "GPT_SOVITS_GROKKING_MAX_VALIDATION_BATCHES",
-            int(nested.get("max_validation_batches", 32)),
+            int(_cfg_get(nested, "max_validation_batches", 32)),
         ),
     }
 
