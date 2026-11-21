@@ -323,21 +323,14 @@ class Text2SemanticLightningModule(LightningModule):
                 betas=(0.9, 0.95),
                 weight_decay=float(self.grokking_config["s1_weight_decay"]),
             )
-            warmup_steps = min(
-                int(self.config["optimizer"]["warmup_steps"]),
-                200,
-            )
-            total_steps = max(
-                int(self.config["optimizer"]["decay_steps"]),
-                warmup_steps + 1,
-            )
-            scheduler = WarmupCosineLRSchedule(
+            # This fork's WarmupCosineLRSchedule hard-locks the LR to
+            # 0.002 internally. That is intentional legacy behaviour for the
+            # baseline, but it would silently override the controlled
+            # grokking eta. Keep eta fixed here so weight-decay/LR experiments
+            # mean what their config says.
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
                 lm_opt,
-                init_lr=lr * 0.1,
-                peak_lr=lr,
-                end_lr=lr * 0.1,
-                warmup_steps=warmup_steps,
-                total_steps=total_steps,
+                lr_lambda=lambda _step: 1.0,
             )
             print(
                 "[grokking:S1] optimizer=AdamW "
