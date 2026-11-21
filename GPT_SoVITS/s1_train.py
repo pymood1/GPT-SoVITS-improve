@@ -147,7 +147,15 @@ class GrokkingMonitorCallback(Callback):
                 ]
             )
         )
-        self.metrics_path = self.output_dir / "grokking_s1_metrics.jsonl"
+        grokking = resolve_grokking_config(config["train"], "s1")
+        split_tag = (
+            f"s{int(grokking['seed'])}"
+            f"_v{int(round(float(grokking['validation_fraction']) * 10000))}"
+            f"_m{int(grokking['min_validation_samples'])}"
+        )
+        self.metrics_path = (
+            self.output_dir / f"grokking_s1_metrics_{split_tag}.jsonl"
+        )
 
     @staticmethod
     def _metric(trainer, *names):
@@ -341,17 +349,23 @@ def main(args):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     grokking = resolve_grokking_config(config["train"], "s1")
-    ckpt_dir = output_dir / (
-        "ckpt_grokking" if grokking["enabled"] else "ckpt"
-    )
+    if grokking["enabled"]:
+        split_tag = (
+            f"s{int(grokking['seed'])}"
+            f"_v{int(round(float(grokking['validation_fraction']) * 10000))}"
+            f"_m{int(grokking['min_validation_samples'])}"
+        )
+        ckpt_dir = output_dir / f"ckpt_grokking_{split_tag}"
+    else:
+        ckpt_dir = output_dir / "ckpt"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     base_epochs = int(config["train"]["epochs"])
     if grokking["enabled"]:
         post_fit_epochs = int(grokking["s1_post_fit_epochs"])
-        # Allow memorization to happen late while still guaranteeing a full
-        # post-fit observation window. The callback stops earlier once that
-        # window has actually elapsed.
+        # Allow memorization to happen late with a generous post-fit discovery
+        # ceiling. The callback stops earlier once the requested window has
+        # actually elapsed.
         effective_max_epochs = base_epochs + 4 * post_fit_epochs
         logging.info(
             "[grokking:S1] enabled: base_epochs=%s post_fit=%s hard_max=%s",
