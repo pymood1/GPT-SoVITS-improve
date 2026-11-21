@@ -184,7 +184,12 @@ class Text2SemanticLightningModule(LightningModule):
     def training_step(self, batch: Dict, batch_idx: int):
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
-        forward = self.model.forward if self.config["train"].get("if_dpo", False) == True else self.model.forward_old
+        use_dpo = self.config["train"].get("if_dpo", False) is True
+        if self.grokking_config["enabled"]:
+            use_dpo = use_dpo and bool(
+                self.grokking_config["s1_keep_dpo"]
+            )
+        forward = self.model.forward if use_dpo else self.model.forward_old
         loss, acc = forward(
             batch["phoneme_ids"],
             batch["phoneme_ids_len"],
