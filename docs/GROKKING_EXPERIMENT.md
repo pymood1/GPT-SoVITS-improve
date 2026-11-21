@@ -20,23 +20,23 @@ applies Grokfast only to the generator.
 
 Global:
 
-\`\`\`bash
+```bash
 export GPT_SOVITS_GROKKING=1
-\`\`\`
+```
 
 S1 only:
 
-\`\`\`bash
+```bash
 export GPT_SOVITS_GROKKING_S1=1
 export GPT_SOVITS_GROKKING_S2=0
-\`\`\`
+```
 
 S2 only:
 
-\`\`\`bash
+```bash
 export GPT_SOVITS_GROKKING_S1=0
 export GPT_SOVITS_GROKKING_S2=1
-\`\`\`
+```
 
 The existing WebUI/training launch can then be used normally. The feature is
 read from the training process environment.
@@ -73,9 +73,9 @@ memorization threshold.
 
 S1 training allows a hard ceiling of:
 
-\`\`\`text
+```text
 base_epochs + 4 * post_fit_epochs
-\`\`\`
+```
 
 but stops once the configured full post-fit window has elapsed after the first
 memorization-threshold crossing. This prevents ordinary early stopping from
@@ -102,7 +102,7 @@ runs usually stop earlier once the post-fit window completes.
 
 A useful S1 grokking candidate has this ordering:
 
-\`\`\`text
+```text
 train top-3 saturates first
         ->
 validation remains poor for a delay
@@ -110,7 +110,7 @@ validation remains poor for a delay
 validation loss later falls / validation top-3 rises
         ->
 parameter norm typically contracts or reorganizes
-\`\`\`
+```
 
 For S2, call the result "grokking-like delayed generalization" unless the
 held-out metric shows a clear delayed transition after an independently defined
