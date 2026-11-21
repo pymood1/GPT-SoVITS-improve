@@ -5,6 +5,7 @@ if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 import argparse
 import inspect
+import json
 import logging
 import math
 import platform
@@ -32,6 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.grokking import (
+    GrokkingPhaseTracker,
+    parameter_l2_norm,
+    resolve_grokking_config,
+)
 from tools.runtime_status import clear_activity, publish_activity
 
 
@@ -116,6 +122,127 @@ class RuntimeStatusCallback(Callback):
             total_batches and batch_idx + 1 >= total_batches
         ):
             self._publish(trainer, batch_idx=batch_idx)
+
+
+class GrokkingMonitorCallback(Callback):
+    """Keep training past memorization and persist held-out diagnostics."""
+
+    def __init__(
+        self,
+        *,
+        config,
+        output_dir,
+        post_fit_epochs,
+        hard_max_epochs,
+    ):
+        super().__init__()
+        self.config = config
+        self.output_dir = Path(output_dir)
+        self.post_fit_epochs = int(post_fit_epochs)
+        self.hard_max_epochs = int(hard_max_epochs)
+        self.tracker = GrokkingPhaseTracker(
+            memorization_top3=float(
+                resolve_grokking_config(config["train"], "s1")[
+                    "memorization_top3"
+                ]
+            )
+        )
+        grokking = resolve_grokking_config(config["train"], "s1")
+        split_tag = (
+            f"s{int(grokking['seed'])}"
+            f"_v{int(round(float(grokking['validation_fraction']) * 10000))}"
+            f"_m{int(grokking['min_validation_samples'])}"
+        )
+        self.metrics_path = (
+            self.output_dir / f"grokking_s1_metrics_{split_tag}.jsonl"
+        )
+
+    @staticmethod
+    def _metric(trainer, *names):
+        for name in names:
+            value = trainer.callback_metrics.get(name)
+            if value is None:
+                continue
+            try:
+                if hasattr(value, "detach"):
+                    value = value.detach()
+                if hasattr(value, "float"):
+                    value = value.float()
+                if hasattr(value, "item"):
+                    value = value.item()
+                return float(value)
+            except (TypeError, ValueError, RuntimeError):
+                continue
+        return None
+
+    def _save_best_compact(self, trainer, pl_module, epoch):
+        if not trainer.is_global_zero:
+            return
+        half_dir = Path(self.config["train"]["half_weights_save_dir"])
+        half_dir.mkdir(parents=True, exist_ok=True)
+        state = (
+            pl_module.inference_state_dict()
+            if hasattr(pl_module, "inference_state_dict")
+            else pl_module.state_dict()
+        )
+        to_save = OrderedDict()
+        to_save["weight"] = OrderedDict(
+            (key, value.detach().half().cpu())
+            for key, value in state.items()
+        )
+        to_save["config"] = self.config
+        to_save["info"] = f"GPT-grok-best-e{epoch}"
+        my_save(
+            to_save,
+            str(
+                half_dir
+                / f"{self.config['train']['exp_name']}-grok-best.ckpt"
+            ),
+        )
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        epoch = int(trainer.current_epoch) + 1
+        train_top3 = self._metric(
+            trainer,
+            "top_3_acc_epoch",
+            "top_3_acc",
+        )
+        val_loss = self._metric(trainer, "val_total_loss")
+        val_top3 = self._metric(trainer, "val_top_3_acc")
+        model_for_norm = getattr(pl_module, "model", pl_module)
+        param_l2 = parameter_l2_norm(model_for_norm)
+
+        state = self.tracker.update(
+            epoch=epoch,
+            train_top3=train_top3,
+            val_loss=val_loss,
+            val_top3=val_top3,
+        )
+        record = {
+            "epoch": epoch,
+            "train_top3": train_top3,
+            "val_loss": val_loss,
+            "val_top3": val_top3,
+            "parameter_l2": param_l2,
+            **state,
+        }
+
+        if trainer.is_global_zero:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            with self.metrics_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if state["best_val_epoch"] == epoch and val_loss is not None:
+                self._save_best_compact(trainer, pl_module, epoch)
+            logging.info("[grokking:S1] %s", record)
+
+        post_fit_age = state["post_fit_age"]
+        if (
+            post_fit_age is not None
+            and int(post_fit_age) >= self.post_fit_epochs
+        ):
+            trainer.should_stop = True
+        elif epoch >= self.hard_max_epochs:
+            trainer.should_stop = True
 
 
 class my_model_ckpt(ModelCheckpoint):
@@ -221,8 +348,34 @@ def main(args):
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ckpt_dir = output_dir / "ckpt"
+    grokking = resolve_grokking_config(config["train"], "s1")
+    if grokking["enabled"]:
+        split_tag = (
+            f"s{int(grokking['seed'])}"
+            f"_v{int(round(float(grokking['validation_fraction']) * 10000))}"
+            f"_m{int(grokking['min_validation_samples'])}"
+        )
+        ckpt_dir = output_dir / f"ckpt_grokking_{split_tag}"
+    else:
+        ckpt_dir = output_dir / "ckpt"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    base_epochs = int(config["train"]["epochs"])
+    if grokking["enabled"]:
+        post_fit_epochs = int(grokking["s1_post_fit_epochs"])
+        # Allow memorization to happen late with a generous post-fit discovery
+        # ceiling. The callback stops earlier once the requested window has
+        # actually elapsed.
+        effective_max_epochs = base_epochs + 4 * post_fit_epochs
+        logging.info(
+            "[grokking:S1] enabled: base_epochs=%s post_fit=%s hard_max=%s",
+            base_epochs,
+            post_fit_epochs,
+            effective_max_epochs,
+        )
+    else:
+        post_fit_epochs = 0
+        effective_max_epochs = base_epochs
 
     seed_everything(config["train"]["seed"], workers=True)
     ckpt_callback: ModelCheckpoint = my_model_ckpt(
@@ -241,26 +394,40 @@ def main(args):
     logger = TensorBoardLogger(name=output_dir.stem, save_dir=output_dir)
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["USE_LIBUV"] = "0"
+    callbacks = [
+        ckpt_callback,
+        RuntimeStatusCallback(effective_max_epochs),
+    ]
+    if grokking["enabled"]:
+        callbacks.append(
+            GrokkingMonitorCallback(
+                config=config,
+                output_dir=output_dir,
+                post_fit_epochs=post_fit_epochs,
+                hard_max_epochs=effective_max_epochs,
+            )
+        )
+
     trainer: Trainer = Trainer(
-        max_epochs=config["train"]["epochs"],
+        max_epochs=effective_max_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        # val_check_interval=9999999999999999999999,###不要验证
-        # check_val_every_n_epoch=None,
-        limit_val_batches=0,
+        limit_val_batches=1.0 if grokking["enabled"] else 0,
+        check_val_every_n_epoch=1 if grokking["enabled"] else 1,
         devices=-1 if torch.cuda.is_available() else 1,
         benchmark=False,
         fast_dev_run=False,
         strategy=DDPStrategy(process_group_backend="nccl" if platform.system() != "Windows" else "gloo")
         if torch.cuda.is_available()
         else "auto",
-        precision=config["train"]["precision"],
+        precision=(
+            "32-true"
+            if grokking["enabled"]
+            else config["train"]["precision"]
+        ),
         logger=logger,
         num_sanity_val_steps=0,
-        callbacks=[
-            ckpt_callback,
-            RuntimeStatusCallback(config["train"]["epochs"]),
-        ],
-        use_distributed_sampler=False,  # 非常简单的修改，但解决了采用自定义的 bucket_sampler 下训练步数不一致的问题！
+        callbacks=callbacks,
+        use_distributed_sampler=False,
     )
 
     model: Text2SemanticLightningModule = Text2SemanticLightningModule(config, output_dir)
