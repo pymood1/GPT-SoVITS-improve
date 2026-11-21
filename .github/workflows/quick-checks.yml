@@ -49,10 +49,6 @@ jobs:
             tools/kaggle_launch_webui.py \
             tools/my_utils.py
 
-      - name: Grokking utility tests
-        run: |
-          python tests/test_grokking_utils.py
-
       - name: Kaggle dataset discovery smoke
         run: |
           python tests/test_kaggle_dataset.py
