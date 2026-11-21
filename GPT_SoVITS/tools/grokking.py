@@ -114,6 +114,14 @@ def resolve_grokking_config(train_config: Mapping, stage: str) -> Dict[str, obje
             "GPT_SOVITS_GROKKING_S2_POST_FIT_EPOCHS",
             int(_cfg_get(nested, "s2_post_fit_epochs", 8)),
         ),
+        "s2_plateau_patience": _env_int(
+            "GPT_SOVITS_GROKKING_S2_PLATEAU_PATIENCE",
+            int(_cfg_get(nested, "s2_plateau_patience", 3)),
+        ),
+        "s2_plateau_relative_delta": _env_float(
+            "GPT_SOVITS_GROKKING_S2_PLATEAU_RELATIVE_DELTA",
+            float(_cfg_get(nested, "s2_plateau_relative_delta", 0.01)),
+        ),
         "s2_weight_decay": _env_float(
             "GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY",
             float(_cfg_get(nested, "s2_weight_decay", 1.0e-2)),
@@ -135,6 +143,10 @@ def resolve_grokking_config(train_config: Mapping, stage: str) -> Dict[str, obje
         raise ValueError("grokfast_lambda must be non-negative")
     if int(cfg["s1_post_fit_epochs"]) < 1 or int(cfg["s2_post_fit_epochs"]) < 1:
         raise ValueError("post-fit epoch budgets must be positive")
+    if int(cfg["s2_plateau_patience"]) < 1:
+        raise ValueError("s2_plateau_patience must be positive")
+    if not 0.0 <= float(cfg["s2_plateau_relative_delta"]) < 1.0:
+        raise ValueError("s2_plateau_relative_delta must be in [0, 1)")
     if float(cfg["s1_lr"]) <= 0.0:
         raise ValueError("s1 grokking learning rate must be positive")
     if float(cfg["s1_weight_decay"]) < 0.0 or float(cfg["s2_weight_decay"]) < 0.0:
