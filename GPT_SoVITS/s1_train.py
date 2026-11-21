@@ -340,10 +340,12 @@ def main(args):
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ckpt_dir = output_dir / "ckpt"
+    grokking = resolve_grokking_config(config["train"], "s1")
+    ckpt_dir = output_dir / (
+        "ckpt_grokking" if grokking["enabled"] else "ckpt"
+    )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    grokking = resolve_grokking_config(config["train"], "s1")
     base_epochs = int(config["train"]["epochs"])
     if grokking["enabled"]:
         post_fit_epochs = int(grokking["s1_post_fit_epochs"])
