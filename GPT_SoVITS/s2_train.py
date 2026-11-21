@@ -461,31 +461,49 @@ def _run(rank, n_gpus, hps, use_ddp):
         net_g = net_g.to(device)
         net_d = net_d.to(device)
 
-    try:  # 如果能加载自动resume
-        _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path("%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version), "D_*.pth"),
-            net_d,
-            optim_d,
-        )  # D多半加载没事
-        if rank == 0:
-            logger.info("loaded D")
-        # _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g,load_opt=0)
-        _, _, _, epoch_str = utils.load_checkpoint(
-            utils.latest_checkpoint_path("%s/logs_s2_%s" % (hps.data.exp_dir, hps.model.version), "G_*.pth"),
-            net_g,
-            optim_g,
-        )
-        epoch_str += 1
-        global_step = (epoch_str - 1) * len(train_loader)
-        # epoch_str = 1
-        # global_step = 0
-    except:  # 如果首次不能加载，加载pretrain
-        # traceback.print_exc()
+    resumed_existing_experiment = False
+    if not grokking["enabled"]:
+        try:  # normal mode keeps the original automatic resume behaviour
+            _, _, _, epoch_str = utils.load_checkpoint(
+                utils.latest_checkpoint_path(
+                    "%s/logs_s2_%s"
+                    % (hps.data.exp_dir, hps.model.version),
+                    "D_*.pth",
+                ),
+                net_d,
+                optim_d,
+            )
+            if rank == 0:
+                logger.info("loaded D")
+            _, _, _, epoch_str = utils.load_checkpoint(
+                utils.latest_checkpoint_path(
+                    "%s/logs_s2_%s"
+                    % (hps.data.exp_dir, hps.model.version),
+                    "G_*.pth",
+                ),
+                net_g,
+                optim_g,
+            )
+            epoch_str += 1
+            global_step = (epoch_str - 1) * len(train_loader)
+            resumed_existing_experiment = True
+        except Exception:
+            resumed_existing_experiment = False
+
+    if not resumed_existing_experiment:
+        # A grokking probe must not resume a checkpoint that may already have
+        # seen the held-out utterances. Generic pretrained weights are fine;
+        # the current experiment-specific train/validation split starts fresh.
         epoch_str = 1
         global_step = 0
+        if grokking["enabled"] and rank == 0:
+            logger.info(
+                "[grokking:S2] ignoring existing experiment checkpoints "
+                "to prevent held-out leakage"
+            )
         if (
             hps.train.pretrained_s2G != ""
-            and hps.train.pretrained_s2G != None
+            and hps.train.pretrained_s2G is not None
             and os.path.exists(hps.train.pretrained_s2G)
         ):
             if rank == 0:
@@ -494,13 +512,17 @@ def _run(rank, n_gpus, hps, use_ddp):
             print(
                 "loaded pretrained %s" % hps.train.pretrained_s2G,
                 model_g.load_state_dict(
-                    torch.load(hps.train.pretrained_s2G, map_location="cpu", weights_only=False)["weight"],
+                    torch.load(
+                        hps.train.pretrained_s2G,
+                        map_location="cpu",
+                        weights_only=False,
+                    )["weight"],
                     strict=False,
                 ),
-            )  ##测试不加载优化器
+            )
         if (
             hps.train.pretrained_s2D != ""
-            and hps.train.pretrained_s2D != None
+            and hps.train.pretrained_s2D is not None
             and os.path.exists(hps.train.pretrained_s2D)
         ):
             if rank == 0:
@@ -509,7 +531,11 @@ def _run(rank, n_gpus, hps, use_ddp):
             print(
                 "loaded pretrained %s" % hps.train.pretrained_s2D,
                 model_d.load_state_dict(
-                    torch.load(hps.train.pretrained_s2D, map_location="cpu", weights_only=False)["weight"],
+                    torch.load(
+                        hps.train.pretrained_s2D,
+                        map_location="cpu",
+                        weights_only=False,
+                    )["weight"],
                     strict=False,
                 ),
             )
