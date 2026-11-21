@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.grokking import GrokkingPhaseTracker, resolve_grokking_config
+from tools.grokking import (\n    GrokkingPhaseTracker,\n    parameter_l2_norm,\n    resolve_grokking_config,\n)
 from tools.runtime_status import clear_activity, publish_activity
 
 
@@ -197,7 +197,8 @@ class GrokkingMonitorCallback(Callback):
         )
         val_loss = self._metric(trainer, "val_total_loss")
         val_top3 = self._metric(trainer, "val_top_3_acc")
-        param_l2 = self._metric(trainer, "grokking_param_l2")
+        model_for_norm = getattr(pl_module, "model", pl_module)
+        param_l2 = parameter_l2_norm(model_for_norm)
 
         state = self.tracker.update(
             epoch=epoch,
