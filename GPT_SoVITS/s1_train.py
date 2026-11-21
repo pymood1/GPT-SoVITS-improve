@@ -403,7 +403,11 @@ def main(args):
         strategy=DDPStrategy(process_group_backend="nccl" if platform.system() != "Windows" else "gloo")
         if torch.cuda.is_available()
         else "auto",
-        precision=config["train"]["precision"],
+        precision=(
+            "32-true"
+            if grokking["enabled"]
+            else config["train"]["precision"]
+        ),
         logger=logger,
         num_sanity_val_steps=0,
         callbacks=callbacks,
