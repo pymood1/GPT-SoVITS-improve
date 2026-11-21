@@ -51,8 +51,12 @@ read from the training process environment.
 - S1 learning rate: 1e-4
 - S1 weight decay: 0.01
 - S1 post-fit window: 20 epochs
+- S1 precision in grokking mode: FP32
+- S1 LR in grokking mode: fixed at the configured 1e-4 by default
 - S2 generator weight decay: 0.01
-- S2 extra observation budget: 8 epochs
+- S2 post-fit observation window: 8 epochs
+- S2 train-mel plateau patience: 3 epochs
+- S2 significant train-mel improvement threshold: 1%
 - S2 held-out validation cap: 32 batches
 
 All are overridable with environment variables defined in
@@ -70,7 +74,7 @@ memorization threshold.
 S1 training allows a hard ceiling of:
 
 \`\`\`text
-base_epochs + 2 * post_fit_epochs
+base_epochs + 4 * post_fit_epochs
 \`\`\`
 
 but stops once the configured full post-fit window has elapsed after the first
@@ -84,7 +88,15 @@ cutting off a delayed transition.
 
 S2 validation uses held-out generator mel L1 reconstruction. It deliberately
 does not use discriminator loss as the generalization signal, because GAN game
-balance is not a clean held-out quality metric.
+balance is not a clean held-out quality metric. Validation RNG is forked and
+reseeded to the same value every epoch so stochastic latent/slice choices do not
+masquerade as generalization.
+
+S2 also tracks the distributed mean training mel L1. A fit point is declared
+after the configured plateau patience passes without a significant relative
+training-mel improvement. Training then preserves a full post-fit observation
+window. The hard ceiling is currently base_epochs + 4 * post_fit_epochs; normal
+runs usually stop earlier once the post-fit window completes.
 
 ## Interpretation
 
@@ -108,4 +120,10 @@ memorization boundary as semantic-token prediction.
 ## Safety / baseline isolation
 
 With all grokking environment switches unset, the normal data sharing,
-optimizer, epoch count and validation-disabled behavior remain unchanged.
+optimizer, precision, epoch count and validation-disabled behavior remain
+unchanged.
+
+The S1 grokking path intentionally does not use this fork's legacy
+WarmupCosineLRSchedule because that implementation hard-locks the learning rate
+to 0.002. The research path uses a standard PyTorch constant-LR scheduler so
+eta and weight decay are controlled variables.
