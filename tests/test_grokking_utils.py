@@ -47,6 +47,18 @@ class GrokkingUtilsTests(unittest.TestCase):
             else:
                 os.environ["GPT_SOVITS_GROKKING_S1"] = old
 
+    def test_config_resolver_accepts_hparams_like_objects(self):
+        class HParamsLike:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def __getitem__(self, key):
+                return getattr(self, key)
+
+        cfg = resolve_grokking_config(HParamsLike(seed=19), "s2")
+        self.assertEqual(cfg["seed"], 19)
+        self.assertEqual(cfg["s2_weight_decay"], 0.01)
+
     def test_grokfast_amplifies_stable_gradient(self):
         model = torch.nn.Linear(2, 1, bias=False)
         model.weight.grad = torch.ones_like(model.weight)
