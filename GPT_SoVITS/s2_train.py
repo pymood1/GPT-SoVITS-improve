@@ -211,7 +211,14 @@ def _move_s2_batch(data, rank, model_version):
     )
 
 
-def evaluate_grokking(rank, hps, generator, eval_loader, max_batches):
+def evaluate_grokking(
+    rank,
+    hps,
+    generator,
+    eval_loader,
+    max_batches,
+    seed,
+):
     """Held-out reconstruction metric for the acoustic model.
 
     The metric intentionally avoids the discriminator so it measures generator
@@ -222,72 +229,77 @@ def evaluate_grokking(rank, hps, generator, eval_loader, max_batches):
     was_training = model.training
     model.eval()
     losses = []
-    with torch.no_grad():
-        for batch_idx, data in enumerate(eval_loader):
-            if batch_idx >= int(max_batches):
-                break
-            (
-                ssl,
-                spec,
-                spec_lengths,
-                _y,
-                _y_lengths,
-                text,
-                text_lengths,
-                sv_emb,
-            ) = _move_s2_batch(data, rank, hps.model.version)
-
-            if hps.model.version in {"v2Pro", "v2ProPlus"}:
-                outputs = model(
+    rng_devices = [rank] if torch.cuda.is_available() else []
+    with torch.random.fork_rng(devices=rng_devices, enabled=True):
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(int(seed))
+        with torch.no_grad():
+            for batch_idx, data in enumerate(eval_loader):
+                if batch_idx >= int(max_batches):
+                    break
+                (
                     ssl,
                     spec,
                     spec_lengths,
+                    _y,
+                    _y_lengths,
                     text,
                     text_lengths,
                     sv_emb,
-                )
-            else:
-                outputs = model(
-                    ssl,
-                    spec,
-                    spec_lengths,
-                    text,
-                    text_lengths,
-                )
+                ) = _move_s2_batch(data, rank, hps.model.version)
 
-            y_hat = outputs[0]
-            ids_slice = outputs[2]
-            mel = spec_to_mel_torch(
-                spec,
-                hps.data.filter_length,
-                hps.data.n_mel_channels,
-                hps.data.sampling_rate,
-                hps.data.mel_fmin,
-                hps.data.mel_fmax,
-            )
-            y_mel = commons.slice_segments(
-                mel,
-                ids_slice,
-                hps.train.segment_size // hps.data.hop_length,
-            )
-            y_hat_mel = mel_spectrogram_torch(
-                y_hat.squeeze(1),
-                hps.data.filter_length,
-                hps.data.n_mel_channels,
-                hps.data.sampling_rate,
-                hps.data.hop_length,
-                hps.data.win_length,
-                hps.data.mel_fmin,
-                hps.data.mel_fmax,
-            )
-            losses.append(
-                float(
-                    F.l1_loss(y_mel.float(), y_hat_mel.float())
-                    .detach()
-                    .cpu()
-                    .item()
+                if hps.model.version in {"v2Pro", "v2ProPlus"}:
+                    outputs = model(
+                        ssl,
+                        spec,
+                        spec_lengths,
+                        text,
+                        text_lengths,
+                        sv_emb,
+                    )
+                else:
+                    outputs = model(
+                        ssl,
+                        spec,
+                        spec_lengths,
+                        text,
+                        text_lengths,
+                    )
+
+                y_hat = outputs[0]
+                ids_slice = outputs[2]
+                mel = spec_to_mel_torch(
+                    spec,
+                    hps.data.filter_length,
+                    hps.data.n_mel_channels,
+                    hps.data.sampling_rate,
+                    hps.data.mel_fmin,
+                    hps.data.mel_fmax,
                 )
-            )
+                y_mel = commons.slice_segments(
+                    mel,
+                    ids_slice,
+                    hps.train.segment_size // hps.data.hop_length,
+                )
+                y_hat_mel = mel_spectrogram_torch(
+                    y_hat.squeeze(1),
+                    hps.data.filter_length,
+                    hps.data.n_mel_channels,
+                    hps.data.sampling_rate,
+                    hps.data.hop_length,
+                    hps.data.win_length,
+                    hps.data.mel_fmin,
+                    hps.data.mel_fmax,
+                )
+                losses.append(
+                    float(
+                        F.l1_loss(y_mel.float(), y_hat_mel.float())
+                        .detach()
+                        .cpu()
+                        .item()
+                    )
+                )
 
     if was_training:
         model.train()
@@ -521,18 +533,31 @@ def _run(rank, n_gpus, hps, use_ddp):
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
     grokfast_state = {}
-    effective_epochs = int(hps.train.epochs)
+    base_epochs = int(hps.train.epochs)
+    effective_epochs = base_epochs
     if grokking["enabled"]:
-        effective_epochs += int(grokking["s2_post_fit_epochs"])
+        post_fit_epochs = int(grokking["s2_post_fit_epochs"])
+        plateau_patience = int(grokking["s2_plateau_patience"])
+        hard_extension = max(
+            post_fit_epochs * 4,
+            post_fit_epochs + plateau_patience,
+        )
+        effective_epochs = base_epochs + hard_extension
         if rank == 0:
             logger.info(
-                "[grokking:S2] enabled: epochs=%s -> %s, "
-                "generator_weight_decay=%s, grokfast=%s",
-                hps.train.epochs,
+                "[grokking:S2] enabled: base_epochs=%s hard_max=%s "
+                "post_fit=%s plateau_patience=%s "
+                "generator_weight_decay=%s grokfast=%s",
+                base_epochs,
                 effective_epochs,
+                post_fit_epochs,
+                plateau_patience,
                 s2_weight_decay,
                 grokking["grokfast_enabled"],
             )
+    else:
+        post_fit_epochs = 0
+        plateau_patience = 0
 
     print("start training from epoch %s" % epoch_str)
     if rank == 0:
@@ -549,9 +574,12 @@ def _run(rank, n_gpus, hps, use_ddp):
             total_epochs=effective_epochs,
         )
     best_grokking_val = float("inf")
+    best_train_mel = float("inf")
+    last_significant_train_improvement = int(epoch_str) - 1
+    s2_fit_epoch = None
     for epoch in range(epoch_str, effective_epochs + 1):
         if rank == 0:
-            train_and_evaluate(
+            epoch_train_mel = train_and_evaluate(
                 rank,
                 epoch,
                 hps,
@@ -568,7 +596,7 @@ def _run(rank, n_gpus, hps, use_ddp):
                 effective_epochs=effective_epochs,
             )
         else:
-            train_and_evaluate(
+            epoch_train_mel = train_and_evaluate(
                 rank,
                 epoch,
                 hps,
@@ -583,6 +611,22 @@ def _run(rank, n_gpus, hps, use_ddp):
                 grokfast_state=grokfast_state,
                 effective_epochs=effective_epochs,
             )
+        if grokking["enabled"] and epoch_train_mel is not None:
+            relative_delta = float(
+                grokking["s2_plateau_relative_delta"]
+            )
+            threshold = best_train_mel * (1.0 - relative_delta)
+            if epoch_train_mel < threshold:
+                best_train_mel = epoch_train_mel
+                last_significant_train_improvement = epoch
+                s2_fit_epoch = None
+            elif (
+                s2_fit_epoch is None
+                and epoch - last_significant_train_improvement
+                >= plateau_patience
+            ):
+                s2_fit_epoch = epoch
+
         scheduler_g.step()
         scheduler_d.step()
 
@@ -595,12 +639,20 @@ def _run(rank, n_gpus, hps, use_ddp):
                 net_g,
                 eval_loader,
                 grokking["max_validation_batches"],
+                seed=int(grokking["seed"]),
             )
             model_g = net_g.module if hasattr(net_g, "module") else net_g
             record = {
                 "epoch": epoch,
                 "global_step": global_step,
+                "train_mel_l1": epoch_train_mel,
                 "val_mel_l1": val_mel,
+                "fit_epoch": s2_fit_epoch,
+                "post_fit_age": (
+                    None
+                    if s2_fit_epoch is None
+                    else epoch - s2_fit_epoch
+                ),
                 "parameter_l2": parameter_l2_norm(model_g),
                 "generator_weight_decay": s2_weight_decay,
                 "grokfast": bool(grokking["grokfast_enabled"]),
@@ -627,6 +679,21 @@ def _run(rank, n_gpus, hps, use_ddp):
                 )
         if use_ddp:
             dist.barrier()
+
+        if (
+            grokking["enabled"]
+            and s2_fit_epoch is not None
+            and epoch >= base_epochs
+            and epoch - s2_fit_epoch >= post_fit_epochs
+        ):
+            if rank == 0:
+                logger.info(
+                    "[grokking:S2] post-fit window complete: "
+                    "fit_epoch=%s stop_epoch=%s",
+                    s2_fit_epoch,
+                    epoch,
+                )
+            break
     print("training done")
 
 
@@ -657,6 +724,8 @@ def train_and_evaluate(
 
     net_g.train()
     net_d.train()
+    epoch_mel_sum = 0.0
+    epoch_mel_count = 0
     for batch_idx, data in enumerate(tqdm(train_loader)):
         if hps.model.version in {"v2Pro", "v2ProPlus"}:
             ssl, ssl_lengths, spec, spec_lengths, y, y_lengths, text, text_lengths, sv_emb = data
@@ -764,6 +833,11 @@ def train_and_evaluate(
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
             with autocast(enabled=False):
                 loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
+                epoch_mel_sum += (
+                    float(loss_mel.detach().float().item())
+                    / max(float(hps.train.c_mel), 1.0e-12)
+                )
+                epoch_mel_count += 1
                 loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
@@ -940,8 +1014,31 @@ def train_and_evaluate(
                 )
             )
 
+    stats_device = (
+        torch.device(f"cuda:{rank}")
+        if torch.cuda.is_available()
+        else torch.device("cpu")
+    )
+    mel_stats = torch.tensor(
+        [epoch_mel_sum, float(epoch_mel_count)],
+        device=stats_device,
+        dtype=torch.float64,
+    )
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(mel_stats, op=dist.ReduceOp.SUM)
+    epoch_train_mel = (
+        float((mel_stats[0] / mel_stats[1]).item())
+        if mel_stats[1].item() > 0
+        else None
+    )
+
     if rank == 0:
-        logger.info("====> Epoch: {}".format(epoch))
+        logger.info(
+            "====> Epoch: %s train_mel_l1=%s",
+            epoch,
+            epoch_train_mel,
+        )
+    return epoch_train_mel
 
 
 def evaluate(hps, generator, eval_loader, writer_eval):
