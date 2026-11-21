@@ -1,6 +1,8 @@
 import warnings
 
 warnings.filterwarnings("ignore")
+import copy
+import json
 import os
 import sys
 from pathlib import Path
@@ -11,6 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.grokking import (
+    deterministic_holdout_indices,
+    gradfilter_ema,
+    parameter_l2_norm,
+    repeat_indices_to_minimum,
+    resolve_grokking_config,
+)
 from tools.runtime_status import clear_activity, publish_activity
 
 hps = utils.get_hparams(stage=2)
@@ -109,6 +118,191 @@ def run(rank, n_gpus, hps):
             dist.destroy_process_group()
 
 
+def _split_s2_for_grokking(dataset, grokking):
+    names = [item[0] for item in dataset.audiopaths_sid_text]
+    train_indices, val_indices = deterministic_holdout_indices(
+        names,
+        fraction=float(grokking["validation_fraction"]),
+        min_validation_samples=int(grokking["min_validation_samples"]),
+        seed=int(grokking["seed"]),
+    )
+    train_indices = repeat_indices_to_minimum(train_indices, minimum=100)
+
+    eval_dataset = copy.copy(dataset)
+    eval_dataset.audiopaths_sid_text = [
+        dataset.audiopaths_sid_text[index] for index in val_indices
+    ]
+    eval_dataset.lengths = [dataset.lengths[index] for index in val_indices]
+    eval_dataset.val = True
+
+    dataset.audiopaths_sid_text = [
+        dataset.audiopaths_sid_text[index] for index in train_indices
+    ]
+    dataset.lengths = [dataset.lengths[index] for index in train_indices]
+
+    print(
+        "[grokking:S2] held-out split "
+        f"train={len(dataset)} val={len(eval_dataset)}"
+    )
+    return eval_dataset
+
+
+def _move_s2_batch(data, rank, model_version):
+    if model_version in {"v2Pro", "v2ProPlus"}:
+        (
+            ssl,
+            ssl_lengths,
+            spec,
+            spec_lengths,
+            y,
+            y_lengths,
+            text,
+            text_lengths,
+            sv_emb,
+        ) = data
+    else:
+        (
+            ssl,
+            ssl_lengths,
+            spec,
+            spec_lengths,
+            y,
+            y_lengths,
+            text,
+            text_lengths,
+        ) = data
+        sv_emb = None
+
+    target = rank if torch.cuda.is_available() else device
+    spec = spec.cuda(rank) if torch.cuda.is_available() else spec.to(target)
+    spec_lengths = (
+        spec_lengths.cuda(rank)
+        if torch.cuda.is_available()
+        else spec_lengths.to(target)
+    )
+    y = y.cuda(rank) if torch.cuda.is_available() else y.to(target)
+    y_lengths = (
+        y_lengths.cuda(rank)
+        if torch.cuda.is_available()
+        else y_lengths.to(target)
+    )
+    ssl = ssl.cuda(rank) if torch.cuda.is_available() else ssl.to(target)
+    text = text.cuda(rank) if torch.cuda.is_available() else text.to(target)
+    text_lengths = (
+        text_lengths.cuda(rank)
+        if torch.cuda.is_available()
+        else text_lengths.to(target)
+    )
+    if sv_emb is not None:
+        sv_emb = (
+            sv_emb.cuda(rank)
+            if torch.cuda.is_available()
+            else sv_emb.to(target)
+        )
+    return (
+        ssl,
+        spec,
+        spec_lengths,
+        y,
+        y_lengths,
+        text,
+        text_lengths,
+        sv_emb,
+    )
+
+
+def evaluate_grokking(rank, hps, generator, eval_loader, max_batches):
+    """Held-out reconstruction metric for the acoustic model.
+
+    The metric intentionally avoids the discriminator so it measures generator
+    generalization rather than GAN game balance.
+    """
+
+    model = generator.module if hasattr(generator, "module") else generator
+    was_training = model.training
+    model.eval()
+    losses = []
+    with torch.no_grad():
+        for batch_idx, data in enumerate(eval_loader):
+            if batch_idx >= int(max_batches):
+                break
+            (
+                ssl,
+                spec,
+                spec_lengths,
+                _y,
+                _y_lengths,
+                text,
+                text_lengths,
+                sv_emb,
+            ) = _move_s2_batch(data, rank, hps.model.version)
+
+            if hps.model.version in {"v2Pro", "v2ProPlus"}:
+                outputs = model(
+                    ssl,
+                    spec,
+                    spec_lengths,
+                    text,
+                    text_lengths,
+                    sv_emb,
+                )
+            else:
+                outputs = model(
+                    ssl,
+                    spec,
+                    spec_lengths,
+                    text,
+                    text_lengths,
+                )
+
+            y_hat = outputs[0]
+            ids_slice = outputs[2]
+            mel = spec_to_mel_torch(
+                spec,
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax,
+            )
+            y_mel = commons.slice_segments(
+                mel,
+                ids_slice,
+                hps.train.segment_size // hps.data.hop_length,
+            )
+            y_hat_mel = mel_spectrogram_torch(
+                y_hat.squeeze(1),
+                hps.data.filter_length,
+                hps.data.n_mel_channels,
+                hps.data.sampling_rate,
+                hps.data.hop_length,
+                hps.data.win_length,
+                hps.data.mel_fmin,
+                hps.data.mel_fmax,
+            )
+            losses.append(
+                float(
+                    F.l1_loss(y_mel.float(), y_hat_mel.float())
+                    .detach()
+                    .cpu()
+                    .item()
+                )
+            )
+
+    if was_training:
+        model.train()
+    if not losses:
+        return None
+    return sum(losses) / len(losses)
+
+
+def _write_s2_grokking_metric(hps, record):
+    path = Path(hps.data.exp_dir) / "grokking_s2_metrics.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def _run(rank, n_gpus, hps, use_ddp):
     global global_step
     if rank == 0:
@@ -122,7 +316,12 @@ def _run(rank, n_gpus, hps, use_ddp):
     if torch.cuda.is_available():
         torch.cuda.set_device(rank)
 
+    grokking = resolve_grokking_config(hps.train, "s2")
     train_dataset = TextAudioSpeakerLoader(hps.data, version=hps.model.version)
+    eval_dataset = None
+    if grokking["enabled"]:
+        eval_dataset = _split_s2_for_grokking(train_dataset, grokking)
+
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size,
@@ -161,11 +360,17 @@ def _run(rank, n_gpus, hps, use_ddp):
         persistent_workers=True,
         prefetch_factor=2,
     )
-    # if rank == 0:
-    #     eval_dataset = TextAudioSpeakerLoader(hps.data.validation_files, hps.data, val=True)
-    #     eval_loader = DataLoader(eval_dataset, num_workers=0, shuffle=False,
-    #                              batch_size=1, pin_memory=True,
-    #                              drop_last=False, collate_fn=collate_fn)
+    eval_loader = None
+    if grokking["enabled"] and eval_dataset is not None:
+        eval_loader = DataLoader(
+            eval_dataset,
+            num_workers=0,
+            shuffle=False,
+            batch_size=1,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_fn,
+        )
 
     net_g = (
         SynthesizerTrn(
@@ -204,6 +409,11 @@ def _run(rank, n_gpus, hps, use_ddp):
     # et_p=net_g.enc_p.encoder_text.parameters()
     # mrte_p=net_g.enc_p.mrte.parameters()
 
+    s2_weight_decay = (
+        float(grokking["s2_weight_decay"])
+        if grokking["enabled"]
+        else 0.01
+    )
     optim_g = torch.optim.AdamW(
         # filter(lambda p: p.requires_grad, net_g.parameters()),###默认所有层lr一致
         [
@@ -224,6 +434,7 @@ def _run(rank, n_gpus, hps, use_ddp):
         hps.train.learning_rate,
         betas=hps.train.betas,
         eps=hps.train.eps,
+        weight_decay=s2_weight_decay,
     )
     optim_d = torch.optim.AdamW(
         net_d.parameters(),
@@ -309,10 +520,23 @@ def _run(rank, n_gpus, hps, use_ddp):
         scheduler_d.step()
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
+    grokfast_state = {}
+    effective_epochs = int(hps.train.epochs)
+    if grokking["enabled"]:
+        effective_epochs += int(grokking["s2_post_fit_epochs"])
+        if rank == 0:
+            logger.info(
+                "[grokking:S2] enabled: epochs=%s -> %s, "
+                "generator_weight_decay=%s, grokfast=%s",
+                hps.train.epochs,
+                effective_epochs,
+                s2_weight_decay,
+                grokking["grokfast_enabled"],
+            )
 
     print("start training from epoch %s" % epoch_str)
     if rank == 0:
-        total_steps = int(hps.train.epochs) * len(train_loader)
+        total_steps = effective_epochs * len(train_loader)
         publish_activity(
             task="SoVITS 학습",
             stage="starting",
@@ -324,7 +548,8 @@ def _run(rank, n_gpus, hps, use_ddp):
             epoch=epoch_str,
             total_epochs=int(hps.train.epochs),
         )
-    for epoch in range(epoch_str, hps.train.epochs + 1):
+    best_grokking_val = float("inf")
+    for epoch in range(epoch_str, effective_epochs + 1):
         if rank == 0:
             train_and_evaluate(
                 rank,
@@ -335,9 +560,12 @@ def _run(rank, n_gpus, hps, use_ddp):
                 [scheduler_g, scheduler_d],
                 scaler,
                 # [train_loader, eval_loader], logger, [writer, writer_eval])
-                [train_loader, None],
+                [train_loader, eval_loader],
                 logger,
                 [writer, writer_eval],
+                grokking=grokking,
+                grokfast_state=grokfast_state,
+                effective_epochs=effective_epochs,
             )
         else:
             train_and_evaluate(
@@ -348,16 +576,75 @@ def _run(rank, n_gpus, hps, use_ddp):
                 [optim_g, optim_d],
                 [scheduler_g, scheduler_d],
                 scaler,
-                [train_loader, None],
+                [train_loader, eval_loader],
                 None,
                 None,
+                grokking=grokking,
+                grokfast_state=grokfast_state,
+                effective_epochs=effective_epochs,
             )
         scheduler_g.step()
         scheduler_d.step()
+
+        if use_ddp:
+            dist.barrier()
+        if rank == 0 and grokking["enabled"] and eval_loader is not None:
+            val_mel = evaluate_grokking(
+                rank,
+                hps,
+                net_g,
+                eval_loader,
+                grokking["max_validation_batches"],
+            )
+            model_g = net_g.module if hasattr(net_g, "module") else net_g
+            record = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "val_mel_l1": val_mel,
+                "parameter_l2": parameter_l2_norm(model_g),
+                "generator_weight_decay": s2_weight_decay,
+                "grokfast": bool(grokking["grokfast_enabled"]),
+            }
+            _write_s2_grokking_metric(hps, record)
+            logger.info("[grokking:S2] %s", record)
+            if val_mel is not None and val_mel < best_grokking_val:
+                best_grokking_val = val_mel
+                ckpt = model_g.state_dict()
+                logger.info(
+                    "saving grokking best: %s",
+                    savee(
+                        ckpt,
+                        hps.name + "_grok_best",
+                        epoch,
+                        global_step,
+                        hps,
+                        model_version=(
+                            None
+                            if hps.model.version not in {"v2Pro", "v2ProPlus"}
+                            else hps.model.version
+                        ),
+                    ),
+                )
+        if use_ddp:
+            dist.barrier()
     print("training done")
 
 
-def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
+def train_and_evaluate(
+    rank,
+    epoch,
+    hps,
+    nets,
+    optims,
+    schedulers,
+    scaler,
+    loaders,
+    logger,
+    writers,
+    grokking=None,
+    grokfast_state=None,
+    effective_epochs=None,
+):
     net_g, net_d = nets
     optim_g, optim_d = optims
     # scheduler_g, scheduler_d = schedulers
@@ -486,6 +773,18 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
+        if (
+            grokking
+            and grokking["enabled"]
+            and grokking["grokfast_enabled"]
+        ):
+            model_g = net_g.module if hasattr(net_g, "module") else net_g
+            gradfilter_ema(
+                model_g,
+                grokfast_state,
+                alpha=float(grokking["grokfast_alpha"]),
+                lamb=float(grokking["grokfast_lambda"]),
+            )
         grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
         scaler.step(optim_g)
         scaler.update()
@@ -496,7 +795,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 batch_idx % status_interval == 0
                 or batch_idx + 1 == len(train_loader)
             ):
-                total_steps = int(hps.train.epochs) * len(train_loader)
+                total_epochs = int(effective_epochs or hps.train.epochs)
+                total_steps = total_epochs * len(train_loader)
                 completed_step = global_step + 1
                 publish_activity(
                     task="SoVITS 학습",
@@ -507,7 +807,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     step=completed_step,
                     total_steps=total_steps,
                     epoch=epoch,
-                    total_epochs=int(hps.train.epochs),
+                    total_epochs=int(effective_epochs or hps.train.epochs),
                     loss=float(loss_gen_all.detach().float().item()),
                     metric=(
                         f"mel {float(loss_mel.detach().float().item()):.4f}"
