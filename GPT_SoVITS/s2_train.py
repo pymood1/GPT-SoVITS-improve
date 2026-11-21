@@ -333,6 +333,12 @@ def _run(rank, n_gpus, hps, use_ddp):
     eval_dataset = None
     if grokking["enabled"]:
         eval_dataset = _split_s2_for_grokking(train_dataset, grokking)
+        if rank == 0:
+            metrics_path = (
+                Path(hps.data.exp_dir) / "grokking_s2_metrics.jsonl"
+            )
+            if metrics_path.exists():
+                metrics_path.unlink()
 
     train_sampler = DistributedBucketSampler(
         train_dataset,
