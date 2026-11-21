@@ -251,12 +251,11 @@ class Text2SemanticLightningModule(LightningModule):
     def validation_step(self, batch: Dict, batch_idx: int):
         if not self.grokking_config["enabled"]:
             return None
-        forward = (
-            self.model.forward
-            if self.config["train"].get("if_dpo", False) is True
-            else self.model.forward_old
-        )
-        loss, acc = forward(
+        # Use the deterministic token-prediction objective for the probe even
+        # when DPO is enabled in training. DPO constructs a random rejected
+        # sequence, which would inject validation noise and obscure a delayed
+        # generalization transition.
+        loss, acc = self.model.forward_old(
             batch["phoneme_ids"],
             batch["phoneme_ids_len"],
             batch["semantic_ids"],
