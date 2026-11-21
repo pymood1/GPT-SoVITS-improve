@@ -350,7 +350,7 @@ def main(args):
         # Allow memorization to happen late while still guaranteeing a full
         # post-fit observation window. The callback stops earlier once that
         # window has actually elapsed.
-        effective_max_epochs = base_epochs + 2 * post_fit_epochs
+        effective_max_epochs = base_epochs + 4 * post_fit_epochs
         logging.info(
             "[grokking:S1] enabled: base_epochs=%s post_fit=%s hard_max=%s",
             base_epochs,
