@@ -123,6 +123,12 @@ With all grokking environment switches unset, the normal data sharing,
 optimizer, precision, epoch count and validation-disabled behavior remain
 unchanged.
 
+For a rigorous probe, do not use a user-finetuned pretrained checkpoint that
+has already seen the utterances selected for the new held-out split. Generic
+upstream pretrained weights are acceptable. S1 Lightning resume checkpoints
+are isolated by split seed/fraction/minimum-validation settings, and S2
+grokking mode intentionally ignores existing experiment checkpoints.
+
 The S1 grokking path intentionally does not use this fork's legacy
 WarmupCosineLRSchedule because that implementation hard-locks the learning rate
 to 0.002. The research path uses a standard PyTorch constant-LR scheduler so
