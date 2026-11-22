@@ -919,6 +919,9 @@ Status:
 
 ## Controller
 
+- [x] Add CPU static steering-distribution diagnostic and opt-in generation trace (2026-11-22; synthetic checks only).
+- [x] Require paired S1 identity and aggregate multiple generation traces by emotion/strength (2026-11-22; synthetic integration checks).
+- [ ] Run paired real-checkpoint diagnostic and generation trace on Kaggle; quantify H2/H4 before changing steering.
 - [ ] Build 0–2 strength sweep evaluation for all 4 emotions.
 - [ ] Record ASR/CER and speaker similarity across strength.
 - [ ] Keep listening notes separate from objective metrics.
@@ -967,6 +970,8 @@ Status:
 
 | Question | Current status | Evidence level | Next action |
 |---|---|---|---|
+| Is hidden-direction raw preference context-dependent? | No, for fixed weights/ID/vocab/dtype it is static | FACT (source + synthetic) | Measure real paired readout scores |
+| Is strength 1 steering effectively a no-op / budget-limited? | Not measured on real weights/generation | HYPOTHESIS | Run new CPU diagnostic + opt-in trace |
 | Does V+Out train correctly? | Yes | FACT | No implementation debugging unless a new error appears |
 | Is V+Out Controller stronger than Full FT? | No; current metrics are weaker | FACT | Do not tune it endlessly |
 | Does V+Out preserve reference better? | Unknown | UNRESOLVED | Same-S2 controlled A/B |
@@ -1087,3 +1092,268 @@ This is a recommendation, not a rigid rule. Codex may reorder tasks when new evi
 # 29. Current bottom line
 
 Current evidence supports:
+
+## 2026-11-22 — Steering magnitude diagnostic (measurement only)
+
+### Change and fixed variables
+
+Added `tools/diagnose_emotion_steering.py`: CPU FP32 inspection using the actual
+controller loader and S1 readout only (no S1/S2 model initialization). It requires
+the bound S1 SHA-256 and refuses a missing binding or mismatch. This was tightened
+in the follow-up below; no unverified-pair static report is now produced.
+Safe `weights_only=True` loading is retained. Hidden-direction mode
+only; legacy context-dependent mode fails clearly instead of measuring dummy
+context. All stored emotion IDs are inspected (four for the requested paired
+Controller), strengths 0.5/1/1.5/2, absolute raw/clamped statistics, saturation,
+delta standard deviation/pairwise log-odds span and Pearson matrices. Constant
+vectors have undefined Pearson entries (`null`). JSON records hashes and scope.
+
+Added process-start environment flag `GPT_SOVITS_STEERING_TRACE=1` in
+`AR/models/emotion_control.py`. Default OFF; OFF performs no new tensor work,
+RNG calls, device synchronization, statistics or log I/O, just Python flag
+branches. Literal zero CPU instruction/latency overhead is not claimed or
+benchmarked. Sampling/filtering/tilt/update formulas and all defaults unchanged.
+ON records JSON lines to stderr AFTER sampling; optional observer errors cannot
+fail generation. Logging itself has synchronization/I/O overhead when enabled.
+Records carry generation identity, step, stable row IDs across batch shrinking,
+mean absolute clamped delta on non-EOS support (zero for budget-disabled rows),
+actual normalized log-probability-ratio magnitude, signed cumulative log ratio,
+and budget-disabled/eligible row-step counts/fraction. Last record retains final
+values for finished rows as well as live rows. These are sampler row-steps,
+not a claim about semantic/audio quality or counts of accepted decoded tokens.
+`mean_abs_delta` describes the proposed eligible support tilt; the actual ratio
+field also captures normalization and numerical fail-open. No new runtime trace
+is emitted for paths that bypass the emotion sampler entirely.
+
+### FACT / OBSERVATION / HYPOTHESIS findings
+
+- **H1 — FACT (source + synthetic):** hidden-direction `preference_scores` uses
+  hidden values only indirectly through dtype/device; numerical hidden values do
+  not enter its formula. It is normalized `hidden_directions()` dot normalized
+  readout rows. Fixed dtype/device/weights/emotion/vocab gives a static vector.
+  Actual output probability changes still depend on base probabilities, sampler
+  support, fixed EOS mass and remaining budget. Legacy mode is context-dependent.
+- **H2 — HYPOTHESIS remains:** isotropic independent random unit-vector cosine
+  has std 1/sqrt(H) (~0.03125 at H=1024), but learned directions/readout are NOT
+  established isotropic/independent. No actual trained-weight distribution was
+  measured here. Small raw scores do not prove no-op: common offsets cancel and
+  relative supported-token deltas matter. Static results cannot establish audio
+  quality or explain the user's slurring observation. High-strength plausibility/
+  slurring remains **OBSERVATION**, not a measured causal effect.
+- **H3 — FACT (code read only; training unchanged):** main hidden-direction loss
+  is CE(hidden_beta * hidden_emotion_logits(mean-pooled frozen hidden)). Default
+  semantic_aux_weight=0. The semantic auxiliary branch additionally requires
+  `steering_mode == legacy_low_rank`, so even a positive weight does not train
+  it in hidden-direction mode. Controller OOF sets semantic_loss=None. There is
+  no generation-likelihood gradient in this objective. Classification and
+  steering do share V/emotion coefficients and S1-derived input representations;
+  'no generation loss' does NOT mean mathematical parameter independence.
+  Class count is checkpoint/data-defined, not hardcoded four.
+- **Coverage — FACT:** `prepare_controller_sample` mirrors top-k/top-p,
+  temperature/repetition penalty and early EOS exclusion. A target token is
+  valid when supported with finite positive base probability and >1 non-EOS
+  alternative survives. Coverage is valid token fraction. In main training,
+  `skipped_coverage` counts unavailable semantic auxiliary/diagnostic coverage;
+  there is NO continue that skips hidden CE/backprop solely for low coverage.
+  `evaluate_controller` likewise skips semantic evaluation only; valid hidden
+  samples remain eligible for Controller training/probes. Do not read this
+  counter as dropped hidden-training examples.
+- **H4 — FACT mechanism, HYPOTHESIS incidence:** active condition is remaining
+  budget >= 2*clamp; default 2 and .35 requires remaining >= .7, i.e. absolute
+  signed cumulative log ratio <=1.3. Cumulative state adds the sampled token's
+  log(p_steered/p_base), not absolute deltas, and can cancel across steps.
+  Mechanism exists; no actual-generation disabled fraction was measured here.
+
+### Executed verification and limitations
+
+- Existing isolated Python 3.12 CPU Torch environment; user environment unchanged.
+- New tests initially failed (missing CLI / absent trace), then passed.
+- `python -B -m unittest tests.test_emotion_steering_diagnostics
+  tests.test_emotion_control_training_vectorization -q`: **9 tests PASS**.
+- CLI was exercised with synthetic saved Controller/S1 files, four emotions and
+  all four strengths. Synthetic hidden values changed without changing static
+  scores. Legacy mode rejected.
+- Same-seed samples, full probability tensors, cumulative ratios and RNG states
+  were bitwise equal with trace OFF, ON and pre-instrumentation sampler arithmetic.
+  Test includes one budget-disabled batch row, EOS, top-k filtering and stable
+  trace row IDs after index_select. This is CPU synthetic evidence, not GPU or
+  end-to-end TTS equivalence across all hardware/dtypes.
+- Three touched Python files parse using Python 3.10 grammar. This is NOT a
+  Python 3.10–3.14 import/version matrix.
+- No real checkpoint inspection, GPU inference, listening evaluation, training,
+  private-data transfer, default changes, commit, push or PR was performed.
+- Usage at start: 9% short-window / 54% weekly remaining; after implementation
+  5% / 54%, so work limited to this unit's verification and handoff.
+
+### Exact Kaggle commands (run against these modified sources)
+
+In a Kaggle `%%bash` cell, replace the three artifact paths with the intended
+paired S1/Controller and the SAME S2 used in your listening baseline. The old
+handoff paths are examples, not evidence these historical files still exist.
+
+```bash
+set -euo pipefail
+cd /kaggle/tmp/GPT-SoVITS
+CONTROLLER="/absolute/path/to/paired_emotion_controller.pt"
+S1="/absolute/path/to/paired_s1.ckpt"
+S2="/absolute/path/to/fixed_s2.pth"
+OUT="/kaggle/working/emotion_steering_diagnostic"
+mkdir -p "$OUT"
+python tools/diagnose_emotion_steering.py \
+  --controller "$CONTROLLER" --s1-checkpoint "$S1" \
+  --output "$OUT/static.json" | tee "$OUT/static.summary.txt"
+env GPT_SOVITS_STEERING_TRACE=1 version=v5dev \
+  gpt_path="$S1" sovits_path="$S2" emotion_controller_path="$CONTROLLER" \
+  PYTHONPATH="$PWD:$PWD/GPT_SoVITS${PYTHONPATH:+:$PYTHONPATH}" \
+  python -u GPT_SoVITS/inference_webui.py ko_KR \
+  2> >(tee "$OUT/inference.stderr.log" >&2)
+```
+
+The second command starts the ordinary inference UI, not an automatic TTS run.
+Confirm successful paired Controller load, then use the SAME reference/text/
+sampling conditions for each emotion and strength. Trace records have
+`"event": "emotion_steering"`; stderr also contains ordinary non-JSON logs.
+For each generation, use its last step record: the final-by-row mapping retains
+finished rows; disabled_fraction denominator is eligible row-steps, excluding
+singleton non-EOS support, nonfinite inputs and zero strength/clamp. Changing
+the environment flag requires restarting the inference process. OFF: omit the
+flag or set it to 0; no controller settings need to change.
+
+### Next priority / conditional proposals only
+
+First run real paired static diagnostics and record ON trace at fixed inference
+conditions. If supported-token normalized shifts are actually small and budget
+cutoff is not the dominant cause, H2 gains support; static random-reference
+similarity alone is insufficient. Do not change multiple variables at once.
+Only if measurements support the limitation, propose (do not implement):
+
+- Context-dependent steering: distinguish content-appropriate token preferences
+  rather than an identical emotion vector for all hidden contexts.
+- Generation-likelihood training objective: test the gap between hidden-label
+  separability and the preferences actually applied during semantic generation.
+- Strength normalization: test whether measured supported-token scale differs
+  across emotions, with explicit quality/budget controls against over-steering.
+
+No candidate is selected or implemented without the user's confirmation.
+
+### 2026-11-22 follow-up — strict pairing and multi-generation summary
+
+**Scope:** measurement-only follow-up requested after report review. Fixed:
+steering formulas, strength/clamp/budget/training defaults, S1/S2 and all user
+settings. No actual pretrained/private weights were loaded for this follow-up.
+
+**FACT — implementation and verified behavior:**
+
+- Static diagnosis now refuses missing S1 binding as well as mismatched SHA-256.
+  A folder named `paired` is not the proof: the stored S1 hash must equal the
+  actual file used to obtain readout weights. Output cannot overwrite an input
+  checkpoint/report/log. Diagnostic function copies the tiny Controller before
+  converting it to CPU FP32, preserving the caller's dtype and train/eval state.
+- Trace schema 2 includes emotion ID, strength, sampling settings, device/dtypes,
+  Controller-file hash and bound S1 hash. Identity hashing runs only when the
+  process-start trace flag is ON. Actual S1/S2 pairing remains the existing
+  inference loader's responsibility; its checks were not weakened or changed.
+- Generation keys use process/session plus a monotonic counter, rather than a
+  reusable Python object address. Row IDs follow batch index selection. No texts,
+  reference paths, audio or tokens are added to the trace.
+- In addition to proposed clamped delta, logs measure normalized probability
+  ratios, p_base-weighted absolute log ratios and total variation
+  (`0.5 * sum(abs(p_steered - p_base))`). These are probability-distribution
+  measurements, not acoustic/semantic quality scores.
+- A CPU FP16 top-k case reproduced a logger-only NaN: 1e-12 rounds to zero in
+  FP16, so filtered probabilities caused log(0)-log(0) and 0*NaN. Observation
+  arithmetic now uses detached FP32 copies. Sampling probabilities, sampling
+  dtype, cumulative update and RNG arithmetic remain unchanged.
+- A second synthetic boundary case found that a starting FP32 cumulative state
+  must be observed AFTER the same dtype/device conversion that the sampler's
+  `ensure_batch` performs. At a near-budget boundary, FP16 rounding otherwise
+  made the logged cutoff differ from the actual gate. The trace now copies the
+  pre-update state in the probability dtype/device before testing that gate.
+  This changes the observer only, not the actual budget condition.
+- `--trace-log ... --static-report ...` aggregates ALL observed sampler sequences
+  by emotion ID and strength, not the entire log's final generation alone. It
+  requires trace hashes to match the verified static JSON, rejects changed
+  sampling/dtype/device conditions, ignores exact duplicate records and rejects
+  conflicting duplicate steps. Missing initial/intermediate steps and malformed
+  trace lines produce warnings. Exception fail-open is reported separately from
+  budget cutoff. Numerical safety returns inside the tilt are not individually
+  classified; compare proposed delta and actual probability changes.
+- Summary reports sample counts, pooled disabled/eligible row-steps, distributions
+  of final OBSERVED signed/absolute cumulative ratios and sequence mean TV.
+  Both overall and active-only delta/TV averages are retained so cutoff does not
+  masquerade as weak active steering. No eligible opportunities gives a null
+  cutoff fraction, not evidence the budget is harmless.
+- A sampler row can be a sentence fragment. Neither row count nor generation
+  count proves distinct texts, whole requests or completed inference. There is
+  no explicit request-end marker: final means last observed per-row value.
+
+**Executed CPU verification:** isolated existing Python 3.12 / CPU Torch
+environment; no environment packages changed. Expanded tests include actual CLI
+static -> saved/loaded synthetic Controller -> 4 emotions x 2 strengths x 2
+independent sampler sequences -> summary (16 synthetic generations), strict
+missing/mismatch pairing rejection, known quantiles/correlations, mixed identity
+rejection, multiple-generation aggregation, duplicate/incomplete logs, fresh
+process flag unset/0/1, observer I/O failure, input preservation, state/RNG
+equality in hidden and legacy modes, zero strength/clamp, singleton support,
+EOS handling, CPU FP16 filtered probabilities and a dtype-converted budget
+boundary. The complete focused command below passed **64 tests in 16.406s**.
+The real script entry point's `--help` also ran in a fresh Python process.
+All three touched Python files parsed using Python 3.10 grammar; no complete
+Python 3.10–3.14 real-dependency import matrix or GPU equivalence is claimed.
+Independent AST comparison to `HEAD` found all **9 preexisting classes/functions
+identical after removing the added trace guards**. No existing steering,
+sampling, checkpoint or index-selection arithmetic was changed.
+
+```bash
+python -B -m unittest \
+  tests.test_emotion_steering_diagnostics \
+  tests.test_emotion_control_training_vectorization \
+  tests.test_emotion_representation_probe \
+  tests.test_emotion_pipeline_helpers -q
+```
+
+**HYPOTHESIS / interpretation:** H2 and actual-generation H4 incidence remain
+unmeasured. Fraction of all-vocab |delta| below 0.05 is now exported as an
+EXPLORATORY statistic, not an acceptance/no-op threshold. A constant delta of
+0.03 was tested to cancel on normalization despite nonzero proposed delta.
+Conversely, small nonconstant shifts can change samples and compound across
+autoregressive steps. High positive emotion-vector correlation or saturation
+is a diagnostic signal, not proof of identical emotions or an audio-quality
+effect. H1/H3 source conclusions and the user's listening OBSERVATIONS remain
+as above. No architecture/calibration/training candidate was implemented.
+
+**Kaggle measurement procedure:** run the static command above FIRST against
+these modified sources and the exact paired files. Then launch the existing UI
+with tracing ON. Use at least three distinct fixed short texts for each of the
+four emotion IDs, strengths 1.0 and 2.0 (24 requests minimum), with the same
+reference, S1/S2, Controller and sampling controls. Record the actual controls;
+the current legacy inference UI command does not set/reset a per-request seed,
+so do not call this a matched same-seed generation comparison. Seed-controlled
+experiments may instead use an existing seed-capable inference entry point.
+Human listening remains the user's work.
+
+After generating the test cases, stop that UI process and run in a new Kaggle
+`%%bash` cell (or summarize from another shell). Keep the raw log private and
+share only bounded summaries:
+
+```bash
+set -euo pipefail
+cd /kaggle/tmp/GPT-SoVITS
+OUT="/kaggle/working/emotion_steering_diagnostic"
+python tools/diagnose_emotion_steering.py \
+  --trace-log "$OUT/inference.stderr.log" \
+  --static-report "$OUT/static.json" \
+  --output "$OUT/trace.summary.json" | tee "$OUT/trace.summary.txt"
+```
+
+Multiple logs may follow `--trace-log`; all must belong to the same verified
+pair and runtime settings. Older schema-1 logs must be regenerated with schema 2.
+Absent local output directories (`GPT_weights_v5dev`,
+`gpt_sovits_output/emotion_controllers`, `output/emotion_opt`) were checked; no
+actual paired artifacts were available there. No GPU run, real-weight static
+report, listening result, private-data transfer, commit, push or PR is claimed.
+
+**Next priority:** user runs real paired static diagnosis, then several-text
+condition sweep and summary. Review H2/H4 jointly, with sample counts and warnings;
+only then consider one of the three conditional candidates above. No fixed
+0.05/no-op threshold or automatic H2 verdict has been introduced.

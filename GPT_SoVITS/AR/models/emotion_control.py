@@ -1,5 +1,10 @@
 from dataclasses import dataclass
 import hashlib
+import itertools
+import json
+import os
+import sys
+import time
 from typing import Optional, Sequence, Tuple, Union
 
 import torch
@@ -7,6 +12,12 @@ from torch import nn
 from torch.nn import functional as F
 
 from AR.models.utils import logits_to_probs, multinomial_sample_one_no_sync
+
+
+# Read once at process startup. OFF adds no tensor operations, RNG draws or syncs.
+STEERING_TRACE = os.environ.get("GPT_SOVITS_STEERING_TRACE", "0") == "1"
+_TRACE_GENERATIONS = itertools.count(1)
+_TRACE_SESSION = None
 
 
 @dataclass
@@ -24,6 +35,9 @@ class EmotionSamplingState:
     def index_select(self, index: torch.Tensor) -> "EmotionSamplingState":
         if self.cumulative_log_ratio is not None:
             self.cumulative_log_ratio = torch.index_select(self.cumulative_log_ratio, 0, index)
+        if STEERING_TRACE and hasattr(self, "_steering_trace"):
+            trace = self._steering_trace
+            trace["row_ids"] = [trace["row_ids"][i] for i in index.tolist()]
         return self
 
 
@@ -884,6 +898,15 @@ def load_emotion_controller_checkpoint(
         "extra": extra,
         "config": config,
     }
+    if STEERING_TRACE:
+        try:
+            controller._steering_trace_identity = {
+                "controller_sha256": sha256_file(path),
+                "bound_s1_sha256": extra.get("s1_sha256"),
+            }
+        except (OSError, TypeError):
+            # Optional trace identity must not change checkpoint load behavior.
+            pass
     return controller, metadata
 
 
@@ -906,6 +929,20 @@ def sample_with_emotion_preference(
         **sampling_kwargs,
     )
 
+    if STEERING_TRACE:
+        if (
+            state is not None
+            and state.cumulative_log_ratio is not None
+            and state.cumulative_log_ratio.numel() == base_probs.shape[0]
+        ):
+            trace_before = state.cumulative_log_ratio.detach().to(
+                device=base_probs.device, dtype=base_probs.dtype,
+            ).clone()
+        else:
+            trace_before = base_probs.new_zeros(base_probs.shape[0])
+        trace_scores = None
+        trace_failed_open = False
+
     try:
         scores = controller.preference_scores(
             hidden_state=hidden_state,
@@ -913,6 +950,8 @@ def sample_with_emotion_preference(
             emotion_id=emotion_id,
             vocab_size=base_probs.shape[-1],
         )
+        if STEERING_TRACE:
+            trace_scores = scores.detach()
         probs, state = controller.tilt_probabilities(
             base_probs=base_probs,
             preference_scores=scores,
@@ -926,6 +965,9 @@ def sample_with_emotion_preference(
         if state is None:
             state = EmotionSamplingState()
         state.ensure_batch(base_probs.shape[0], base_probs.device, base_probs.dtype)
+        if STEERING_TRACE:
+            trace_scores = None
+            trace_failed_open = True
 
     idx_next = multinomial_sample_one_no_sync(probs)
 
@@ -936,4 +978,148 @@ def sample_with_emotion_preference(
         state.cumulative_log_ratio + torch.log(pe) - torch.log(p0)
     )
 
+    if STEERING_TRACE:
+        try:
+            _log_steering_step(
+                controller, state, base_probs, probs, trace_scores,
+                trace_before, strength, eos_id, emotion_id, trace_failed_open,
+                sampling_kwargs,
+            )
+        except Exception:
+            # An optional observer (including a closed stderr) cannot fail TTS.
+            pass
+
     return idx_next, probs, state
+
+
+@torch.no_grad()
+def _log_steering_step(
+    controller, state, base, probs, scores, before, strength, eos_id,
+    emotion_id, failed_open=False, sampling_kwargs=None,
+):
+    """Observation only, after sampling. Last record retains finished row values."""
+    global _TRACE_SESSION
+    trace = getattr(state, "_steering_trace", None)
+    if trace is None or len(trace["row_ids"]) != len(base):
+        if _TRACE_SESSION is None:
+            _TRACE_SESSION = f"{os.getpid()}-{time.time_ns()}"
+        trace = {
+            "generation": f"{_TRACE_SESSION}:{next(_TRACE_GENERATIONS)}",
+            "step": 0,
+            "row_ids": list(range(len(base))),
+            "eligible": 0,
+            "disabled": 0,
+            "final": {},
+        }
+        state._steering_trace = trace
+    support = base > 0
+    if eos_id is not None and 0 <= eos_id < base.shape[1]:
+        support[:, eos_id] = False
+    eligible = support.sum(-1) > 1
+    if (
+        failed_open or scores is None or strength == 0
+        or controller.max_log_odds_shift == 0
+    ):
+        eligible &= False
+    else:
+        # tilt_probabilities fails open for the entire batch if any input is bad.
+        eligible &= torch.isfinite(base).all() & torch.isfinite(scores).all()
+    disabled = torch.zeros_like(eligible)
+    if controller.prefix_log_ratio_budget > 0:
+        disabled = eligible & (
+            (controller.prefix_log_ratio_budget - before.abs())
+            < 2 * controller.max_log_odds_shift
+        )
+    applied = support & (eligible & ~disabled).unsqueeze(1)
+    if scores is None:
+        delta = torch.zeros_like(base)
+    else:
+        delta = (scores * float(strength)).clamp(
+            -controller.max_log_odds_shift, controller.max_log_odds_shift,
+        )
+    # The effective probability ratio also captures normalization and fail-open.
+    # Compute observations in FP32: 1e-12 rounds to zero in FP16, and masked
+    # probabilities would otherwise produce log(0)-log(0) / 0*NaN in the logger.
+    measured_base = base.detach().float()
+    measured_probs = probs.detach().float()
+    effective = (
+        measured_probs.clamp_min(1e-12).log()
+        - measured_base.clamp_min(1e-12).log()
+    ).abs()
+    support_count = support.sum(-1)
+    delta_sum = torch.where(applied, delta.float().abs(), 0).sum(-1)
+    effective_sum = torch.where(support, effective, 0).sum(-1)
+    values = torch.stack([
+        delta_sum / support_count.clamp_min(1),
+        effective_sum / support_count.clamp_min(1),
+        (measured_base * effective).sum(-1),
+        0.5 * (measured_probs - measured_base).abs().sum(-1),
+        state.cumulative_log_ratio.float(),
+        support_count.float(),
+        eligible.float(),
+        disabled.float(),
+    ], dim=1).detach().cpu().tolist()
+    ids = torch.as_tensor(emotion_id).reshape(-1).detach().cpu().tolist()
+    if len(ids) == 1:
+        ids *= len(base)
+    rows = []
+    for row_id, class_id, value in zip(trace["row_ids"], ids, values):
+        rows.append({
+            "row_id": row_id,
+            "emotion_id": int(class_id),
+            "strength": float(strength),
+            "mean_abs_delta": value[0],
+            "mean_abs_log_probability_ratio": value[1],
+            "base_weighted_abs_log_probability_ratio": value[2],
+            "total_variation": value[3],
+            "cumulative_log_ratio": value[4],
+            "non_eos_support_count": int(value[5]),
+            "eligible": bool(value[6]),
+            "budget_disabled": bool(value[7]),
+        })
+    trace["step"] += 1
+    trace["eligible"] += sum(row["eligible"] for row in rows)
+    trace["disabled"] += sum(row["budget_disabled"] for row in rows)
+    trace["final"].update({
+        row["row_id"]: row["cumulative_log_ratio"] for row in rows
+    })
+    total_support = max(sum(row["non_eos_support_count"] for row in rows), 1)
+    sampling_kwargs = sampling_kwargs or {}
+    sampling = {
+        "top_k": sampling_kwargs.get("top_k"),
+        "top_p": sampling_kwargs.get("top_p"),
+        "temperature": sampling_kwargs.get("temperature", 1.0),
+        "repetition_penalty": sampling_kwargs.get("repetition_penalty", 1.0),
+    }
+    record = {
+        "event": "emotion_steering",
+        "schema_version": 2,
+        "generation": trace["generation"],
+        "identity": getattr(controller, "_steering_trace_identity", {}),
+        "step": trace["step"],
+        "steering_mode": controller.steering_mode,
+        "max_log_odds_shift": controller.max_log_odds_shift,
+        "prefix_log_ratio_budget": controller.prefix_log_ratio_budget,
+        "runtime": {
+            "probability_dtype": str(base.dtype),
+            "score_dtype": str(scores.dtype) if scores is not None else None,
+            "device_type": base.device.type,
+            "sampling": sampling,
+        },
+        "failed_open": failed_open,
+        "row_ids": trace["row_ids"],
+        "rows": rows,
+        "mean_abs_delta": sum(
+            row["mean_abs_delta"] * row["non_eos_support_count"] for row in rows
+        ) / total_support,
+        "mean_abs_log_probability_ratio": sum(
+            row["mean_abs_log_probability_ratio"] * row["non_eos_support_count"]
+            for row in rows
+        ) / total_support,
+        "cumulative_log_ratio": [row["cumulative_log_ratio"] for row in rows],
+        "final_cumulative_log_ratio_by_row": trace["final"],
+        "eligible_row_steps": trace["eligible"],
+        "budget_disabled_row_steps": trace["disabled"],
+        "budget_disabled_fraction": trace["disabled"] / max(trace["eligible"], 1),
+    }
+    print(json.dumps(record, allow_nan=False), file=sys.stderr, flush=True)
