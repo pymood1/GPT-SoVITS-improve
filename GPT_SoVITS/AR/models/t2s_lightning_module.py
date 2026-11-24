@@ -217,6 +217,13 @@ class Text2SemanticLightningModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+        # The decoder reports micro top-k over non-EOS semantic tokens.
+        # Weight epoch aggregation by those tokens, not by utterance count.
+        metric_kwargs = {}
+        if self.grokking_config["enabled"]:
+            metric_kwargs["batch_size"] = int(
+                batch["semantic_ids_len"].sum().item()
+            )
         self.log(
             f"top_{self.top_k}_acc",
             acc,
@@ -224,6 +231,7 @@ class Text2SemanticLightningModule(LightningModule):
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
+            **metric_kwargs,
         )
 
     def _step_accumulated_gradients(self, opt, scheduler):
@@ -267,13 +275,25 @@ class Text2SemanticLightningModule(LightningModule):
             batch["semantic_ids_len"],
             batch["bert_feature"],
         )
+        # forward_old sums CE over semantic tokens plus EOS, including
+        # padding EOS for batches of unequal lengths. The probe deliberately
+        # uses one utterance per batch, so there is exactly one real EOS.
+        lengths = batch["semantic_ids_len"]
+        if lengths.numel() != 1:
+            raise ValueError("S1 grokking validation requires batch_size=1")
+        semantic_count = int(lengths.sum().item())
+        if semantic_count <= 0:
+            raise ValueError("S1 grokking validation requires nonempty audio")
+        ce_count = semantic_count + 1
+        token_loss = loss / ce_count
         self.log(
             "val_total_loss",
-            loss,
+            token_loss,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
+            batch_size=ce_count,
         )
         self.log(
             f"val_top_{self.top_k}_acc",
@@ -282,8 +302,9 @@ class Text2SemanticLightningModule(LightningModule):
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
+            batch_size=semantic_count,
         )
-        return {"val_loss": loss.detach(), "val_acc": acc.detach()}
+        return {"val_loss": token_loss.detach(), "val_acc": acc}
 
     def on_validation_epoch_end(self):
         if not self.grokking_config["enabled"]:
