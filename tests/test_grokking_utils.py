@@ -97,5 +97,45 @@ class GrokkingUtilsTests(unittest.TestCase):
         self.assertTrue(result["delayed_improvement"])
 
 
+    def test_tracker_rejects_historical_best_before_fit(self):
+        tracker = GrokkingPhaseTracker(memorization_top3=0.9)
+        tracker.update(epoch=1, train_top3=0.5, val_loss=1.0, val_top3=0.5)
+        tracker.update(epoch=2, train_top3=0.95, val_loss=2.0, val_top3=0.2)
+        result = tracker.update(
+            epoch=5, train_top3=0.96, val_loss=2.1, val_top3=0.2
+        )
+        self.assertFalse(result["delayed_improvement"])
+        result = tracker.update(
+            epoch=6, train_top3=0.96, val_loss=1.5, val_top3=0.4
+        )
+        self.assertFalse(result["delayed_improvement"])
+
+    def test_tracker_requires_meaningful_delayed_joint_improvement(self):
+        tracker = GrokkingPhaseTracker(memorization_top3=0.9)
+        tracker.update(epoch=2, train_top3=0.95, val_loss=2.0, val_top3=0.2)
+        for epoch, train, loss, acc in (
+            (3, 0.96, 1.5, 0.4),  # too soon
+            (4, 0.96, 1.99, 0.4),  # tiny loss change
+            (5, 0.96, 1.5, 0.21),  # no accuracy gain
+            (6, 0.80, 1.5, 0.4),  # training fit lost
+            (7, 0.96, float("nan"), 0.4),
+        ):
+            with self.subTest(epoch=epoch):
+                self.assertFalse(tracker.update(
+                    epoch=epoch, train_top3=train, val_loss=loss, val_top3=acc
+                )["delayed_improvement"])
+        self.assertTrue(tracker.update(
+            epoch=8, train_top3=0.96, val_loss=1.5, val_top3=0.4
+        )["delayed_improvement"])
+
+    def test_tracker_does_not_establish_fit_on_missing_validation(self):
+        tracker = GrokkingPhaseTracker(memorization_top3=0.9)
+        result = tracker.update(
+            epoch=1, train_top3=0.95, val_loss=None, val_top3=None
+        )
+        self.assertIsNone(result["memorization_epoch"])
+        self.assertFalse(result["delayed_improvement"])
+
+
 if __name__ == "__main__":
     unittest.main()
