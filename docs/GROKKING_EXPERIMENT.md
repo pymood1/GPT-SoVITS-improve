@@ -138,3 +138,45 @@ The S1 grokking path intentionally does not use this fork's legacy
 WarmupCosineLRSchedule because that implementation hard-locks the learning rate
 to 0.002. The research path uses a standard PyTorch constant-LR scheduler so
 eta and weight decay are controlled variables.
+
+
+## S1 measurement hardening (2026-11-25)
+
+The S1 validation loader intentionally uses one utterance per batch.
+The decoder returns summed CE (including the real EOS) and a Python float
+top-3 accuracy (excluding EOS). The probe now records token-normalized CE
+and weights epoch aggregation by the corresponding token count; train
+top-3 is also token-weighted in probe mode. The baseline objective and
+non-probe logs remain unchanged. Validation explicitly rejects batch sizes
+other than one because the legacy CE includes padding EOS in larger batches.
+
+Do not compare the new val_loss numerically with logs from the original
+summed-per-utterance probe. Use a fresh experiment and generic upstream
+pretrained weights, not the user's previous fine-tuned checkpoints.
+
+The delayed_improvement flag is a conservative candidate screen:
+- a finite, valid held-out measurement at the first training fit point;
+- at least two epochs after that point, with training top-3 still above
+  the memorization threshold;
+- held-out CE at least 5% below the fit-point CE and top-3 at least
+  5 percentage points higher;
+- CE better than the pre-fit best (if one existed).
+
+These thresholds are heuristic, not a statistical test of grokking.
+Inspect the complete train/validation curves, repeat with other split
+seeds, and evaluate fresh-reference synthesis before drawing conclusions.
+
+### Initial Kaggle ablation
+
+Use the same generic pretrained S1, data split, seed, batch size,
+AdamW LR, and epoch budget for these arms:
+1. Grokfast OFF, weight decay 0.01.
+2. Grokfast ON, weight decay 0.01.
+3. Grokfast OFF, weight decay 0 (control).
+4. Optional Grokfast ON, weight decay 0.
+
+Run S1 only first (S2 fixed); disable DPO for this research comparison.
+Keep the existing normal-training defaults (including DPO) outside the
+probe. Use independent fresh experiment names/output paths to prevent
+automatic checkpoint reuse and JSONL mixing. A single successful
+held-out curve is not evidence of improved generated speech.
