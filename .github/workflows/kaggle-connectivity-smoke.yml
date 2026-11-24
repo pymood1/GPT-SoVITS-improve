@@ -1,0 +1,39 @@
+name: Kaggle CLI connectivity smoke
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/kaggle-connectivity-smoke.yml'
+permissions:
+  contents: read
+jobs:
+  connectivity:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/grokking-gpt-sovits-20261121'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public network reachability
+        run: |
+          python - <<'PY'
+          import socket
+          import urllib.request
+          for host in ("www.kaggle.com", "pypi.org"):
+              socket.getaddrinfo(host, 443)
+              print(f"{host}: DNS OK")
+          with urllib.request.urlopen("https://pypi.org/pypi/kaggle/json", timeout=15) as response:
+              print("PyPI HTTP:", response.status)
+          try:
+              with urllib.request.urlopen("https://www.kaggle.com/", timeout=15) as response:
+                  print("Kaggle HTTP:", response.status)
+          except urllib.error.HTTPError as exc:
+              print("Kaggle HTTP:", exc.code)
+              if exc.code >= 500:
+                  raise
+          PY
+      - name: Install CLI and inspect commands (no authentication or GPU submission)
+        run: |
+          python -m pip install --disable-pip-version-check kaggle
+          python -m pip show kaggle
+          kaggle kernels push --help
+          kaggle kernels status --help
+          kaggle kernels output --help
