@@ -243,12 +243,14 @@ def gradfilter_ema(
 
 
 class GrokkingPhaseTracker:
-    """Small state machine for delayed-generalization diagnostics."""
+    """Track conservative S1 delayed-generalization candidates, not proof."""
 
     def __init__(self, memorization_top3: float = 0.97):
         self.memorization_top3 = float(memorization_top3)
         self.memorization_epoch = None
         self.memorization_val_loss = None
+        self.memorization_val_top3 = None
+        self.pre_fit_best_loss = None
         self.best_val_loss = None
         self.best_val_epoch = None
         self.best_val_top3 = None
@@ -261,36 +263,47 @@ class GrokkingPhaseTracker:
         val_loss: float | None,
         val_top3: float | None,
     ) -> Dict[str, object]:
-        if (
-            self.memorization_epoch is None
-            and train_top3 is not None
-            and train_top3 >= self.memorization_top3
-        ):
-            self.memorization_epoch = int(epoch)
-            self.memorization_val_loss = val_loss
+        # Missing/non-finite measurements cannot establish a fit point.
+        valid = all(
+            value is not None and math.isfinite(float(value))
+            for value in (train_top3, val_loss, val_top3)
+        )
+        valid = valid and val_loss > 0 and 0 <= train_top3 <= 1 and 0 <= val_top3 <= 1
+        if valid and self.memorization_epoch is None:
+            if train_top3 >= self.memorization_top3:
+                self.memorization_epoch = int(epoch)
+                self.memorization_val_loss = float(val_loss)
+                self.memorization_val_top3 = float(val_top3)
+                self.pre_fit_best_loss = self.best_val_loss
 
-        if val_loss is not None and math.isfinite(float(val_loss)):
+        if val_loss is not None and math.isfinite(float(val_loss)) and val_loss > 0:
             if self.best_val_loss is None or float(val_loss) < self.best_val_loss:
                 self.best_val_loss = float(val_loss)
                 self.best_val_epoch = int(epoch)
                 self.best_val_top3 = val_top3
 
-        post_fit_age = None
-        if self.memorization_epoch is not None:
-            post_fit_age = int(epoch) - int(self.memorization_epoch)
-
-        delayed_improvement = False
-        if (
-            post_fit_age is not None
-            and post_fit_age > 0
-            and self.memorization_val_loss is not None
-            and self.best_val_loss is not None
-            and self.best_val_loss < self.memorization_val_loss
-        ):
-            delayed_improvement = True
+        post_fit_age = (
+            None if self.memorization_epoch is None
+            else int(epoch) - int(self.memorization_epoch)
+        )
+        # Do not compare the fit-point loss against a historical best
+        # from BEFORE memorization. Require a current, meaningful gain
+        # in both metrics while the training fit still holds.
+        delayed_improvement = bool(
+            valid
+            and post_fit_age is not None
+            and post_fit_age >= 2
+            and train_top3 >= self.memorization_top3
+            and val_loss <= 0.95 * self.memorization_val_loss
+            and val_top3 >= self.memorization_val_top3 + 0.05
+            and (self.pre_fit_best_loss is None or val_loss < self.pre_fit_best_loss)
+        )
 
         return {
             "memorization_epoch": self.memorization_epoch,
+            "memorization_val_loss": self.memorization_val_loss,
+            "memorization_val_top3": self.memorization_val_top3,
+            "pre_fit_best_loss": self.pre_fit_best_loss,
             "post_fit_age": post_fit_age,
             "best_val_loss": self.best_val_loss,
             "best_val_epoch": self.best_val_epoch,
