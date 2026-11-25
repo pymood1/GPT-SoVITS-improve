@@ -18,25 +18,36 @@ from tools.kaggle_grokking_runner import _bundle, _disk_state, DISK_RESERVE_BYTE
 
 
 def run_logged(args, log_path, env):
+    """Retain the full stage log and stream new diagnostics to the notebook."""
+    print(f"[stage] {log_path.stem} starting", flush=True)
     with log_path.open("w", encoding="utf-8", buffering=1) as log:
         proc = subprocess.Popen(args, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
         last = 0.0
         try:
-            while proc.poll() is None:
-                now = time.monotonic()
-                if now - last >= 30:
-                    print(f"[{log_path.stem}] running; {log_path.stat().st_size} log bytes", flush=True)
-                    last = now
-                time.sleep(2)
+            with log_path.open("r", encoding="utf-8", errors="replace") as reader:
+                while proc.poll() is None:
+                    chunk = reader.read()
+                    if chunk:
+                        print(chunk, end="" if chunk.endswith("\n") else "\n", flush=True)
+                    now = time.monotonic()
+                    if now - last >= 30:
+                        print(f"[{log_path.stem}] running; {log_path.stat().st_size} log bytes", flush=True)
+                        last = now
+                    time.sleep(2)
+                chunk = reader.read()
+                if chunk:
+                    print(chunk, end="" if chunk.endswith("\n") else "\n", flush=True)
         except BaseException:
             proc.terminate()
             raise
         code = proc.wait()
-    with log_path.open("rb") as log:
-        log.seek(max(0, log_path.stat().st_size - 16000))
-        print(log.read().decode("utf-8", errors="replace"), flush=True)
     if code:
-        raise RuntimeError(f"{log_path.stem} exited {code}; see diagnostic ZIP")
+        with log_path.open("rb") as log:
+            log.seek(max(0, log_path.stat().st_size - 16000))
+            tail = log.read().decode("utf-8", errors="replace")
+        print(f"\\n[FAILED STAGE] {log_path.stem}; exit={code}\\n{tail}", flush=True)
+        raise RuntimeError(f"{log_path.stem} exited {code}; full log: {log_path}")
+    print(f"[stage] {log_path.stem} completed", flush=True)
 
 
 def main():
@@ -86,7 +97,9 @@ def main():
                    output / "launcher.log", env)
         return 0
     except BaseException:
-        (output / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        error = traceback.format_exc()
+        (output / "error.txt").write_text(error, encoding="utf-8")
+        print(error, flush=True)
         raise
     finally:
         _bundle(output, archive)
