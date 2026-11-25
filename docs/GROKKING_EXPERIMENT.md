@@ -305,3 +305,40 @@ immutable preprocessed text/HuBERT/audio files into a separate writable
 experiment directory and exports its best compact weights only to tmp.
 The single current-run `/kaggle/working/grokking_result.zip` contains
 diagnostics and metrics, not raw audio or checkpoints.
+
+
+## 2026-11-25: First real V5dev CFM result
+
+Run `20261125T022754_360839Z` at commit `3468d1d`:
+both independent FP32 T4 arms completed all 12 epochs with exit 0,
+245 train / 27 held-out utterances, and all pretrained keys matched.
+Epoch-zero held-out CFM = 0.2561326109700733 in both arms.
+
+| Metric | Grokfast OFF | Grokfast ON |
+|---|---:|---:|
+| Final online train CFM | .0816180214 | .0808058541 |
+| Final held-out CFM | .0560889461 | .0559793851 |
+| Best held-out CFM | .0560889461 (12) | .0559755704 (11) |
+| Fit epoch (old online-loss heuristic) | 6 | 6 |
+| Delayed candidate | none | none |
+
+Grokfast ON had lower held-out CFM at every recorded epoch but the
+final relative advantage was only 0.195%. Both arms improved mostly
+at the first epoch. This is conventional gradual improvement, not
+evidence of grokking or verified synthesis quality. The online train
+loss varies with random draws, model train mode, and evolving weights;
+it is not directly comparable with the fixed eval-mode held-out loss.
+
+Next default profile `s2_v5dev_cfm_grokfast_long_v2` keeps the prior
+optimizer, split, rank, precision and batch size; increases the fixed
+budget to 30 epochs (90-minute cap remains). In research mode only,
+an additional fixed, unique train subset (up to the held-out count)
+is evaluated with the same eval-mode two-draw protocol. The plateau
+heuristic now uses this train-probe CFM and resets a stale fit point
+when a significant train-probe improvement occurs. Epoch-zero and
+each epoch include per-utterance mean CFM values for paired analysis,
+plus aggregate values and measured epoch duration. The old held-out
+draw protocol is preserved. Candidate flags between old and new
+protocols are not directly interchangeable. No audio synthesis quality
+claim is made. The runner displays active epoch, batch, stage, last
+validation loss and best-effort GPU utilization/memory via nvidia-smi.
