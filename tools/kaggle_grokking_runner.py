@@ -401,18 +401,21 @@ def run(ui):
     state = {"run_id": run_id, "status": "starting", "settings": settings, "arms": {}}
     _write_json(report / "summary.json", state)
     try:
+        state["failure_phase"] = "disk_preflight"
         _require_tmp_space(state)
         state["git_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         state["torch_version"] = torch.__version__
         state["gpus"] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
         if torch.cuda.device_count() != 2:
             raise RuntimeError("This paired experiment requires exactly 2 visible GPUs. Select GPU T4 x2.")
+        state["failure_phase"] = "pretrained_setup"
         source = os.environ.get("GPT_SOVITS_DEFAULT_TRAINING_LIST", "")
         wav_root = os.environ["GPT_SOVITS_DEFAULT_DATAS_DIR"]
         s1 = (ROOT / ui.pretrained_gpt_name["v5dev"]).resolve()
         s2 = (ROOT / ui.pretrained_sovits_name["v5dev"]).resolve()
         if not s1.is_file() or not s2.is_file():
             raise RuntimeError("Generic V5dev pretrained weights missing")
+        state["failure_phase"] = "preprocessing"
         state["status"] = "preprocessing"
         _write_json(report / "summary.json", state)
         gpu_string = "0-1"
@@ -431,6 +434,7 @@ def run(ui):
                 completed = status == ui.process_info(ui.process_name_1abc, "finish")
         if not completed:
             raise RuntimeError("Canonical a/b/c preprocessing did not finish")
+        state["failure_phase"] = "artifact_validation"
         preprocessed = (ROOT / ui.exp_root / exp).resolve()
         stages = ("gpt", "sovits") if profile == "quality_session" else ("gpt" if profile == "s1" else "sovits",)
         for stage in stages:
@@ -448,6 +452,7 @@ def run(ui):
             state["reference_counts"] = {}
             choose_reference(preprocessed, state["reference_counts"])
         if profile in ("quality_reuse", "quality_mix", "quality_soft", "quality_general"):
+            state["failure_phase"] = "candidate_mount"
             import re
             source_kernel = os.environ.get("GPT_SOVITS_RESEARCH_SOURCE_KERNEL", "")
             if not re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", source_kernel):
@@ -458,8 +463,10 @@ def run(ui):
             candidates = [p.parent for p in Path("/kaggle/input").rglob(required[0])
                           if slug in p.parts and p.parent.name == "private-candidates"
                           and all((p.parent / name).is_file() for name in required)]
+            state["candidate_mount_matches"] = len(candidates)
             if len(candidates) != 1:
                 raise FileNotFoundError("Unique four prior private candidates not mounted")
+            state["failure_phase"] = "candidate_link"
             for name in required:
                 (work / name).symlink_to(candidates[0] / name)
             for name in ("2-name2text.txt", "5-wav32k"):
@@ -595,8 +602,9 @@ def run(ui):
             time.sleep(20)
         if state["status"] != "time_limit":
             state["status"] = "completed" if all(p.poll() == 0 for p, *_ in processes.values()) else "training_failed"
-    except BaseException:
+    except BaseException as exc:
         state["status"] = "failed"
+        state["error_type"] = type(exc).__name__
         (report / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
         raise
     finally:
@@ -627,6 +635,8 @@ def run(ui):
                     shutil.copyfile(source, destination / name)
                     state["candidate_exports"] += 1
         state.pop("estimated_remaining_seconds", None)
+        if state["status"] == "completed":
+            state.pop("failure_phase", None)
         state["disk"] = _disk_state()
         _write_json(report / "summary.json", state)
         _bundle(bundle_root, archive)
