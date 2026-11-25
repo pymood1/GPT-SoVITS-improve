@@ -1,4 +1,4 @@
-"""Headless Kaggle S1 ablation. Invoked from webui.py before building Gradio.
+"""Headless Kaggle S1/S2 ablation. Invoked from webui.py before building Gradio.
 
 All data stays in Kaggle. Only configs, metrics and text logs are bundled.
 Each run gets its own training output and never resumes a checkpoint.
@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = {
+    "stage": "s1",
     "seed": 1234,
     "batch_size": 2,
     "experiment": "s1_weight_decay_long_v2",
@@ -40,13 +41,31 @@ SETTINGS = {
 }
 
 
+S2_SETTINGS = {
+    **SETTINGS,
+    "stage": "s2",
+    "experiment": "s2_v5dev_cfm_grokfast_v1",
+    "batch_size": 1,
+    "base_epochs": 12,
+    "fixed_epochs": 12,
+    "post_fit_epochs": 8,
+    "lora_rank": 16,
+    "max_validation_batches": 32,
+    "arms": [
+        {"id": "A_cfm_off", "grokfast": False, "weight_decay": 0.01},
+        {"id": "B_cfm_on", "grokfast": True, "weight_decay": 0.01},
+    ],
+}
+DEFAULT_PROFILE = "s2"
+
+
 def _write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def _read_metrics(path):
     rows = []
-    for file in sorted(path.glob("grokking_s1_metrics_*.jsonl")):
+    for file in sorted(path.glob("grokking_*metrics*.jsonl")):
         for line in file.read_text(encoding="utf-8").splitlines():
             try:
                 row = json.loads(line)
@@ -59,17 +78,18 @@ def _read_metrics(path):
 
 
 def _summarize(rows):
-    valid = [r for r in rows if isinstance(r.get("val_loss"), (int, float))]
+    metric = "val_cfm" if rows and "val_cfm" in rows[0] else "val_loss"
+    valid = [r for r in rows if isinstance(r.get(metric), (int, float))]
     return {
         "epochs_recorded": len(rows),
         "last": rows[-1] if rows else None,
-        "best": min(valid, key=lambda r: r["val_loss"]) if valid else None,
-        "candidate_epochs": [r["epoch"] for r in rows if r.get("delayed_improvement")],
+        "best": min(valid, key=lambda r: r[metric]) if valid else None,
+        "candidate_epochs": [r["epoch"] for r in rows if r.get("delayed_improvement") or r.get("delayed_improvement_candidate")],
     }
 
 
-def _collect_baseline(out, arm_report, arm_state):
-    path = out / "grokking_s1_baseline.json"
+def _collect_baseline(out, arm_report, arm_state, stage="s1"):
+    path = out / f"grokking_{stage}_baseline.json"
     if path.is_file():
         try:
             baseline = json.loads(path.read_text(encoding="utf-8"))
@@ -138,7 +158,7 @@ def _require_tmp_space(state):
         raise RuntimeError("Kaggle tmp free space below 2 GiB reserve; stopping safely")
 
 
-def _arm_env(arm, gpu, status_path):
+def _arm_env(arm, gpu, status_path, settings=SETTINGS):
     env = os.environ.copy()
     # Remove inherited experiment overrides; the manifest is the authority.
     for key in list(env):
@@ -148,18 +168,22 @@ def _arm_env(arm, gpu, status_path):
         "CUDA_VISIBLE_DEVICES": str(gpu),
         "_CUDA_VISIBLE_DEVICES": str(gpu),
         "GPT_SOVITS_GROKKING": "1",
-        "GPT_SOVITS_GROKKING_S1": "1",
-        "GPT_SOVITS_GROKKING_S2": "0",
+        "GPT_SOVITS_GROKKING_S1": "1" if settings["stage"] == "s1" else "0",
+        "GPT_SOVITS_GROKKING_S2": "1" if settings["stage"] == "s2" else "0",
         "GPT_SOVITS_GROKFAST": "1" if arm["grokfast"] else "0",
-        "GPT_SOVITS_GROKFAST_ALPHA": str(SETTINGS["grokfast_alpha"]),
-        "GPT_SOVITS_GROKFAST_LAMBDA": str(SETTINGS["grokfast_lambda"]),
-        "GPT_SOVITS_GROKKING_SEED": str(SETTINGS["seed"]),
-        "GPT_SOVITS_GROKKING_VALIDATION_FRACTION": str(SETTINGS["validation_fraction"]),
-        "GPT_SOVITS_GROKKING_MIN_VALIDATION_SAMPLES": str(SETTINGS["min_validation_samples"]),
-        "GPT_SOVITS_GROKKING_S1_LR": str(SETTINGS["learning_rate"]),
-        "GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY": str(arm.get("weight_decay", SETTINGS["weight_decay"])),
-        "GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS": str(SETTINGS["fixed_epochs"]),
-        "GPT_SOVITS_GROKKING_S1_POST_FIT_EPOCHS": str(SETTINGS["post_fit_epochs"]),
+        "GPT_SOVITS_GROKFAST_ALPHA": str(settings["grokfast_alpha"]),
+        "GPT_SOVITS_GROKFAST_LAMBDA": str(settings["grokfast_lambda"]),
+        "GPT_SOVITS_GROKKING_SEED": str(settings["seed"]),
+        "GPT_SOVITS_GROKKING_VALIDATION_FRACTION": str(settings["validation_fraction"]),
+        "GPT_SOVITS_GROKKING_MIN_VALIDATION_SAMPLES": str(settings["min_validation_samples"]),
+        "GPT_SOVITS_GROKKING_S1_LR": str(settings["learning_rate"]),
+        "GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY": str(arm.get("weight_decay", settings["weight_decay"])),
+        "GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS": str(settings["fixed_epochs"]),
+        "GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS": str(settings["fixed_epochs"]),
+        "GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY": str(arm.get("weight_decay", settings["weight_decay"])),
+        "GPT_SOVITS_GROKKING_S2_POST_FIT_EPOCHS": str(settings["post_fit_epochs"]),
+        "GPT_SOVITS_GROKKING_MAX_VALIDATION_BATCHES": str(settings.get("max_validation_batches", 32)),
+        "GPT_SOVITS_GROKKING_S1_POST_FIT_EPOCHS": str(settings["post_fit_epochs"]),
         "GPT_SOVITS_GROKKING_S1_KEEP_DPO": "0",
         "GPT_SOVITS_GROKKING_S1_OPTIMIZER": "adamw",
         "GPT_SOVITS_LOW_DISK_SAVE": "1",
@@ -194,9 +218,36 @@ def _config(preprocessed, output, weights, arm, pretrained, text_features):
     return data
 
 
+def _s2_config(preprocessed, output, weights, arm, pretrained, gpu, settings=S2_SETTINGS):
+    data = json.loads((ROOT / "GPT_SoVITS/configs/s2.json").read_text(encoding="utf-8"))
+    # Separate writable experiment paths; share only immutable preprocessed inputs.
+    for name in ("2-name2text.txt", "4-cnhubert", "5-wav32k"):
+        source = preprocessed / name
+        if not source.exists():
+            raise RuntimeError(f"Missing S2 input: {source}")
+        (output / name).symlink_to(source, target_is_directory=source.is_dir())
+    data["train"].update({
+        "seed": settings["seed"], "epochs": settings["base_epochs"],
+        "batch_size": settings["batch_size"], "learning_rate": settings["learning_rate"],
+        "fp16_run": False, "grad_ckpt": True, "lora_rank": settings["lora_rank"],
+        "pretrained_s2G": str(pretrained), "pretrained_s2D": "",
+        "gpu_numbers": str(gpu), "if_save_latest": True,
+        "if_save_every_weights": False, "save_every_epoch": 100000,
+    })
+    data["model"]["version"] = "v5dev"
+    data["data"]["exp_dir"] = str(output)
+    data.update({"s2_ckpt_dir": str(output), "save_weight_dir": str(weights),
+                 "name": arm["id"], "version": "v5dev"})
+    return data
+
+
 def run(ui):
     import torch
     import yaml
+    profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE", DEFAULT_PROFILE)
+    if profile not in ("s1", "s2"):
+        raise ValueError(f"Unknown research profile: {profile}")
+    settings = SETTINGS if profile == "s1" else S2_SETTINGS
     run_id = os.environ.get("GPT_SOVITS_RESEARCH_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     work = Path("/kaggle/tmp/grokking_runs") / run_id
     work.mkdir(parents=True, exist_ok=False)
@@ -207,7 +258,7 @@ def run(ui):
     archive = Path("/kaggle/working/grokking_result.zip")
     exp = "grok_preprocess_" + run_id
     processes = {}
-    state = {"run_id": run_id, "status": "starting", "settings": SETTINGS, "arms": {}}
+    state = {"run_id": run_id, "status": "starting", "settings": settings, "arms": {}}
     _write_json(report / "summary.json", state)
     try:
         _require_tmp_space(state)
@@ -231,7 +282,7 @@ def run(ui):
             # Emotion labeling/Controller are not involved in this controlled S1 probe.
             for result in ui.open1abc(
                 "v5dev", source, wav_root, exp, gpu_string, gpu_string, gpu_string,
-                ui.default_bert_path, True, SETTINGS["bert_model"],
+                ui.default_bert_path, True, settings["bert_model"],
                 ui.default_cnhubert_path, str(s2),
             ):
                 status = str(result[0]) if result else ""
@@ -241,7 +292,7 @@ def run(ui):
         if not completed:
             raise RuntimeError("Canonical a/b/c preprocessing did not finish")
         preprocessed = (ROOT / ui.exp_root / exp).resolve()
-        artifact_error = ui._training_artifact_error(preprocessed, "gpt", "v5dev")
+        artifact_error = ui._training_artifact_error(preprocessed, "gpt" if profile == "s1" else "sovits", "v5dev")
         if artifact_error:
             raise RuntimeError(artifact_error)
         feature_path = preprocessed / "text_feature_config.json"
@@ -250,7 +301,7 @@ def run(ui):
             raise RuntimeError("BERT was requested but feature marker does not confirm it")
         _require_tmp_space(state)
         state["status"] = "training"
-        for gpu, arm in enumerate(SETTINGS["arms"]):
+        for gpu, arm in enumerate(settings["arms"]):
             arm_id = arm["id"]
             out = work / arm_id
             out.mkdir()
@@ -258,14 +309,21 @@ def run(ui):
             weight_dir.mkdir()
             arm_report = report / arm_id
             arm_report.mkdir()
-            cfg = _config(preprocessed, out, weight_dir, arm, s1, features)
-            cfg_path = arm_report / "config.yaml"
-            cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+            if profile == "s1":
+                cfg = _config(preprocessed, out, weight_dir, arm, s1, features)
+                cfg_path = arm_report / "config.yaml"
+                cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+                cmd = [sys.executable, "-u", "GPT_SoVITS/s1_train.py", "--config_file", str(cfg_path)]
+            else:
+                cfg = _s2_config(preprocessed, out, weight_dir, arm, s2, gpu, settings)
+                cfg_path = arm_report / "config.json"
+                _write_json(cfg_path, cfg)
+                cmd = [sys.executable, "-u", "GPT_SoVITS/s2_train_v3_lora.py", "--config", str(cfg_path)]
             log = (arm_report / "train.log").open("w", encoding="utf-8", buffering=1)
             try:
                 process = subprocess.Popen(
-                    [sys.executable, "-u", "GPT_SoVITS/s1_train.py", "--config_file", str(cfg_path)],
-                    cwd=ROOT, env=_arm_env(arm, gpu, arm_report / "status.json"),
+                    cmd,
+                    cwd=ROOT, env=_arm_env(arm, gpu, arm_report / "status.json", settings),
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                 )
             except BaseException:
@@ -273,16 +331,16 @@ def run(ui):
                 raise
             processes[arm_id] = (process, log, out, arm_report)
             state["arms"][arm_id] = {"gpu": gpu, "status": "running"}
-        deadline = time.monotonic() + SETTINGS["max_training_seconds"]
+        deadline = time.monotonic() + settings["max_training_seconds"]
         while any(p.poll() is None for p, *_ in processes.values()):
             _require_tmp_space(state)
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
-                _collect_baseline(out, arm_report, state["arms"][arm_id])
+                _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
                 state["arms"][arm_id]["returncode"] = process.poll()
                 print(arm_id, "epoch", len(rows), "exit", process.poll(), flush=True)
-                for path in out.glob("grokking_s1_metrics_*.jsonl"):
+                for path in out.glob("grokking_*metrics*.jsonl"):
                     shutil.copyfile(path, arm_report / path.name)
             _write_json(report / "summary.json", state)
             _bundle(bundle_root, archive)
@@ -300,11 +358,11 @@ def run(ui):
         for arm_id, (process, log, out, arm_report) in processes.items():
             _stop(process)
             log.close()
-            for path in out.glob("grokking_s1_metrics_*.jsonl"):
+            for path in out.glob("grokking_*metrics*.jsonl"):
                 shutil.copyfile(path, arm_report / path.name)
             rows = _read_metrics(out)
             state["arms"][arm_id].update(_summarize(rows))
-            _collect_baseline(out, arm_report, state["arms"][arm_id])
+            _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
             state["arms"][arm_id]["returncode"] = process.returncode
             state["arms"][arm_id]["status"] = "completed" if process.returncode == 0 and rows else "incomplete"
         if state["status"] == "completed" and not all(a["status"] == "completed" for a in state["arms"].values()):
