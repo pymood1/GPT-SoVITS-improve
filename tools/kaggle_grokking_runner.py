@@ -58,6 +58,19 @@ S2_SETTINGS = {
         {"id": "B_cfm_on", "grokfast": True, "weight_decay": 0.01},
     ],
 }
+# Quality-first controlled comparison: same split, LoRA rank and inference;
+# no experimental gradient amplification. Vary only the acoustic learning rate.
+QUALITY_SETTINGS = {
+    **S2_SETTINGS,
+    "experiment": "v5dev_quality_lr_v1",
+    "base_epochs": 8,
+    "fixed_epochs": 8,
+    "arms": [
+        {"id": "A_lr100", "grokfast": False, "weight_decay": 0.01, "learning_rate": 1e-4},
+        {"id": "B_lr030", "grokfast": False, "weight_decay": 0.01, "learning_rate": 3e-5},
+    ],
+}
+PROFILES = {"s1": SETTINGS, "s2": S2_SETTINGS, "s2_quality": QUALITY_SETTINGS}
 DEFAULT_PROFILE = "s2"
 
 
@@ -302,7 +315,7 @@ def _s2_config(preprocessed, output, weights, arm, pretrained, gpu, settings=S2_
         (output / name).symlink_to(source, target_is_directory=source.is_dir())
     data["train"].update({
         "seed": settings["seed"], "epochs": settings["base_epochs"],
-        "batch_size": settings["batch_size"], "learning_rate": settings["learning_rate"],
+        "batch_size": settings["batch_size"], "learning_rate": arm.get("learning_rate", settings["learning_rate"]),
         "fp16_run": False, "grad_ckpt": True, "lora_rank": settings["lora_rank"],
         "pretrained_s2G": str(pretrained), "pretrained_s2D": "",
         "gpu_numbers": str(gpu), "if_save_latest": True,
@@ -319,9 +332,9 @@ def run(ui):
     import torch
     import yaml
     profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE", DEFAULT_PROFILE)
-    if profile not in ("s1", "s2"):
+    if profile not in PROFILES:
         raise ValueError(f"Unknown research profile: {profile}")
-    settings = dict(SETTINGS if profile == "s1" else S2_SETTINGS)
+    settings = dict(PROFILES[profile])
     # Explicit remote smoke overrides; ordinary notebook profiles are unchanged.
     epochs = int(os.environ.get("GPT_SOVITS_RESEARCH_EPOCHS", settings["fixed_epochs"]))
     seconds = int(os.environ.get("GPT_SOVITS_RESEARCH_MAX_SECONDS", settings["max_training_seconds"]))
@@ -425,7 +438,7 @@ def run(ui):
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
-                _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
+                _collect_baseline(out, arm_report, state["arms"][arm_id], settings["stage"])
                 code = process.poll()
                 state["arms"][arm_id]["returncode"] = code
                 observation = observations[arm_id]
@@ -480,7 +493,7 @@ def run(ui):
                 shutil.copyfile(path, arm_report / path.name)
             rows = _read_metrics(out)
             state["arms"][arm_id].update(_summarize(rows))
-            _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
+            _collect_baseline(out, arm_report, state["arms"][arm_id], settings["stage"])
             state["arms"][arm_id]["returncode"] = process.returncode
             state["arms"][arm_id].pop("estimated_remaining_seconds", None)
             state["arms"][arm_id]["status"] = "completed" if process.returncode == 0 and rows else "incomplete"
