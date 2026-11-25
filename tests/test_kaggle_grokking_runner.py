@@ -31,6 +31,23 @@ class KaggleRunnerTests(unittest.TestCase):
         self.assertEqual([arm["id"] for _, arm in _launchable_jobs(remaining, {0})], ["S2_rank32"])
         self.assertEqual(len({arm["id"] for _, arm in pending}), 4)
 
+    def test_work_stealing_prefers_lane_and_uses_idle_device(self):
+        from tools.kaggle_grokking_runner import _dispatch_jobs, SESSION_SETTINGS
+        pending = [(arm["gpu"], arm) for arm in SESSION_SETTINGS["arms"]]
+        first = _dispatch_jobs(pending, set(), work_stealing=True)
+        self.assertEqual([(job[1]["id"], gpu) for job, gpu in first],
+                         [("S1_v_o", 0), ("S2_rank16", 1)])
+        remaining = [job for job in pending if job not in [j for j, _ in first]]
+        self.assertEqual(_dispatch_jobs(remaining, {0, 1}, work_stealing=True), [])
+        rank32 = remaining[-1:]
+        self.assertEqual(_dispatch_jobs(rank32, {1}, work_stealing=True),
+                         [(rank32[0], 0)])
+        self.assertEqual(_dispatch_jobs(rank32, {1}, work_stealing=False), [])
+        same_lane = [(1, {"id": "a"}), (1, {"id": "b"}), (1, {"id": "c"})]
+        scheduled = _dispatch_jobs(same_lane, set(), work_stealing=True)
+        self.assertEqual(scheduled, [(same_lane[0], 1), (same_lane[1], 0)])
+        self.assertEqual(len({gpu for _, gpu in scheduled}), len(scheduled))
+
     def test_arm_environment_isolated(self):
         with patch.dict(os.environ, {"GPT_SOVITS_GROKFAST": "1", "GPT_SOVITS_GROKKING_S1_LR": "9"}):
             a = _arm_env({"grokfast": False}, 0, Path("a.json"))
