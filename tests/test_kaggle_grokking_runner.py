@@ -49,6 +49,45 @@ class KaggleRunnerTests(unittest.TestCase):
             with zipfile.ZipFile(target) as archive:
                 self.assertEqual(set(archive.namelist()), {"summary.json", "train.log"})
 
+    def test_bundle_replaces_snapshot_and_truncates_only_large_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "report"
+            report.mkdir()
+            target = root / "export" / "result.zip"
+            (report / "train.log").write_bytes(b"AAAABBBBCCCCDDDD")
+            (report / "metrics.jsonl").write_bytes(b"01234567890123456789")
+            with patch("tools.kaggle_grokking_runner.MAX_ARCHIVE_LOG_BYTES", 8):
+                _bundle(report, target)
+            with zipfile.ZipFile(target) as archive:
+                log = archive.read("train.log")
+                self.assertTrue(log.startswith(b"AAAA"))
+                self.assertTrue(log.endswith(b"DDDD"))
+                self.assertIn(b"archive truncated", log)
+                self.assertEqual(archive.read("metrics.jsonl"), b"01234567890123456789")
+            self.assertEqual((report / "train.log").read_bytes(), b"AAAABBBBCCCCDDDD")
+            (report / "train.log").write_text("final")
+            _bundle(report, target)
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(archive.read("train.log"), b"final")
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_failed_snapshot_keeps_previous_zip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "report"
+            report.mkdir()
+            (report / "summary.json").write_text("{}")
+            target = root / "result.zip"
+            _bundle(report, target)
+            previous = target.read_bytes()
+            with patch("tools.kaggle_grokking_runner.zipfile.ZipFile.write", side_effect=OSError("disk")):
+                with self.assertRaises(OSError):
+                    _bundle(report, target)
+            self.assertEqual(target.read_bytes(), previous)
+            self.assertFalse(target.with_name("." + target.name + ".part").exists())
+
+
 
 if __name__ == "__main__":
     unittest.main()
