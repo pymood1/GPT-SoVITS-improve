@@ -344,6 +344,17 @@ def _s2_config(preprocessed, output, weights, arm, pretrained, gpu, settings=S2_
     return data
 
 
+def _launchable_jobs(pending, busy):
+    """Return at most one queued job per currently idle GPU, in lane order."""
+    reserved = set(busy)
+    ready = []
+    for gpu, arm in pending:
+        if gpu not in reserved:
+            ready.append((gpu, arm))
+            reserved.add(gpu)
+    return ready
+
+
 def run(ui):
     import torch
     import yaml
@@ -488,11 +499,10 @@ def run(ui):
             # Each idle GPU takes its next predetermined job; completed jobs remain
             # in the report. A new job cannot overwrite another job's output.
             busy = {state["arms"][key]["gpu"] for key, (p, *_) in processes.items() if p.poll() is None}
-            for gpu, arm in list(pending):
-                if gpu not in busy and time.monotonic() < deadline:
+            for gpu, arm in _launchable_jobs(pending, busy):
+                if time.monotonic() < deadline:
                     launch(gpu, arm)
                     pending.remove((gpu, arm))
-                    busy.add(gpu)
             state["pending_arms"] = len(pending)
             _require_tmp_space(state)
             gpu_status = _gpu_status()
