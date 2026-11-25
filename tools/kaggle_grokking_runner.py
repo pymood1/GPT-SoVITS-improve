@@ -356,6 +356,21 @@ def _launchable_jobs(pending, busy):
     return ready
 
 
+def _dispatch_jobs(pending, busy, *, work_stealing=False):
+    """Prefer the declared lane, then use any idle compatible T4.
+
+    Return (original queue entry, actual device). Never assign two jobs to
+    the same device, and remove the original entry after successful launch.
+    """
+    ready = _launchable_jobs(pending, busy)
+    assigned = [(job, job[0]) for job in ready]
+    if work_stealing:
+        idle = sorted({0, 1} - set(busy) - {gpu for _, gpu in assigned})
+        waiting = [job for job in pending if job not in ready]
+        assigned.extend(zip(waiting, idle))
+    return assigned
+
+
 def run(ui):
     import torch
     import yaml
@@ -516,13 +531,13 @@ def run(ui):
 
         deadline = time.monotonic() + settings["max_training_seconds"]
         while pending or any(p.poll() is None for p, *_ in processes.values()):
-            # Each idle GPU takes its next predetermined job; completed jobs remain
+            # Each idle GPU prefers its lane, then may take another lane's job; completed jobs remain
             # in the report. A new job cannot overwrite another job's output.
             busy = {state["arms"][key]["gpu"] for key, (p, *_) in processes.items() if p.poll() is None}
-            for gpu, arm in _launchable_jobs(pending, busy):
+            for entry, gpu in _dispatch_jobs(pending, busy, work_stealing=profile == "quality_session"):
                 if time.monotonic() < deadline:
-                    launch(gpu, arm)
-                    pending.remove((gpu, arm))
+                    launch(gpu, entry[1])
+                    pending.remove(entry)
             state["pending_arms"] = len(pending)
             _require_tmp_space(state)
             gpu_status = _gpu_status()
