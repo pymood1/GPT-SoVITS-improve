@@ -6,6 +6,7 @@ import sys
 import copy
 import json
 import math
+import time
 from pathlib import Path
 
 import utils
@@ -418,6 +419,7 @@ def _run(rank, n_gpus, hps, use_ddp):
     if grokking["enabled"] and use_ddp:
         dist.barrier()
     for epoch in range(epoch_str, hps.train.epochs + 1):
+        epoch_start = time.monotonic()
         train_cfm = train_and_evaluate(
             rank, epoch, hps, [net_g, net_d], [optim_g, optim_d],
             [scheduler_g, scheduler_d], scaler, [train_loader, None],
@@ -430,6 +432,8 @@ def _run(rank, n_gpus, hps, use_ddp):
             stop = False
             if rank == 0:
                 model = net_g.module if hasattr(net_g, "module") else net_g
+                publish_activity(task="SoVITS LoRA 학습", stage="validation", epoch=epoch,
+                                 total_epochs=int(hps.train.epochs))
                 val_samples = []
                 train_samples = []
                 val_cfm = _validate_cfm(model, eval_loader, rank, grokking, val_samples)
@@ -459,6 +463,7 @@ def _run(rank, n_gpus, hps, use_ddp):
                     "val_sample_losses": val_samples,
                     "train_eval_sample_losses": train_samples,
                     "fit_metric": "train_eval_cfm",
+                    "epoch_seconds": time.monotonic() - epoch_start,
                     "best_val_cfm": best_val, "fit_epoch": fit_epoch,
                     "fit_val_cfm": fit_val, "post_fit_age": age,
                     "delayed_improvement_candidate": candidate,
