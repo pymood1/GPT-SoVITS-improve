@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -78,12 +79,47 @@ def _stop(process):
             process.wait()
 
 
+MAX_ARCHIVE_LOG_BYTES = 8 * 1024 * 1024
+DISK_RESERVE_BYTES = 2 * 1024**3
+
+
 def _bundle(report, archive):
+    """Keep complete logs in tmp, publish bounded diagnostics atomically."""
     allowed = {".json", ".jsonl", ".yaml", ".log", ".txt"}
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for path in sorted(report.rglob("*")):
-            if path.is_file() and path.suffix in allowed:
-                z.write(path, path.relative_to(report))
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    staging = archive.with_name("." + archive.name + ".part")
+    try:
+        with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            for path in sorted(report.rglob("*")):
+                if not path.is_file() or path.is_symlink() or path.suffix not in allowed:
+                    continue
+                name = path.relative_to(report).as_posix()
+                size = path.stat().st_size
+                if path.suffix in {".log", ".txt"} and size > MAX_ARCHIVE_LOG_BYTES:
+                    half = MAX_ARCHIVE_LOG_BYTES // 2
+                    with path.open("rb") as handle:
+                        head = handle.read(half)
+                        handle.seek(max(half, size - half))
+                        tail = handle.read(half)
+                    notice = f"\n[archive truncated: original {size} bytes; full log in tmp]\n".encode()
+                    z.writestr(name, head + notice + tail)
+                else:
+                    z.write(path, name)
+        os.replace(staging, archive)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _disk_state():
+    return {name: {"free_bytes": shutil.disk_usage(path).free,
+                   "total_bytes": shutil.disk_usage(path).total}
+            for name, path in (("tmp", "/kaggle/tmp"), ("working", "/kaggle/working"))}
+
+
+def _require_tmp_space(state):
+    state["disk"] = _disk_state()
+    if state["disk"]["tmp"]["free_bytes"] < DISK_RESERVE_BYTES:
+        raise RuntimeError("Kaggle tmp free space below 2 GiB reserve; stopping safely")
 
 
 def _arm_env(arm, gpu, status_path):
@@ -144,18 +180,18 @@ def _config(preprocessed, output, weights, arm, pretrained, text_features):
 def run(ui):
     import torch
     import yaml
-    import shutil
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-    report = Path("/kaggle/working/grokking_reports") / run_id
-    report.mkdir(parents=True, exist_ok=False)
     work = Path("/kaggle/tmp/grokking_runs") / run_id
     work.mkdir(parents=True, exist_ok=False)
+    report = work / "report"
+    report.mkdir()
     archive = Path("/kaggle/working") / ("grokking_" + run_id + ".zip")
     exp = "grok_preprocess_" + run_id
     processes = {}
     state = {"run_id": run_id, "status": "starting", "settings": SETTINGS, "arms": {}}
     _write_json(report / "summary.json", state)
     try:
+        _require_tmp_space(state)
         state["git_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         state["torch_version"] = torch.__version__
         state["gpus"] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
@@ -193,6 +229,7 @@ def run(ui):
         features = json.loads(feature_path.read_text(encoding="utf-8"))
         if not features.get("multilingual_bert"):
             raise RuntimeError("BERT was requested but feature marker does not confirm it")
+        _require_tmp_space(state)
         state["status"] = "training"
         for gpu, arm in enumerate(SETTINGS["arms"]):
             arm_id = arm["id"]
@@ -219,6 +256,7 @@ def run(ui):
             state["arms"][arm_id] = {"gpu": gpu, "status": "running"}
         deadline = time.monotonic() + SETTINGS["max_training_seconds"]
         while any(p.poll() is None for p, *_ in processes.values()):
+            _require_tmp_space(state)
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
@@ -250,6 +288,7 @@ def run(ui):
             state["arms"][arm_id]["status"] = "completed" if process.returncode == 0 and rows else "incomplete"
         if state["status"] == "completed" and not all(a["status"] == "completed" for a in state["arms"].values()):
             state["status"] = "missing_metrics"
+        state["disk"] = _disk_state()
         _write_json(report / "summary.json", state)
         _bundle(report, archive)
         print("RESULT ZIP:", archive, flush=True)
