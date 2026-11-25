@@ -20,7 +20,7 @@ class ReferenceUnavailable(RuntimeError):
     pass
 
 
-def choose_references(folder, diagnostics=None, count=1):
+def choose_references(folder, diagnostics=None, count=1, exclude=()):
     """Prefer Korean; permit an accurately transcribed other-language prompt."""
     import wave
     diagnostics = diagnostics if diagnostics is not None else {}
@@ -60,7 +60,9 @@ def choose_references(folder, diagnostics=None, count=1):
     unique = {}
     for candidate in candidates:
         unique.setdefault(candidate[2], candidate)
-    candidates = list(unique.values())
+    candidates = [c for c in unique.values() if c[3] not in exclude]
+    if not candidates:
+        raise ReferenceUnavailable("No unused eligible reference files")
     # Distinct prompt files, deterministic selection across short/mid/long lengths.
     chosen = [candidates.pop(0)]
     for duration in (3.8, 8.0):
@@ -181,7 +183,11 @@ SOFT_LABELS = (("soft000", "soft005", "soft010", "soft025"),
                ("soft050", "soft100", "mix065", "mix085", "soft000b"))
 
 
-def merge_mix_reports(reports, labels=MIX_LABELS):
+GENERAL_LABELS = (("gen_base", "gen_hard", "gen_soft010"),
+                  ("gen_hardb", "gen_soft010b", "gen_soft025"))
+
+
+def merge_mix_reports(reports, labels=MIX_LABELS, sample_count=15):
     """Require complete, disjoint matched evaluations before accepting a sweep."""
     result = {"status": "failed", "models": {}, "evaluation": {}}
     if len(reports) != 2:
@@ -195,8 +201,8 @@ def merge_mix_reports(reports, labels=MIX_LABELS):
         for label in expected:
             model = models.get(label, {})
             samples = model.get("samples", [])
-            complete = complete and model.get("status") == "completed" and len(samples) == 15
-            complete = complete and {s.get("index") for s in samples} == set(range(1, 16))
+            complete = complete and model.get("status") == "completed" and len(samples) == sample_count
+            complete = complete and {s.get("index") for s in samples} == set(range(1, sample_count + 1))
             complete = complete and all("speaker_cosine" in s and "cer" in s for s in samples)
     for key in ("asr_status", "speaker_status"):
         result["evaluation"][key] = "completed" if all(r.get("evaluation", {}).get(key) == "completed" for r in reports) else "failed"
@@ -245,13 +251,15 @@ def run_mix_workers(work, output):
             if p.returncode != 0:
                 report["status"] = "failed"
             reports.append(report)
-        result = merge_mix_reports(reports, SOFT_LABELS if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_soft" else MIX_LABELS)
+        profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
+        labels = GENERAL_LABELS if profile == "quality_general" else SOFT_LABELS if profile == "quality_soft" else MIX_LABELS
+        result = merge_mix_reports(reports, labels, 18 if profile == "quality_general" else 15)
         (output / "listening-metrics.json").write_text(json.dumps(result, indent=2, allow_nan=False))
     return 0 if result["status"] == "completed" else 1
 
 
 def main():
-    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") in ("quality_mix", "quality_soft") and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
+    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") in ("quality_mix", "quality_soft", "quality_general") and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
         return run_mix_workers(*map(Path, sys.argv[1:3]))
     import numpy as np
     import torch
@@ -266,10 +274,22 @@ def main():
         base_s2 = ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
         models = {"base": (base_s1, base_s2)}
         profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
-        reuse = profile in ("quality_reuse", "quality_mix", "quality_soft")
+        reuse = profile in ("quality_reuse", "quality_mix", "quality_soft", "quality_general")
         mix_worker = os.environ.get("GPT_SOVITS_MIX_WORKER", "")
         inference_options = {}
-        if profile == "quality_soft":
+        if profile == "quality_general":
+            from tools.quality_model_mix import export_scaled_v5_checkpoint
+            if mix_worker not in ("0", "1"):
+                raise ValueError("Invalid generalization worker")
+            weight = work / ("general-anchor-" + mix_worker + ".pth")
+            export_scaled_v5_checkpoint(work / "S2_rank32_grok_cfm_best.pth", weight, .75)
+            models = {}
+            for label in GENERAL_LABELS[int(mix_worker)]:
+                models[label] = (base_s1, base_s2 if label == "gen_base" else weight)
+                inference_options[label] = {"soft_semantic_mix": .25 if label == "gen_soft025" else .10 if "soft010" in label else 0.}
+            reference_folder = work
+            torch.set_num_threads(2)
+        elif profile == "quality_soft":
             from tools.quality_model_mix import export_scaled_v5_checkpoint
             s32 = work / "S2_rank32_grok_cfm_best.pth"
             if mix_worker not in ("0", "1"):
@@ -341,6 +361,13 @@ def main():
         report["reference_counts"] = {}
         references = choose_references(reference_folder, report["reference_counts"], 3 if reuse else 1)
         texts = TEXTS + ("아니, 잠깐만요. 그건 제가 생각했던 것과 완전히 다른데요?", "지금부터 하나씩 차근차근 확인해 보겠습니다.") if reuse else TEXTS
+        seeds = (1234,)
+        if profile == "quality_general":
+            previous = {r[0] for r in references}
+            references = choose_references(reference_folder, report["reference_counts"], 3, exclude=previous)
+            texts = ("오늘은 평소보다 조금 일찍 출발하려고 합니다.", "정말 그렇게 생각했어요? 저는 전혀 예상하지 못했는데요.", "여러 가지 방법을 비교해 보고 가장 적절한 것을 선택했습니다.")
+            seeds = (2027, 3141)
+        cases = [(i, text, seed) for seed in seeds for i, text in enumerate(texts, 1)]
         # Keep exact prompts privately; no transcript enters the public report.
         for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
             stem = f"reference-{ref_index:02d}" if reuse else "reference"
@@ -362,13 +389,13 @@ def main():
                 for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
                     result["stage"] = "reference"
                     tts.set_ref_audio(str(ref))
-                    for text_index, text in enumerate(texts, 1):
-                        index = (ref_index - 1) * len(texts) + text_index
+                    for case_index, (text_index, text, seed) in enumerate(cases, 1):
+                        index = (ref_index - 1) * len(cases) + case_index
                         result["stage"] = "synthesis"
                         chunks = list(tts.run({
                             "text": text, "text_lang": "all_ko", "prompt_text": prompt,
                             "prompt_lang": prompt_lang, "ref_audio_path": str(ref),
-                            "sample_steps": 32, "cfg_rate": 1.30, "seed": 1234,
+                            "sample_steps": 32, "cfg_rate": 1.30, "seed": seed,
                             "batch_size": 1, "parallel_infer": False,
                             "use_cuda_graph": False, "use_flash_attention": False,
                             "text_split_method": "cut0", "split_bucket": False,
@@ -392,7 +419,7 @@ def main():
                         if rms < 1e-4:
                             raise RuntimeError("Silent synthesis output")
                         write(output / f"{label}_{index:02d}.wav", sr, audio)
-                        result["samples"].append({"index": index, "reference_index": ref_index, "text_index": text_index, "sample_rate": int(sr), "seconds": audio.size / sr,
+                        result["samples"].append({"index": index, "reference_index": ref_index, "text_index": text_index, "seed": seed, "sample_rate": int(sr), "seconds": audio.size / sr,
                                                   "rms": rms, "peak": float(np.max(np.abs(normalized)))})
                 result.update(status="completed", stage="finished")
                 print(f"[quality] {label}: completed {len(result['samples'])} samples", flush=True)
@@ -406,7 +433,7 @@ def main():
                 torch.cuda.empty_cache()
         report["evaluation"] = evaluate_quality(output, references[0][0], report["models"], texts, [r[0] for r in references])
         complete = all(report["models"].get(k, {}).get("status") == "completed"
-                       and len(report["models"][k]["samples"]) == len(references) * len(texts)
+                       and len(report["models"][k]["samples"]) == len(references) * len(cases)
                        for k in models)
         if reuse:
             complete = complete and all(report["evaluation"].get(k) == "completed"
