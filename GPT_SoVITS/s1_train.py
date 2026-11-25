@@ -140,6 +140,7 @@ class GrokkingMonitorCallback(Callback):
         self.output_dir = Path(output_dir)
         self.post_fit_epochs = int(post_fit_epochs)
         self.hard_max_epochs = int(hard_max_epochs)
+        self.fixed_epochs = int(os.environ.get("GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS", "0"))
         self.tracker = GrokkingPhaseTracker(
             memorization_top3=float(
                 resolve_grokking_config(config["train"], "s1")[
@@ -209,6 +210,20 @@ class GrokkingMonitorCallback(Callback):
         )
         val_loss = self._metric(trainer, "val_total_loss")
         val_top3 = self._metric(trainer, "val_top_3_acc")
+        if trainer.sanity_checking:
+            # Evaluate the untouched pretrained model before the first update.
+            # Do not count the sanity loop as a training epoch or fit point.
+            if trainer.is_global_zero:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+                baseline = {"epoch": 0, "val_loss": val_loss, "val_top3": val_top3}
+                for key in ("val_loss", "val_top3"):
+                    if baseline[key] is not None and not math.isfinite(baseline[key]):
+                        baseline[key] = None
+                (self.output_dir / "grokking_s1_baseline.json").write_text(
+                    json.dumps(baseline, ensure_ascii=False) + "\n", encoding="utf-8"
+                )
+                logging.info("[grokking:S1] pretrained baseline %s", baseline)
+            return
         model_for_norm = getattr(pl_module, "model", pl_module)
         param_l2 = parameter_l2_norm(model_for_norm)
 
@@ -237,7 +252,8 @@ class GrokkingMonitorCallback(Callback):
 
         post_fit_age = state["post_fit_age"]
         if (
-            post_fit_age is not None
+            not self.fixed_epochs
+            and post_fit_age is not None
             and int(post_fit_age) >= self.post_fit_epochs
         ):
             trainer.should_stop = True
@@ -372,7 +388,10 @@ def main(args):
         # Allow memorization to happen late with a generous post-fit discovery
         # ceiling. The callback stops earlier once the requested window has
         # actually elapsed.
-        effective_max_epochs = base_epochs + 4 * post_fit_epochs
+        fixed_epochs = int(os.environ.get("GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS", "0"))
+        if fixed_epochs < 0:
+            raise ValueError("fixed S1 epoch budget must be nonnegative")
+        effective_max_epochs = fixed_epochs or (base_epochs + 4 * post_fit_epochs)
         logging.info(
             "[grokking:S1] enabled: base_epochs=%s post_fit=%s hard_max=%s",
             base_epochs,
@@ -431,7 +450,7 @@ def main(args):
             else config["train"]["precision"]
         ),
         logger=logger,
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=-1 if grokking["enabled"] else 0,
         callbacks=callbacks,
         use_distributed_sampler=False,
     )
