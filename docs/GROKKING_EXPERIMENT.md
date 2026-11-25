@@ -180,3 +180,56 @@ Keep the existing normal-training defaults (including DPO) outside the
 probe. Use independent fresh experiment names/output paths to prevent
 automatic checkpoint reuse and JSONL mixing. A single successful
 held-out curve is not evidence of improved generated speech.
+
+
+## 2026-11-25: V5 CFM training path and Kaggle bridge
+
+The WebUI routes v5dev/v5turbo (and v3/v4) to
+`GPT_SoVITS/s2_train_v3_lora.py`, not the older GAN trainer.
+The opt-in S2 probe now also runs in this LoRA CFM path:
+
+- canonical utterance-name split and matching bucket order across DDP ranks;
+- fresh generic upstream pretrained initialization, no automatic resume;
+- fixed AdamW learning rate and configurable weight decay;
+- Grokfast on trainable parameters after AMP unscale; skip EMA updates
+  when any current gradient is nonfinite;
+- rank-zero held-out CFM loss (batch size 1, two fixed torch RNG draws per
+  utterance, evaluation in FP32), with other ranks synchronized;
+- train-CFM plateau + bounded post-fit window, heuristic candidate flag;
+- best compact LoRA export and `grokking_s2_cfm_metrics.jsonl`;
+  no ordinary full checkpoint saves in this research path.
+
+The CFM loss is a flow-matching velocity loss, not mel reconstruction error,
+and does not establish speech naturalness or speaker similarity. The held-out
+objective is teacher/reference conditioned; evaluate separately on new text
+and independent reference audio. The probe supports filename/identity
+deduplication, not acoustic-near-duplicate detection. CFM evaluation uses a
+limited held-out subset if max_validation_batches is smaller than the split.
+In training the CFM probe preserves the selected FP32/AMP precision.
+The plateau and 5% improvement thresholds are engineering heuristics.
+
+S1 now refuses old research metrics/checkpoints instead of auto-resuming an
+experiment with possibly different optimizer, split or Grokfast state.
+Choose a new experiment name for every arm. S2 CFM also refuses existing
+probe output. Normal mode continues using the original training logic.
+
+### Kaggle bridge
+
+The credential-free workflow `.github/workflows/kaggle-connectivity-smoke.yml`
+verified public DNS/HTTP, Kaggle CLI 2.2.5, and the T4 x2 accelerator option.
+
+A dedicated private GPU smoke workflow is available at
+`.github/workflows/kaggle-private-gpu-smoke.yml`. It only submits a GPU job
+on an explicit head commit modifying that workflow (or an explicit rerun
+of such a commit), on this repository's research branch. It checks for a
+dedicated GitHub Actions secret named `KAGGLE_API_TOKEN` (preferred) or
+`KAGGLE_KEY` (legacy, username fixed to the repository owner's Kaggle ID).
+It does not print credentials. Do not place tokens in source, notebook cells,
+logs, issue comments, or chat. The private kernel uses synthetic data only,
+tests FP32 and AMP on each T4, and checks that the existing dataset directory
+is mounted. No source audio or learned weights are returned to GitHub.
+
+A missing credential deliberately blocks submission. A successful workflow
+with skipped GPU steps is **not** GPU proof. Check the submission and
+metrics-retrieval steps individually. A completed GPU smoke is a prerequisite
+for actual pretrained model training, not a substitute for it.
