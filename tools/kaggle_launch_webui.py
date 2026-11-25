@@ -112,7 +112,12 @@ def main() -> int:
         flush=True,
     )
 
-    output_root = Path("/kaggle/working/gpt_sovits_output")
+    research = os.environ.get("GPT_SOVITS_KAGGLE_GROKKING") == "1"
+    # Preserve the ordinary WebUI export policy; research runs publish only ZIPs.
+    output_root = Path(
+        "/kaggle/tmp/gpt_sovits_output" if research
+        else "/kaggle/working/gpt_sovits_output"
+    )
     emotion_root = Path("/kaggle/tmp/emotion_opt")
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "GPT_weights_v5dev").mkdir(
@@ -186,7 +191,7 @@ def main() -> int:
             "PYTHONPATH": os.pathsep.join(python_path),
             "language": "ko_KR",
             "version": "v5dev",
-            "is_share": "True",
+            "is_share": "False" if research else "True",
             "HF_HOME": "/kaggle/tmp/huggingface",
             "HF_HUB_DISABLE_PROGRESS_BARS": "1",
             "HF_HUB_DISABLE_UPDATE_CHECK": "1",
