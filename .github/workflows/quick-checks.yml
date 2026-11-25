@@ -30,7 +30,7 @@ jobs:
             GPT_SoVITS/AR/models/t2s_lightning_module.py \
             GPT_SoVITS/s1_train.py \
             GPT_SoVITS/s2_train.py \
-            GPT_SoVITS/tools/grokking.py \
+            tools/grokking.py \
             GPT_SoVITS/TTS_infer_pack/TTS.py \
             GPT_SoVITS/f5_tts/model/backbones/dit.py \
             GPT_SoVITS/module/cache_dit.py \
