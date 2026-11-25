@@ -80,6 +80,26 @@ class KaggleRunnerTests(unittest.TestCase):
             process.poll.return_value = 0
             self.assertIn("exit=0", _progress_line("A", [], process, report, S2_SETTINGS, None))
 
+    def test_eta_uses_recent_epoch_durations_and_partial_epoch(self):
+        from tools.kaggle_grokking_runner import _remaining_seconds
+        rows = [{"epoch_seconds": x} for x in (900, 100, 110, 120, 130, 140)]
+        self.assertEqual(_remaining_seconds(rows, 10, 20), 460)
+        self.assertEqual(_remaining_seconds(rows, 10, 999), 372)
+        self.assertIsNone(_remaining_seconds([], 30))
+        self.assertIsNone(_remaining_seconds([{"epoch_seconds": float("nan")}], 30))
+        self.assertEqual(_remaining_seconds([{}, {}], 4, 10, [60]), 110)
+        self.assertEqual(_remaining_seconds(rows, 6), 0)
+
+    def test_eta_kst_and_safety_cutoff(self):
+        from tools.kaggle_grokking_runner import _eta_text
+        from datetime import datetime, timezone
+        now = datetime(2026, 11, 25, 14, 50, tzinfo=timezone.utc).timestamp()
+        self.assertIn("11/26 00:10 KST", _eta_text(1200, now, 5400))
+        self.assertIn("20m", _eta_text(1200, now, 5400))
+        self.assertIn("11/25 23:55 KST", _eta_text(1200, now, 300))
+        self.assertIn("목표 Epoch 미도달", _eta_text(1200, now, 300))
+        self.assertIn("계산 중", _eta_text(None, now, 5400))
+
     def test_cfm_metrics_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
