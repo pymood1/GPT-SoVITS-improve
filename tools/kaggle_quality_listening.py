@@ -148,10 +148,12 @@ def apply_score_stage(models, evaluation, stage, request, result):
                        stage + "_backend": result["backend"],
                        stage + "_seconds": result["total_seconds"],
                        stage + "_calibration_seconds": result["calibration_seconds"],
-                       stage + "_calibration_count": result["calibration_count"]})
+                       stage + "_calibration_count": result["calibration_count"],
+                       stage + "_cpu_calibration_seconds": result.get("cpu_calibration_seconds", 0),
+                       stage + "_gpu_calibration_seconds": result.get("gpu_calibration_seconds", 0)})
 
 
-def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
+def evaluate_quality(output, reference, models, texts=TEXTS, references=None, heldout=None):
     """Score completed synthesis on idle T4; CPU parity and fallback preserve comparability."""
     import os
     request = {"samples": [
@@ -160,6 +162,7 @@ def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
          "path": str(output / f"{label}_{s['index']:02d}.wav")}
         for label, result in models.items() for s in result["samples"]],
         "texts": list(texts), "references": [str(p) for p in (references or [reference])],
+        "heldout_references": [str(p) for p in (heldout or [])],
         "cpu_threads": 2 if os.environ.get("GPT_SOVITS_MIX_WORKER") else 4}
     evaluation = {"asr_status": "unavailable", "speaker_status": "unavailable"}
     if not request["samples"]:
@@ -216,6 +219,8 @@ SOFT_LABELS = (("soft000", "soft005", "soft010", "soft025"),
 
 GENERAL_LABELS = (("gen_base", "gen_hard", "gen_soft010"),
                   ("gen_hardb", "gen_soft010b", "gen_soft025"))
+STYLE_LABELS = (("style_base", "style_base_mean", "style_base_sv"),
+                ("style_lora", "style_lora_mean", "style_lora_sv"))
 
 
 def merge_mix_reports(reports, labels=MIX_LABELS, sample_count=15):
@@ -235,6 +240,8 @@ def merge_mix_reports(reports, labels=MIX_LABELS, sample_count=15):
             complete = complete and model.get("status") == "completed" and len(samples) == sample_count
             complete = complete and {s.get("index") for s in samples} == set(range(1, sample_count + 1))
             complete = complete and all("speaker_cosine" in s and "cer" in s for s in samples)
+            if labels == STYLE_LABELS:
+                complete = complete and all(isinstance(s.get("speaker_holdout_cosine"), (int, float)) for s in samples)
     for key in ("asr_status", "speaker_status"):
         result["evaluation"][key] = "completed" if all(r.get("evaluation", {}).get(key) == "completed" for r in reports) else "failed"
         complete = complete and result["evaluation"][key] == "completed"
@@ -245,6 +252,8 @@ def merge_mix_reports(reports, labels=MIX_LABELS, sample_count=15):
             result["evaluation"][stage + "_backend"] = backends[0] if len(set(backends)) == 1 else "mixed"
             result["evaluation"][stage + "_seconds"] = max(r.get("evaluation", {}).get(stage + "_seconds", 0) for r in reports)
             result["evaluation"][stage + "_calibration_count"] = sum(r.get("evaluation", {}).get(stage + "_calibration_count", 0) for r in reports)
+            for suffix in ("_cpu_calibration_seconds", "_gpu_calibration_seconds"):
+                result["evaluation"][stage + suffix] = sum(r.get("evaluation", {}).get(stage + suffix, 0) for r in reports)
 
     if reports[0].get("reference_counts") != reports[1].get("reference_counts"):
         complete = False
@@ -291,15 +300,15 @@ def run_mix_workers(work, output):
                 report["status"] = "failed"
             reports.append(report)
         profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
-        labels = GENERAL_LABELS if profile == "quality_general" else SOFT_LABELS if profile == "quality_soft" else MIX_LABELS
+        labels = STYLE_LABELS if profile == "quality_style" else GENERAL_LABELS if profile == "quality_general" else SOFT_LABELS if profile == "quality_soft" else MIX_LABELS
         reconcile_score_backends(reports, [folder for _, folder in workers])
-        result = merge_mix_reports(reports, labels, 18 if profile == "quality_general" else 15)
+        result = merge_mix_reports(reports, labels, 18 if profile in ("quality_general", "quality_style") else 15)
         (output / "listening-metrics.json").write_text(json.dumps(result, indent=2, allow_nan=False))
     return 0 if result["status"] == "completed" else 1
 
 
 def main():
-    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") in ("quality_mix", "quality_soft", "quality_general") and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
+    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") in ("quality_mix", "quality_soft", "quality_general", "quality_style") and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
         return run_mix_workers(*map(Path, sys.argv[1:3]))
     import numpy as np
     import torch
@@ -314,10 +323,22 @@ def main():
         base_s2 = ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
         models = {"base": (base_s1, base_s2)}
         profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
-        reuse = profile in ("quality_reuse", "quality_mix", "quality_soft", "quality_general")
+        reuse = profile in ("quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style")
         mix_worker = os.environ.get("GPT_SOVITS_MIX_WORKER", "")
         inference_options = {}
-        if profile == "quality_general":
+        if profile == "quality_style":
+            from tools.quality_model_mix import export_scaled_v5_checkpoint
+            if mix_worker not in ("0", "1"):
+                raise ValueError("Invalid style worker")
+            weight = base_s2
+            if mix_worker == "1":
+                weight = work / "style-anchor.pth"
+                export_scaled_v5_checkpoint(work / "S2_rank32_grok_cfm_best.pth", weight, .75)
+            models = {label: (base_s1, weight) for label in STYLE_LABELS[int(mix_worker)]}
+            inference_options = {label: {"soft_semantic_mix": 0.} for label in models}
+            reference_folder = work
+            torch.set_num_threads(2)
+        elif profile == "quality_general":
             from tools.quality_model_mix import export_scaled_v5_checkpoint
             if mix_worker not in ("0", "1"):
                 raise ValueError("Invalid generalization worker")
@@ -402,9 +423,16 @@ def main():
         references = choose_references(reference_folder, report["reference_counts"], 3 if reuse else 1)
         texts = TEXTS + ("아니, 잠깐만요. 그건 제가 생각했던 것과 완전히 다른데요?", "지금부터 하나씩 차근차근 확인해 보겠습니다.") if reuse else TEXTS
         seeds = (1234,)
-        if profile == "quality_general":
-            previous = {r[0] for r in references}
-            references = choose_references(reference_folder, report["reference_counts"], 3, exclude=previous)
+        auxiliary = heldout = []
+        sv_weights = None
+        if profile == "quality_style":
+            from tools.quality_reference_style import reference_groups, speaker_weights, extract_style, blend_style
+            references, auxiliary, heldout = reference_groups(choose_references, reference_folder)
+            sv_weights = speaker_weights(references, auxiliary)
+        if profile in ("quality_general", "quality_style"):
+            if profile == "quality_general":
+                previous = {r[0] for r in references}
+                references = choose_references(reference_folder, report["reference_counts"], 3, exclude=previous)
             texts = ("오늘은 평소보다 조금 일찍 출발하려고 합니다.", "정말 그렇게 생각했어요? 저는 전혀 예상하지 못했는데요.", "여러 가지 방법을 비교해 보고 가장 적절한 것을 선택했습니다.")
             seeds = (2027, 3141)
         cases = [(i, text, seed) for seed in seeds for i, text in enumerate(texts, 1)]
@@ -427,9 +455,16 @@ def main():
                 tts_config = TTS_Config({"custom": config})
                 tts_config.configs_path = str(output / "tts-private.yaml")
                 tts = TTS(tts_config)
+                style_mode = "sv" if label.endswith("_sv") else "uniform" if label.endswith("_mean") else None
+                aux_styles = [extract_style(tts, tts._get_ref_spec(str(r[0]))) for r in auxiliary] if style_mode else []
                 for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
                     result["stage"] = "reference"
                     tts.set_ref_audio(str(ref))
+                    style_override = {}
+                    if style_mode:
+                        primary = extract_style(tts, tts.prompt_cache["refer_spec"][0])
+                        weights = sv_weights[ref_index - 1] if style_mode == "sv" else [1 / len(aux_styles)] * len(aux_styles)
+                        style_override = {"research_style_ge": blend_style(primary, aux_styles, weights)}
                     for case_index, (text_index, text, seed) in enumerate(cases, 1):
                         index = (ref_index - 1) * len(cases) + case_index
                         result["stage"] = "synthesis"
@@ -444,6 +479,7 @@ def main():
                             "return_fragment": False, "streaming_mode": False,
                             "cache_dit_mode": "off",
                             **inference_options.get(label, {}),
+                            **style_override,
                         }))
                         if len(chunks) != 1:
                             raise RuntimeError("Unexpected synthesis chunks")
@@ -478,7 +514,7 @@ def main():
         import gc
         gc.collect()
         torch.cuda.empty_cache()
-        report["evaluation"] = evaluate_quality(output, references[0][0], report["models"], texts, [r[0] for r in references])
+        report["evaluation"] = evaluate_quality(output, references[0][0], report["models"], texts, [r[0] for r in references], [r[0] for r in heldout])
         complete = all(report["models"].get(k, {}).get("status") == "completed"
                        and len(report["models"][k]["samples"]) == len(references) * len(cases)
                        for k in models)
