@@ -63,6 +63,29 @@ class KaggleRunnerTests(unittest.TestCase):
                 self.assertEqual((out / "4-cnhubert").resolve(), source / "4-cnhubert")
             self.assertFalse((source / "config.json").exists())
 
+    def test_quality_profile_compares_learning_rate_only(self):
+        from tools.kaggle_grokking_runner import QUALITY_SETTINGS, _s2_config, _arm_env
+        a, b = QUALITY_SETTINGS["arms"]
+        self.assertFalse(a["grokfast"])
+        self.assertFalse(b["grokfast"])
+        self.assertEqual(a["weight_decay"], b["weight_decay"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "2-name2text.txt").write_text("test")
+            (source / "4-cnhubert").mkdir()
+            (source / "5-wav32k").mkdir()
+            for gpu, arm in enumerate((a, b)):
+                out = root / arm["id"]
+                out.mkdir()
+                cfg = _s2_config(source, out, out / "weights", arm, root / "base.pth", gpu, QUALITY_SETTINGS)
+                self.assertEqual(cfg["train"]["learning_rate"], arm["learning_rate"])
+                self.assertEqual(cfg["train"]["epochs"], 8)
+                env = _arm_env(arm, gpu, out / "status.json", QUALITY_SETTINGS)
+                self.assertEqual(env["GPT_SOVITS_GROKFAST"], "0")
+                self.assertEqual(env["GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS"], "8")
+
     def test_progress_line_displays_current_batch_and_gpu(self):
         from tools.kaggle_grokking_runner import _progress_line, S2_SETTINGS
         from unittest.mock import Mock
