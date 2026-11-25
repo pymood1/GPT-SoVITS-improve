@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: kaggle-real-model-research
+  group: kaggle-real-model-research-v2
   cancel-in-progress: false
 jobs:
   research:
@@ -58,6 +58,9 @@ jobs:
           recover = req.get("recover_kernel", "")
           if recover:
               assert re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", recover)
+          previous = req.get("previous_kernel", "")
+          if previous:
+              assert re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", previous)
           kernel = recover or "pymood1/gpt-sovits-research-" + os.environ["GITHUB_RUN_ID"]
           folder = Path(os.environ["RUNNER_TEMP"]) / "kaggle-research"
           folder.mkdir()
@@ -73,6 +76,7 @@ jobs:
           }))
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("kernel=" + kernel + "\n")
+              f.write("previous_kernel=" + previous + "\n")
               # Budget includes setup, preprocessing, training and result finalization.
               f.write("runtime_limit=" + str(req["max_training_seconds"] + 2400) + "\n")
               f.write("recover=" + str(bool(recover) or int(os.environ["GITHUB_RUN_ATTEMPT"]) > 1).lower() + "\n")
@@ -90,6 +94,15 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}${KAGGLE_KEY:-}"
+          previous="${{ steps.prepare.outputs.previous_kernel }}"
+          if [ -n "$previous" ]; then
+            old_status=$(kaggle kernels status "$previous" 2>&1)
+            echo "Previous kernel: $old_status"
+            if ! echo "$old_status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled|cancel_acknowledged)(["[:space:]]|$)'; then
+              echo "::error::Previous kernel is not confirmed unsuccessful/terminated; no duplicate GPU submission."
+              exit 1
+            fi
+          fi
           kaggle kernels push -p "$RUNNER_TEMP/kaggle-research" --accelerator NvidiaTeslaT4 --timeout "${{ steps.prepare.outputs.runtime_limit }}"
       - name: Poll and recover numeric metrics only
         if: steps.request.outputs.submit == 'true'
@@ -102,6 +115,8 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/kaggle-result"
           echo "Private kernel: $KERNEL"
+          poll_start=$(date +%s)
+          running_start=0
           for i in $(seq 1 570); do
             if ! status=$(kaggle kernels status "$KERNEL" 2>&1); then
               echo "Status request failed; retrying"
@@ -109,6 +124,19 @@ jobs:
               continue
             fi
             echo "$status"
+            now=$(date +%s)
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])running(["[:space:]]|$)'; then
+              if [ "$running_start" -eq 0 ]; then
+                running_start=$now
+                echo "GPU execution first observed after $((now-poll_start)) seconds of polling."
+              fi
+              echo "Execution observed elapsed: $((now-running_start)) seconds"
+            elif echo "$status" | grep -Eiq '(^|[."[:space:]])queued(["[:space:]]|$)'; then
+              echo "Queue observed elapsed: $((now-poll_start)) seconds"
+              if [ "$((now-poll_start))" -ge 900 ] && [ "$((i%10))" -eq 0 ]; then
+                echo "::warning::Kaggle allocation still queued; no duplicate submission."
+              fi
+            fi
             if echo "$status" | grep -Eiq '(^|[."[:space:]])complete(d)?(["[:space:]]|$)'; then
               for retry in $(seq 1 5); do
                 if kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/kaggle-result" --file-pattern '^remote-result[.]json$' && test -s "$RUNNER_TEMP/kaggle-result/remote-result.json"; then
