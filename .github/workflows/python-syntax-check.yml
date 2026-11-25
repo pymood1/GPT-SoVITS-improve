@@ -2,6 +2,10 @@ name: Python compatibility check
 
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "tools/kaggle_remote_request.json"
   push:
     branches:
       - main
