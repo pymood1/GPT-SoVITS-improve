@@ -137,6 +137,19 @@ def evaluate_quality(output, reference, models):
     return evaluation
 
 
+def pick_candidate(arms, names, metric):
+    import math
+    valid = []
+    for name in names:
+        arm = arms.get(name, {})
+        value = (arm.get("best") or {}).get(metric)
+        if arm.get("returncode") == 0 and type(value) in (int, float) and math.isfinite(value):
+            valid.append((value, name))
+    if not valid:
+        raise RuntimeError("No valid trained candidate")
+    return min(valid)[1]
+
+
 def main():
     import numpy as np
     import torch
@@ -147,32 +160,49 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     report = {"status": "failed", "models": {}}
     try:
-        models = {"base": ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"}
-        for arm in ("A_lr100", "B_lr030"):
-            path = work / arm / "weights" / (arm + "_grok_cfm_best.pth")
-            if not path.is_file():
-                raise FileNotFoundError("Best checkpoint absent")
-            destination = output / (arm + ".pth")
-            shutil.copyfile(path, destination)
-            models[arm] = destination
-        # Export the usable checkpoints even if reference selection or synthesis fails.
+        base_s1 = ROOT / "GPT_SoVITS/pretrained_models/s1v3.ckpt"
+        base_s2 = ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
+        models = {"base": (base_s1, base_s2)}
+        if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_session":
+            with __import__("zipfile").ZipFile("/kaggle/working/grokking_result.zip") as z:
+                summary = json.loads(z.read("training/summary.json"))
+            best_s1 = pick_candidate(summary["arms"], ("S1_v_o", "S1_qkv_o"), "val_loss")
+            best_s2 = pick_candidate(summary["arms"], ("S2_rank16", "S2_rank32"), "val_cfm")
+            s1_weight = work / best_s1 / "weights" / (best_s1 + "-grok-best.ckpt")
+            s2_weight = work / best_s2 / "weights" / (best_s2 + "_grok_cfm_best.pth")
+            if not s1_weight.is_file() or not s2_weight.is_file():
+                raise FileNotFoundError("Selected compact checkpoint absent")
+            report["selected"] = {"s1": best_s1, "s2": best_s2}
+            models.update(s1_only=(s1_weight, base_s2), s2_only=(base_s1, s2_weight),
+                          combined=(s1_weight, s2_weight))
+            reference_folder = work / best_s2
+        else:
+            for arm in ("A_lr100", "B_lr030"):
+                path = work / arm / "weights" / (arm + "_grok_cfm_best.pth")
+                if not path.is_file():
+                    raise FileNotFoundError("Best checkpoint absent")
+                destination = output / (arm + ".pth")
+                shutil.copyfile(path, destination)
+                models[arm] = (base_s1, destination)
+            reference_folder = work / "A_lr100"
         report["reference_counts"] = {}
-        ref, prompt, prompt_lang = choose_reference(work / "A_lr100", report["reference_counts"])
+        ref, prompt, prompt_lang = choose_reference(reference_folder, report["reference_counts"])
         # Keep the exact prompt privately for reproducible inference-only follow-ups.
         shutil.copyfile(ref, output / "reference.wav")
         (output / "reference.json").write_text(json.dumps({"text": prompt, "language": prompt_lang}, ensure_ascii=False), encoding="utf-8")
-        for label, weight in models.items():
+        for label, (gpt_weight, weight) in models.items():
             result = {"samples": [], "status": "failed"}
             report["models"][label] = result
             try:
                 result["stage"] = "model_load"
                 config = dict(TTS_Config.default_configs["v5dev"], device="cuda:0",
-                              is_half=False, vits_weights_path=str(weight))
+                              is_half=False, t2s_weights_path=str(gpt_weight), vits_weights_path=str(weight))
                 tts = TTS(TTS_Config({"custom": config}))
                 result["stage"] = "reference"
                 tts.set_ref_audio(str(ref))
                 result["stage"] = "synthesis"
                 for index, text in enumerate(TEXTS, 1):
+                    result["stage"] = "synthesis"
                     chunks = list(tts.run({
                         "text": text, "text_lang": "all_ko", "prompt_text": prompt,
                         "prompt_lang": prompt_lang, "ref_audio_path": str(ref),
