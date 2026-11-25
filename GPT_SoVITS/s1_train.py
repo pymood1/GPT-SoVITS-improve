@@ -356,6 +356,12 @@ def main(args):
             f"_m{int(grokking['min_validation_samples'])}"
         )
         ckpt_dir = output_dir / f"ckpt_grokking_{split_tag}"
+        metrics_path = output_dir / f"grokking_s1_metrics_{split_tag}.jsonl"
+        if metrics_path.exists() or (ckpt_dir.exists() and any(ckpt_dir.iterdir())):
+            raise RuntimeError(
+                "S1 grokking requires a fresh experiment/output directory; "
+                "choose a new experiment name rather than reusing checkpoints or metrics."
+            )
     else:
         ckpt_dir = output_dir / "ckpt"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -440,12 +446,14 @@ def main(args):
         # dev_phoneme_path=args.dev_phoneme_path
     )
 
-    try:
-        # 使用正则表达式匹配文件名中的数字部分，并按数字大小进行排序
-        newest_ckpt_name = get_newest_ckpt(os.listdir(ckpt_dir))
-        ckpt_path = ckpt_dir / newest_ckpt_name
-    except Exception:
-        ckpt_path = None
+    ckpt_path = None
+    if not grokking["enabled"]:
+        try:
+            # Normal training retains its existing automatic resume.
+            newest_ckpt_name = get_newest_ckpt(os.listdir(ckpt_dir))
+            ckpt_path = ckpt_dir / newest_ckpt_name
+        except Exception:
+            ckpt_path = None
     print("ckpt_path:", ckpt_path)
     fit_kwargs = {"ckpt_path": ckpt_path}
     # PyTorch 2.6 changed torch.load's default to weights_only=True, and
