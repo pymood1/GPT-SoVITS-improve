@@ -1919,7 +1919,7 @@ class TTS:
     ) -> Tuple[int, np.ndarray]:
         if fragment_interval>0:
             zero_wav = torch.zeros(
-                int(self.configs.sampling_rate * fragment_interval), dtype=self.precision, device=self.configs.device
+                int(sr * fragment_interval), dtype=self.precision, device=self.configs.device
             )
 
         for i, batch in enumerate(audio):
@@ -1947,15 +1947,15 @@ class TTS:
                 max_audio = np.abs(audio).max()
                 if max_audio > 1:
                     audio /= max_audio
-                audio = (audio * 32768).astype(np.int16)
+                audio = np.rint(np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
             else:
                 audio = audio.cpu().numpy()
-                audio = (audio * 32768).astype(np.int16)
+                audio = np.rint(np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
             t2 = time.perf_counter()
             print(f"超采样用时：{t2 - t1:.3f}s")
         else:
             audio = audio.cpu().numpy()
-            audio = (audio * 32768).astype(np.int16)
+            audio = np.rint(np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
 
 
         # try:
