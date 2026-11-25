@@ -152,6 +152,26 @@ class CFMProbeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 export_scaled_v5_checkpoint(original, original, .75)
 
+    def test_soft_trace_aligns_eos_and_legacy_early_stop(self):
+        from module.soft_semantics import align_probability_trace
+        tokens = torch.tensor([[2, 2, 0, 1, 2]])
+        trace = [torch.tensor([[.8, .1, .1]]),
+                 torch.tensor([[.1, .8, .1, 0.]]),
+                 torch.tensor([[.1, .1, .6, .2]]),
+                 torch.tensor([[0., 0., 0., 1.]])]
+        result = align_probability_trace(tokens, 2, 3, trace, 3)
+        self.assertEqual(result.shape, (1, 3, 3))
+        self.assertTrue(torch.allclose(result[0, 2], torch.tensor([.125, .125, .75])))
+        self.assertTrue(torch.allclose(result.sum(-1), torch.ones(1, 3)))
+        early = align_probability_trace(tokens, 2, 2, trace[:3], 3)
+        self.assertTrue(torch.equal(early, result[:, -2:]))
+        with self.assertRaises(ValueError):
+            align_probability_trace(tokens, 2, 3, trace[:1], 3)
+        with self.assertRaises(ValueError):
+            align_probability_trace(tokens, 2, 0, trace, 3)
+        with self.assertRaises(ValueError):
+            align_probability_trace(tokens, 2, 3, [trace[-1]] * 3, 3)
+
     def test_soft_semantic_onehot_matches_projected_hard_decode(self):
         from module.soft_semantics import decode_soft_single_layer
         from types import SimpleNamespace
