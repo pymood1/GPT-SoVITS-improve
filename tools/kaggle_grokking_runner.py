@@ -321,7 +321,13 @@ def run(ui):
     profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE", DEFAULT_PROFILE)
     if profile not in ("s1", "s2"):
         raise ValueError(f"Unknown research profile: {profile}")
-    settings = SETTINGS if profile == "s1" else S2_SETTINGS
+    settings = dict(SETTINGS if profile == "s1" else S2_SETTINGS)
+    # Explicit remote smoke overrides; ordinary notebook profiles are unchanged.
+    epochs = int(os.environ.get("GPT_SOVITS_RESEARCH_EPOCHS", settings["fixed_epochs"]))
+    seconds = int(os.environ.get("GPT_SOVITS_RESEARCH_MAX_SECONDS", settings["max_training_seconds"]))
+    if not 1 <= epochs <= 120 or not 60 <= seconds <= 14400:
+        raise ValueError("Research budget out of range")
+    settings.update(base_epochs=epochs, fixed_epochs=epochs, max_training_seconds=seconds)
     run_id = os.environ.get("GPT_SOVITS_RESEARCH_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     work = Path("/kaggle/tmp/grokking_runs") / run_id
     work.mkdir(parents=True, exist_ok=False)
