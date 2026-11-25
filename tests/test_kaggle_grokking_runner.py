@@ -65,6 +65,24 @@ class KaggleRunnerTests(unittest.TestCase):
         self.assertEqual(merge_mix_reports(reports)["status"], "failed")
         self.assertEqual(merge_mix_reports(reports[:1])["status"], "failed")
 
+    def test_soft_session_complete_and_zero_controls(self):
+        from tools.kaggle_quality_listening import SOFT_LABELS, merge_mix_reports
+        reports = [
+            {"status": "completed", "reference_counts": {"rows": 272},
+             "evaluation": {"asr_status": "completed", "speaker_status": "completed"},
+             "models": {label: {"status": "completed", "samples": [
+                 {"index": i, "cer": 0., "speaker_cosine": .8} for i in range(1, 16)
+             ]} for label in labels}}
+            for labels in SOFT_LABELS
+        ]
+        merged = merge_mix_reports(reports, SOFT_LABELS)
+        self.assertEqual(merged["status"], "completed")
+        self.assertEqual(len(merged["models"]), 9)
+        self.assertIn("soft000", merged["models"])
+        self.assertIn("soft000b", merged["models"])
+        reports[1]["models"].pop("soft000b")
+        self.assertEqual(merge_mix_reports(reports, SOFT_LABELS)["status"], "failed")
+
     def test_arm_environment_isolated(self):
         with patch.dict(os.environ, {"GPT_SOVITS_GROKFAST": "1", "GPT_SOVITS_GROKKING_S1_LR": "9"}):
             a = _arm_env({"grokfast": False}, 0, Path("a.json"))
