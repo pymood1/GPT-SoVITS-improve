@@ -10,6 +10,16 @@ from tools.kaggle_grokking_runner import _arm_env, _bundle, _read_metrics, _summ
 
 
 class KaggleRunnerTests(unittest.TestCase):
+    def test_quality_candidate_selection_excludes_failed_and_nonfinite_results(self):
+        from tools.kaggle_quality_listening import pick_candidate
+        arms = {"a": {"returncode": 0, "best": {"val_loss": 2.0}},
+                "b": {"returncode": 0, "best": {"val_loss": 1.0}},
+                "c": {"returncode": 1, "best": {"val_loss": 0.0}},
+                "d": {"returncode": 0, "best": {"val_loss": float("nan")}}}
+        self.assertEqual(pick_candidate(arms, ("a", "b", "c", "d"), "val_loss"), "b")
+        with self.assertRaises(RuntimeError):
+            pick_candidate(arms, ("c", "d"), "val_loss")
+
     def test_parallel_session_lanes_reuse_idle_gpu_without_overlap(self):
         from tools.kaggle_grokking_runner import SESSION_SETTINGS, _launchable_jobs
         pending = [(arm["gpu"], arm) for arm in SESSION_SETTINGS["arms"]]
