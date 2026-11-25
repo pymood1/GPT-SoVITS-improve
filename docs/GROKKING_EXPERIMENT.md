@@ -13,8 +13,10 @@ A grokking test needs three things the normal training path did not guarantee:
 3. metrics that can show a delayed validation improvement.
 
 The S1 path additionally offers AdamW weight decay and Grokfast-style EMA
-slow-gradient amplification. The S2 path keeps the discriminator unchanged and
-applies Grokfast only to the generator.
+slow-gradient amplification. The active S2 path is the V3/V4/V5 LoRA flow-matching trainer; the
+experiment does not train a discriminator. Legacy v1/v2 GAN training
+remains available with its original behavior, without an experimental
+Grokking branch.
 
 ## Enable
 
@@ -39,7 +41,8 @@ export GPT_SOVITS_GROKKING_S2=1
 ```
 
 The existing WebUI/training launch can then be used normally. The feature is
-read from the training process environment.
+read from the training process environment. S2 research is supported by the
+LoRA CFM trainer, not the legacy v1/v2/v2Pro/v2ProPlus GAN trainer.
 
 ## Conservative defaults
 
@@ -56,17 +59,17 @@ read from the training process environment.
 - S1 LR in grokking mode: fixed at the configured 1e-4 by default
 - S2 generator weight decay: 0.01
 - S2 post-fit observation window: 8 epochs
-- S2 train-mel plateau patience: 3 epochs
-- S2 significant train-mel improvement threshold: 1%
+- S2 fixed train-probe CFM plateau patience: 3 epochs
+- S2 significant train-probe CFM improvement threshold: 1%
 - S2 held-out validation cap: 32 batches
 
 All are overridable with environment variables defined in
-\`tools/grokking.py\`.
+`tools/grokking.py`.
 
 ## S1 outputs
 
-- \`<output_dir>/grokking_s1_metrics.jsonl\`
-- \`<half_weights_dir>/<exp_name>-grok-best.ckpt\`
+- `<output_dir>/grokking_s1_metrics.jsonl`
+- `<half_weights_dir>/<exp_name>-grok-best.ckpt`
 
 The JSONL records train top-3, held-out loss/top-3, parameter L2 norm,
 memorization epoch, post-fit age and whether validation improved after the
@@ -84,20 +87,18 @@ cutting off a delayed transition.
 
 ## S2 outputs
 
-- \`<exp_dir>/grokking_s2_metrics.jsonl\`
-- compact \`<name>_grok_best\` weight through the normal \`savee\` path
+- `<exp_dir>/grokking_s2_cfm_metrics.jsonl`
+- `<exp_dir>/grokking_s2_baseline.json`
+- compact `<name>_grok_cfm_best.pth` through the normal `savee` path
 
-S2 validation uses held-out generator mel L1 reconstruction. It deliberately
-does not use discriminator loss as the generalization signal, because GAN game
-balance is not a clean held-out quality metric. Validation RNG is forked and
-reseeded to the same value every epoch so stochastic latent/slice choices do not
-masquerade as generalization.
-
-S2 also tracks the distributed mean training mel L1. A fit point is declared
-after the configured plateau patience passes without a significant relative
-training-mel improvement. Training then preserves a full post-fit observation
-window. The hard ceiling is currently base_epochs + 4 * post_fit_epochs; normal
-runs usually stop earlier once the post-fit window completes.
+S2 V5dev uses the CFM velocity objective, not GAN mel reconstruction.
+Held-out and fixed train-probe measurements use the same evaluation-mode
+protocol with two deterministic noise draws per sample. Online training
+loss is recorded separately. The fixed train-probe plateau defines the
+fit point for the delayed-improvement heuristic. Fixed-epoch overrides
+are supported; otherwise the post-fit window bounds the experiment.
+The old experimental GAN branch was removed because this project uses
+the CFM trainer for the active research. Normal legacy training is intact.
 
 ## Interpretation
 
@@ -115,7 +116,7 @@ parameter norm typically contracts or reorganizes
 
 For S2, call the result "grokking-like delayed generalization" unless the
 held-out metric shows a clear delayed transition after an independently defined
-training-fit point. Acoustic GAN training does not have the same clean
+training-fit point. The acoustic flow-matching objective does not have the same clean
 memorization boundary as semantic-token prediction.
 
 ## Safety / baseline isolation
@@ -296,7 +297,7 @@ These are single-split teacher-forced metrics, not listening scores;
 the experiment cannot exclude grokking under other training regimes.
 Do not deploy a late checkpoint on the basis of training accuracy.
 
-The next default runner profile is `s2_v5dev_cfm_grokfast_v1`:
+The initial S2 runner profile was `s2_v5dev_cfm_grokfast_v1`:
 two independent single-T4 V5dev CFM runs from the same generic base,
 Grokfast OFF/ON, WD .01, LR 1e-4, FP32, batch 1, LoRA rank 16,
 gradient checkpointing enabled, 12 fixed epochs, 90-minute training
@@ -334,7 +335,7 @@ evidence of grokking or verified synthesis quality. The online train
 loss varies with random draws, model train mode, and evolving weights;
 it is not directly comparable with the fixed eval-mode held-out loss.
 
-Next default profile `s2_v5dev_cfm_grokfast_long_v2` keeps the prior
+The current default manual profile `s2_v5dev_cfm_grokfast_long_v2` keeps the prior
 optimizer, split, rank, precision and batch size; increases the fixed
 budget to 30 epochs (90-minute cap remains). In research mode only,
 an additional fixed, unique train subset (up to the held-out count)
