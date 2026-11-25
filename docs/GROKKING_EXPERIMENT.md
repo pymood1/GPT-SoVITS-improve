@@ -269,3 +269,39 @@ a fabricated zero. Fixed epoch budgets are opt-in via
 Compare both curves at the same epoch; use the baseline as an external
 reference as the candidate tracker still compares only trained epochs.
 No inference quality or S2 GPU result has yet been established.
+
+
+## 2026-11-25: Fixed-budget S1 result and next S2 probe
+
+Run `20261125T015120_681594Z` (commit `cd7a5688`) completed both
+120-epoch FP32 arms, each with 244 training and 27 validation utterances.
+Both pretrained epoch-zero measurements were exactly CE 3.5062289,
+top-3 .3378503. At WD .01 vs 1.0 respectively:
+- Best CE: 3.1085644 vs 3.1081882 (epoch 1).
+- Peak top-3: .4197721 vs .4200801 (epoch 2).
+- Final CE: 6.7882800 vs 5.9673133.
+- Final top-3: .3119803 vs .3024330.
+- Final train top-3: .9991707 vs .9992039.
+- First memorization: epochs 13 vs 14; no delayed candidate.
+- Parameter L2 (epoch 1 to 120): 2732.02 to 2723.04 vs
+  2723.92 to 1907.83. Stronger decay reduced CE deterioration
+  but did not rescue top-3 or induce delayed generalization.
+
+These are single-split teacher-forced metrics, not listening scores;
+the experiment cannot exclude grokking under other training regimes.
+Do not deploy a late checkpoint on the basis of training accuracy.
+
+The next default runner profile is `s2_v5dev_cfm_grokfast_v1`:
+two independent single-T4 V5dev CFM runs from the same generic base,
+Grokfast OFF/ON, WD .01, LR 1e-4, FP32, batch 1, LoRA rank 16,
+gradient checkpointing enabled, 12 fixed epochs, 90-minute training
+time cap. Both use identical held-out split seed and fixed validation
+noise draws. The epoch-zero CFM baseline is recorded separately.
+This is an initial feasibility and short-horizon comparison, not
+a sufficient test to rule out long-horizon S2 grokking. No S1 training.
+The previous S1 profile remains available through
+`GPT_SOVITS_RESEARCH_PROFILE=s1` (default s2). Each S2 arm links
+immutable preprocessed text/HuBERT/audio files into a separate writable
+experiment directory and exports its best compact weights only to tmp.
+The single current-run `/kaggle/working/grokking_result.zip` contains
+diagnostics and metrics, not raw audio or checkpoints.
