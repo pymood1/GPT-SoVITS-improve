@@ -86,6 +86,7 @@ SESSION_SETTINGS = {
 }
 PROFILES = {"s1": SETTINGS, "s2": S2_SETTINGS, "s2_quality": QUALITY_SETTINGS,
             "quality_session": SESSION_SETTINGS,
+            "quality_reuse": {**SESSION_SETTINGS, "experiment": "v5dev_multi_reference_reuse", "fixed_epochs": 0, "base_epochs": 0},
             "s2_listening": {**QUALITY_SETTINGS, "experiment": "v5dev_reuse_listening", "fixed_epochs": 0, "base_epochs": 0}}
 DEFAULT_PROFILE = "s2"
 
@@ -365,7 +366,7 @@ def run(ui):
     # Explicit remote smoke overrides; ordinary notebook profiles are unchanged.
     epochs = int(os.environ.get("GPT_SOVITS_RESEARCH_EPOCHS", settings["fixed_epochs"]))
     seconds = int(os.environ.get("GPT_SOVITS_RESEARCH_MAX_SECONDS", settings["max_training_seconds"]))
-    if not ((epochs == 0 if profile == "s2_listening" else 1 <= epochs <= 120) and 60 <= seconds <= 14400):
+    if not ((epochs == 0 if profile in ("s2_listening", "quality_reuse") else 1 <= epochs <= 120) and 60 <= seconds <= 14400):
         raise ValueError("Research budget out of range")
     settings.update(base_epochs=epochs, fixed_epochs=epochs, max_training_seconds=seconds)
     run_id = os.environ.get("GPT_SOVITS_RESEARCH_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
@@ -428,6 +429,25 @@ def run(ui):
             # Fail before spending GPU epochs if the listening prompt is unavailable.
             state["reference_counts"] = {}
             choose_reference(preprocessed, state["reference_counts"])
+        if profile == "quality_reuse":
+            import re
+            source_kernel = os.environ.get("GPT_SOVITS_RESEARCH_SOURCE_KERNEL", "")
+            if not re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", source_kernel):
+                raise ValueError("Invalid private source kernel")
+            slug = source_kernel.split("/")[-1]
+            required = ("S1_v_o-grok-best.ckpt", "S1_qkv_o-grok-best.ckpt",
+                        "S2_rank16_grok_cfm_best.pth", "S2_rank32_grok_cfm_best.pth")
+            candidates = [p.parent for p in Path("/kaggle/input").rglob(required[0])
+                          if slug in p.parts and p.parent.name == "private-candidates"
+                          and all((p.parent / name).is_file() for name in required)]
+            if len(candidates) != 1:
+                raise FileNotFoundError("Unique four prior private candidates not mounted")
+            for name in required:
+                (work / name).symlink_to(candidates[0] / name)
+            for name in ("2-name2text.txt", "5-wav32k"):
+                (work / name).symlink_to(preprocessed / name)
+            state.update(status="completed", reused_checkpoints=4, training_epochs=0)
+            return 0
         if profile == "s2_listening":
             # Mount prior private Kaggle output; no optimizer/trainer is started.
             import re
