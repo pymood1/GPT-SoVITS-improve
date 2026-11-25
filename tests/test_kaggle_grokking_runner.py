@@ -10,6 +10,17 @@ from tools.kaggle_grokking_runner import _arm_env, _bundle, _read_metrics, _summ
 
 
 class KaggleRunnerTests(unittest.TestCase):
+    def test_parallel_session_lanes_reuse_idle_gpu_without_overlap(self):
+        from tools.kaggle_grokking_runner import SESSION_SETTINGS, _launchable_jobs
+        pending = [(arm["gpu"], arm) for arm in SESSION_SETTINGS["arms"]]
+        first = _launchable_jobs(pending, set())
+        self.assertEqual([arm["id"] for _, arm in first], ["S1_v_o", "S2_rank16"])
+        remaining = [job for job in pending if job not in first]
+        self.assertEqual(_launchable_jobs(remaining, {0, 1}), [])
+        self.assertEqual([arm["id"] for _, arm in _launchable_jobs(remaining, {1})], ["S1_qkv_o"])
+        self.assertEqual([arm["id"] for _, arm in _launchable_jobs(remaining, {0})], ["S2_rank32"])
+        self.assertEqual(len({arm["id"] for _, arm in pending}), 4)
+
     def test_arm_environment_isolated(self):
         with patch.dict(os.environ, {"GPT_SOVITS_GROKFAST": "1", "GPT_SOVITS_GROKKING_S1_LR": "9"}):
             a = _arm_env({"grokfast": False}, 0, Path("a.json"))
