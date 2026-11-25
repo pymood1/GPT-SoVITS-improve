@@ -390,18 +390,23 @@ class Text2SemanticDecoder(nn.Module):
         emotion_id,
         emotion_strength,
         emotion_state,
+        probability_trace=None,
     ):
         if self.emotion_controller is None or emotion_id is None or emotion_strength == 0.0:
-            samples = sample(
+            samples, probabilities = sample(
                 logits,
                 previous_tokens,
                 top_k=top_k,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
                 temperature=temperature,
-            )[0]
+            )
+            if probability_trace is not None:
+                probability_trace.append(probabilities.detach().clone())
             return samples, emotion_state
 
+        if probability_trace is not None:
+            raise ValueError("Soft semantic research does not combine with emotion steering yet")
         eos_id = self.EOS if self.EOS < logits.shape[-1] else None
         samples, _, emotion_state = sample_with_emotion_preference(
             logits=logits,
@@ -883,8 +888,13 @@ class Text2SemanticDecoder(nn.Module):
     ):
         y_list = []
         idx_list = []
+        traces = kwargs.get("soft_probability_traces")
+        if traces is not None and (len(x) != 1 or prompts is None):
+            raise ValueError("Soft semantic probe requires one prompted utterance")
         for i in range(len(x)):
             item_kwargs = dict(kwargs)
+            if traces is not None:
+                item_kwargs["probability_trace"] = []
             item_emotion_id = item_kwargs.get("emotion_id", None)
             if isinstance(item_emotion_id, (list, tuple)) and len(item_emotion_id) > 1:
                 item_kwargs["emotion_id"] = item_emotion_id[i]
@@ -903,6 +913,9 @@ class Text2SemanticDecoder(nn.Module):
                 repetition_penalty,
                 **item_kwargs,
             ))
+            if traces is not None:
+                from module.soft_semantics import align_probability_trace
+                traces.append(align_probability_trace(y, prompts[i].numel(), idx, item_kwargs["probability_trace"], self.EOS))
             y_list.append(y[0])
             idx_list.append(idx)
 
@@ -926,6 +939,9 @@ class Text2SemanticDecoder(nn.Module):
         emotion_id, emotion_strength, emotion_state = self._prepare_emotion_runtime(
             kwargs, x.device
         )
+        probability_trace = kwargs.get("probability_trace")
+        if probability_trace is not None and (streaming_mode or prompts is None or x.shape[0] != 1):
+            raise ValueError("Unsupported soft semantic inference mode")
         mute_emb_sim_matrix = kwargs.get("mute_emb_sim_matrix", None)
         chunk_split_thershold = kwargs.get("chunk_split_thershold", 0.3)
         check_token_num = 2
@@ -1009,6 +1025,7 @@ class Text2SemanticDecoder(nn.Module):
                 emotion_id=emotion_id,
                 emotion_strength=emotion_strength,
                 emotion_state=emotion_state,
+                probability_trace=probability_trace,
             )
 
             y = torch.concat([y, samples], dim=1)
