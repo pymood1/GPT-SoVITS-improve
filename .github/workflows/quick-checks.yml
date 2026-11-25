@@ -59,6 +59,7 @@ jobs:
             tools/kaggle_remote_job.py \
             tools/kaggle_live_status.py \
             tools/kaggle_quality_listening.py \
+            tools/kaggle_quality_score.py \
             tools/kaggle_launch_webui.py \
             tools/my_utils.py
 
@@ -70,6 +71,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_kaggle_grokking_runner.py -v
           python -m unittest discover -s tests -p test_kaggle_live_status.py -v
+          python -m unittest discover -s tests -p test_kaggle_quality_score.py -v
 
       - name: Validate notebooks as JSON
         run: |
