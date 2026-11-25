@@ -197,12 +197,14 @@ def _config(preprocessed, output, weights, arm, pretrained, text_features):
 def run(ui):
     import torch
     import yaml
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+    run_id = os.environ.get("GPT_SOVITS_RESEARCH_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     work = Path("/kaggle/tmp/grokking_runs") / run_id
     work.mkdir(parents=True, exist_ok=False)
-    report = work / "report"
-    report.mkdir()
-    archive = Path("/kaggle/working") / ("grokking_" + run_id + ".zip")
+    shared_report = os.environ.get("GPT_SOVITS_RESEARCH_REPORT_ROOT")
+    bundle_root = Path(shared_report) if shared_report else work / "report"
+    report = bundle_root / "training" if shared_report else bundle_root
+    report.mkdir(parents=True, exist_ok=False)
+    archive = Path("/kaggle/working/grokking_result.zip")
     exp = "grok_preprocess_" + run_id
     processes = {}
     state = {"run_id": run_id, "status": "starting", "settings": SETTINGS, "arms": {}}
@@ -283,7 +285,7 @@ def run(ui):
                 for path in out.glob("grokking_s1_metrics_*.jsonl"):
                     shutil.copyfile(path, arm_report / path.name)
             _write_json(report / "summary.json", state)
-            _bundle(report, archive)
+            _bundle(bundle_root, archive)
             if time.monotonic() >= deadline:
                 state["status"] = "time_limit"
                 break
@@ -309,6 +311,6 @@ def run(ui):
             state["status"] = "missing_metrics"
         state["disk"] = _disk_state()
         _write_json(report / "summary.json", state)
-        _bundle(report, archive)
+        _bundle(bundle_root, archive)
         print("RESULT ZIP:", archive, flush=True)
     return 0 if state["status"] == "completed" else 1
