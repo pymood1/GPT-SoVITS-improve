@@ -112,6 +112,42 @@ class CFMProbeTests(unittest.TestCase):
         self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
         self.assertTrue(model.training)
 
+    def test_model_mix_effective_delta_and_invalid_pairs(self):
+        from tools.quality_model_mix import mix_s1_state, scale_s2_lora
+        a = torch.tensor([[1., 2., 3.], [2., 1., 4.]])
+        b = torch.tensor([[3., 2.], [1., 1.]])
+        weights = {"cfm.q.lora_A.default.weight": a, "cfm.q.lora_B.default.weight": b}
+        for scale in (0., .25, .75, 1., 1.5):
+            out = scale_s2_lora(weights, 2, scale)
+            self.assertTrue(torch.allclose(out["cfm.q.lora_B.default.weight"] @ out["cfm.q.lora_A.default.weight"], scale * (b @ a)))
+        self.assertTrue(torch.equal(weights["cfm.q.lora_B.default.weight"], b))
+        with self.assertRaises(ValueError):
+            scale_s2_lora({"cfm.q.lora_A.default.weight": a}, 2, .5)
+        self.assertTrue(torch.equal(mix_s1_state({"w": a}, {"w": a + 2}, .5)["w"], a + 1))
+        with self.assertRaises(ValueError):
+            mix_s1_state({"w": a}, {"w": b}, .5)
+
+    def test_soft_semantic_onehot_matches_projected_hard_decode(self):
+        from module.soft_semantics import decode_soft_single_layer
+        from types import SimpleNamespace
+        book = torch.tensor([[1., 2.], [3., 4.], [6., 7.]])
+        proj = nn.Linear(2, 3)
+        layer = SimpleNamespace(codebook=book, project_out=proj)
+        q = SimpleNamespace(vq=SimpleNamespace(layers=[layer]),
+                            decode=lambda codes: proj(book[codes[0]]).transpose(1, 2).contiguous())
+        codes = torch.tensor([[[0, 2], [1, 0]]])
+        p = torch.nn.functional.one_hot(codes[0], 3).float()
+        hard = q.decode(codes)
+        self.assertTrue(torch.allclose(decode_soft_single_layer(q, codes, p, 1.), hard))
+        uniform = torch.full_like(p, 1/3)
+        self.assertTrue(torch.equal(decode_soft_single_layer(q, codes, uniform, 0.), hard))
+        soft = proj(uniform @ book).transpose(1, 2)
+        self.assertTrue(torch.allclose(decode_soft_single_layer(q, codes, uniform, .5), (hard + soft) / 2))
+        with self.assertRaises(ValueError):
+            decode_soft_single_layer(q, codes, p * .5)
+        with self.assertRaises(ValueError):
+            decode_soft_single_layer(q, codes, torch.cat([p, p[..., :1]], -1))
+
     def test_tts_pcm_full_scale_and_output_rate_pause(self):
         import numpy as np
         from types import SimpleNamespace
