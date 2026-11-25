@@ -73,8 +73,10 @@ jobs:
           }))
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("kernel=" + kernel + "\n")
+              # Budget includes setup, preprocessing, training and result finalization.
+              f.write("runtime_limit=" + str(req["max_training_seconds"] + 2400) + "\n")
               f.write("recover=" + str(bool(recover) or int(os.environ["GITHUB_RUN_ATTEMPT"]) > 1).lower() + "\n")
-          print("Private job:", kernel, "commit:", req["code_sha"], "profile:", req["profile"], "epochs:", req["epochs"])
+          print("Private job:", kernel, "commit:", req["code_sha"], "profile:", req["profile"], "epochs:", req["epochs"], "runtime_limit_seconds:", req["max_training_seconds"] + 2400)
           PY
       - name: Install Kaggle CLI
         if: steps.request.outputs.submit == 'true'
@@ -88,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}${KAGGLE_KEY:-}"
-          kaggle kernels push -p "$RUNNER_TEMP/kaggle-research" --accelerator NvidiaTeslaT4 --timeout 600
+          kaggle kernels push -p "$RUNNER_TEMP/kaggle-research" --accelerator NvidiaTeslaT4 --timeout "${{ steps.prepare.outputs.runtime_limit }}"
       - name: Poll and recover numeric metrics only
         if: steps.request.outputs.submit == 'true'
         env:
@@ -117,8 +119,8 @@ jobs:
               test -s "$RUNNER_TEMP/kaggle-result/remote-result.json"
               break
             fi
-            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
-              echo "::error::Kaggle infrastructure or kernel failure. Raw logs stay private."
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled|cancel_acknowledged)(["[:space:]]|$)'; then
+              echo "::error::Kaggle kernel failed or cancellation was acknowledged. Raw logs stay private."
               exit 1
             fi
             sleep 30
