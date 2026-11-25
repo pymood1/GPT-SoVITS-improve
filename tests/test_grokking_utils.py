@@ -137,5 +137,31 @@ class GrokkingUtilsTests(unittest.TestCase):
         self.assertFalse(result["delayed_improvement"])
 
 
+    def test_holdout_identity_order_is_independent_of_input_order(self):
+        names_a = ["a", "b", "c", "d", "e", "a", "f"]
+        names_b = ["f", "a", "d", "b", "e", "c", "a"]
+        def split_names(names):
+            train, val = deterministic_holdout_indices(names, 0.3, 2, 17)
+            return [names[i] for i in train], [names[i] for i in val]
+        self.assertEqual(split_names(names_a), split_names(names_b))
+
+    def test_nonfinite_grad_does_not_poison_grokfast_ema(self):
+        model = torch.nn.Linear(2, 1)
+        model.weight.grad = torch.ones_like(model.weight)
+        model.bias.grad = torch.ones_like(model.bias)
+        state = gradfilter_ema(model, {}, alpha=0.9, lamb=0.5)
+        before = {k: v.clone() for k, v in state.items()}
+        model.weight.grad = torch.full_like(model.weight, float("inf"))
+        model.bias.grad = torch.full_like(model.bias, 2)
+        gradfilter_ema(model, state, alpha=0.9, lamb=0.5)
+        for name in before:
+            self.assertTrue(torch.equal(before[name], state[name]))
+        self.assertTrue(torch.equal(model.bias.grad, torch.full_like(model.bias, 2)))
+        model.weight.grad = torch.ones_like(model.weight)
+        model.bias.grad = torch.ones_like(model.bias)
+        gradfilter_ema(model, state, alpha=0.9, lamb=0.5)
+        self.assertTrue(torch.isfinite(model.weight.grad).all())
+
+
 if __name__ == "__main__":
     unittest.main()
