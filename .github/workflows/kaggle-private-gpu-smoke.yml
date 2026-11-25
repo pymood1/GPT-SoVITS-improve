@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: kaggle-private-gpu-smoke
+  group: kaggle-private-gpu-recovery
   cancel-in-progress: false
 jobs:
   smoke:
