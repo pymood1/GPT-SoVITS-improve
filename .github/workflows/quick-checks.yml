@@ -57,6 +57,7 @@ jobs:
             tools/kaggle_grokking_runner.py \
             tools/kaggle_grokking_bootstrap.py \
             tools/kaggle_remote_job.py \
+            tools/kaggle_live_status.py \
             tools/kaggle_quality_listening.py \
             tools/kaggle_launch_webui.py \
             tools/my_utils.py
@@ -68,6 +69,7 @@ jobs:
       - name: Kaggle research runner diagnostics smoke
         run: |
           python -m unittest discover -s tests -p test_kaggle_grokking_runner.py -v
+          python -m unittest discover -s tests -p test_kaggle_live_status.py -v
 
       - name: Validate notebooks as JSON
         run: |
