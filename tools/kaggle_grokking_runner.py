@@ -393,6 +393,11 @@ def run(ui):
         if not features.get("multilingual_bert"):
             raise RuntimeError("BERT was requested but feature marker does not confirm it")
         _require_tmp_space(state)
+        if profile == "s2_quality":
+            from tools.kaggle_quality_listening import choose_reference
+            # Fail before spending GPU epochs if the listening prompt is unavailable.
+            state["reference_counts"] = {}
+            choose_reference(preprocessed, state["reference_counts"])
         state["status"] = "training"
         for gpu, arm in enumerate(settings["arms"]):
             arm_id = arm["id"]
