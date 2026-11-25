@@ -84,6 +84,7 @@ def _run():
     output.mkdir(parents=True, exist_ok=False)
     archive = Path("/kaggle/working/grokking_result.zip")
     manifest = {"run_id": run_id, "status": "running", "stage": "setup"}
+    print("[gsv-progress] parent bootstrap all 0/2", flush=True)
     _write_json(report / "run.json", manifest)
     _bundle(report, archive)
     # Hide old timestamped exports only after a new valid archive exists.
@@ -130,11 +131,13 @@ def _run():
             # Download archives are disposable; keep installed models and HF cache.
             shutil.rmtree("/kaggle/tmp/gpt_sovits_downloads", ignore_errors=True)
         print("[disk after setup]", _disk_state(), flush=True)
+        print("[gsv-progress] parent bootstrap all 1/2", flush=True)
         manifest["stage"] = "launcher"
         _write_json(report / "run.json", manifest)
         _bundle(report, archive)
         run_logged([sys.executable, "-u", str(ROOT / "tools/kaggle_launch_webui.py")],
                    output / "launcher.log", env)
+        print("[gsv-progress] parent bootstrap all 2/2", flush=True)
         manifest.update(status="completed", stage="finished")
         return 0
     except BaseException:
