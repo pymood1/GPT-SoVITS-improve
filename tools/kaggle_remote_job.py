@@ -119,16 +119,16 @@ def main():
         arms = report.get("arms", {})
         expected = {"s2": ("A_cfm_off", "B_cfm_on"), "s1": ("A_wd001", "B_wd1"),
                     "s2_quality": ("A_lr100", "B_lr030"), "s2_listening": (),
-                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"), "quality_reuse": (), "quality_mix": (), "quality_soft": (), "quality_general": ()}[profile]
+                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"), "quality_reuse": (), "quality_mix": (), "quality_soft": (), "quality_general": (), "quality_style": ()}[profile]
         if (proc.returncode == 0 and report.get("training_status") == "completed"
                 and len(report.get("gpus", [])) == 2
                 and (profile != "s2_listening" or report.get("reused_checkpoints") == 2)
                 and (profile != "quality_session" or report.get("candidate_exports") == 4)
-                and (profile not in ("quality_reuse", "quality_mix", "quality_soft", "quality_general") or report.get("reused_checkpoints") == 4)
+                and (profile not in ("quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style") or report.get("reused_checkpoints") == 4)
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
-            if profile in ("s2_quality", "s2_listening", "quality_session", "quality_reuse", "quality_mix", "quality_soft", "quality_general"):
+            if profile in ("s2_quality", "s2_listening", "quality_session", "quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style"):
                 report["stage"] = "listening"
                 with zipfile.ZipFile(WORKING / "grokking_result.zip") as z:
                     run_id = json.loads(z.read("run.json"))["run_id"]
@@ -150,7 +150,7 @@ def main():
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
                                            str(Path("/kaggle/tmp/grokking_runs") / run_id), str(output)],
-                                          cwd=ROOT, env=env, timeout=9600 if profile in ("quality_mix", "quality_soft", "quality_general") else 5400 if profile == "quality_reuse" else 1500 if profile == "quality_session" else 900)
+                                          cwd=ROOT, env=env, timeout=9600 if profile in ("quality_mix", "quality_soft", "quality_general", "quality_style") else 5400 if profile == "quality_reuse" else 1500 if profile == "quality_session" else 900)
                     report["listening_exit"] = proc.returncode
                     path = output / "listening-metrics.json"
                     if path.is_file():
@@ -172,21 +172,21 @@ def main():
                                 backend = evaluation.get(stage + "_backend")
                                 if backend in allowed:
                                     report["listening"]["evaluation"][stage + "_backend"] = backend
-                                for suffix in ("_seconds", "_calibration_seconds", "_calibration_count"):
+                                for suffix in ("_seconds", "_calibration_seconds", "_calibration_count", "_cpu_calibration_seconds", "_gpu_calibration_seconds"):
                                     value = number(evaluation.get(stage + suffix))
                                     if value is not None and value >= 0:
                                         report["listening"]["evaluation"][stage + suffix] = value
                         selected = raw.get("selected", {})
                         if isinstance(selected, dict) and selected.get("s1") in ("S1_v_o", "S1_qkv_o") and selected.get("s2") in ("S2_rank16", "S2_rank32"):
                             report["listening"]["selected"] = {"s1": selected["s1"], "s2": selected["s2"]}
-                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined", "rank16", "rank32", "mix025", "mix050", "mix075", "mix125", "cfg100", "cfg160", "soft000", "soft005", "soft010", "soft025", "soft050", "soft100", "soft000b", "mix065", "mix085", "gen_base", "gen_hard", "gen_soft010", "gen_hardb", "gen_soft010b", "gen_soft025"):
+                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined", "rank16", "rank32", "mix025", "mix050", "mix075", "mix125", "cfg100", "cfg160", "soft000", "soft005", "soft010", "soft025", "soft050", "soft100", "soft000b", "mix065", "mix085", "gen_base", "gen_hard", "gen_soft010", "gen_hardb", "gen_soft010b", "gen_soft025", "style_base", "style_base_mean", "style_base_sv", "style_lora", "style_lora_mean", "style_lora_sv"):
                             v = raw.get("models", {}).get(label, {})
                             if v:
                                 report["listening"]["models"][label] = {
                                     "status": v.get("status") if v.get("status") in ("completed", "failed") else "unknown",
                                     "stage": v.get("stage") if v.get("stage") in ("model_load", "reference", "synthesis", "output_validation", "finished") else "unknown",
                                     "observed_sample_rate": number(v.get("observed_sample_rate")),
-                                    "samples": [{k: number(row.get(k)) for k in ("index", "reference_index", "text_index", "seed", "sample_rate", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine")}
+                                    "samples": [{k: number(row.get(k)) for k in ("index", "reference_index", "text_index", "seed", "sample_rate", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine", "speaker_holdout_cosine")}
                                                 for row in v.get("samples", [])],
                                 }
                 except Exception as exc:
