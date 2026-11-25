@@ -177,9 +177,11 @@ def pick_candidate(arms, names, metric):
 
 MIX_LABELS = (("mix025", "mix050", "mix075", "mix125"),
               ("base", "rank32", "cfg100", "cfg160"))
+SOFT_LABELS = (("soft000", "soft005", "soft010", "soft025"),
+               ("soft050", "soft100", "mix065", "mix085", "soft000b"))
 
 
-def merge_mix_reports(reports):
+def merge_mix_reports(reports, labels=MIX_LABELS):
     """Require complete, disjoint matched evaluations before accepting a sweep."""
     result = {"status": "failed", "models": {}, "evaluation": {}}
     if len(reports) != 2:
@@ -187,7 +189,7 @@ def merge_mix_reports(reports):
     complete = True
     for index, report in enumerate(reports):
         models = report.get("models", {})
-        expected = set(MIX_LABELS[index])
+        expected = set(labels[index])
         complete = complete and report.get("status") == "completed" and set(models) == expected
         result["models"].update({k: models[k] for k in expected if k in models})
         for label in expected:
@@ -243,13 +245,13 @@ def run_mix_workers(work, output):
             if p.returncode != 0:
                 report["status"] = "failed"
             reports.append(report)
-        result = merge_mix_reports(reports)
+        result = merge_mix_reports(reports, SOFT_LABELS if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_soft" else MIX_LABELS)
         (output / "listening-metrics.json").write_text(json.dumps(result, indent=2, allow_nan=False))
     return 0 if result["status"] == "completed" else 1
 
 
 def main():
-    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_mix" and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
+    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") in ("quality_mix", "quality_soft") and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
         return run_mix_workers(*map(Path, sys.argv[1:3]))
     import numpy as np
     import torch
@@ -264,10 +266,34 @@ def main():
         base_s2 = ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
         models = {"base": (base_s1, base_s2)}
         profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
-        reuse = profile in ("quality_reuse", "quality_mix")
+        reuse = profile in ("quality_reuse", "quality_mix", "quality_soft")
         mix_worker = os.environ.get("GPT_SOVITS_MIX_WORKER", "")
         inference_options = {}
-        if profile == "quality_mix":
+        if profile == "quality_soft":
+            from tools.quality_model_mix import export_scaled_v5_checkpoint
+            s32 = work / "S2_rank32_grok_cfm_best.pth"
+            if mix_worker not in ("0", "1"):
+                raise ValueError("Invalid soft worker")
+            # Each process has its own compact checkpoint to avoid write races.
+            weight = work / ("soft-anchor-" + mix_worker + ".pth")
+            export_scaled_v5_checkpoint(s32, weight, .75)
+            models = {}
+            if mix_worker == "0":
+                for label, mix in (("soft000", 0.), ("soft005", .05),
+                                   ("soft010", .10), ("soft025", .25)):
+                    models[label] = (base_s1, weight)
+                    inference_options[label] = {"soft_semantic_mix": mix}
+            else:
+                for label, mix in (("soft050", .50), ("soft100", 1.), ("soft000b", 0.)):
+                    models[label] = (base_s1, weight)
+                    inference_options[label] = {"soft_semantic_mix": mix}
+                for label, scale in (("mix065", .65), ("mix085", .85)):
+                    candidate = work / (label + ".pth")
+                    export_scaled_v5_checkpoint(s32, candidate, scale)
+                    models[label] = (base_s1, candidate)
+            reference_folder = work
+            torch.set_num_threads(2)
+        elif profile == "quality_mix":
             from tools.quality_model_mix import export_scaled_v5_checkpoint
             s32 = work / "S2_rank32_grok_cfm_best.pth"
             models = {}
