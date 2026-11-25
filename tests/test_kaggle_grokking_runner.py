@@ -83,6 +83,21 @@ class KaggleRunnerTests(unittest.TestCase):
         reports[1]["models"].pop("soft000b")
         self.assertEqual(merge_mix_reports(reports, SOFT_LABELS)["status"], "failed")
 
+    def test_generalization_two_seed_report_gate(self):
+        from tools.kaggle_quality_listening import GENERAL_LABELS, merge_mix_reports
+        reports = [
+            {"status": "completed", "reference_counts": {"rows": 272},
+             "evaluation": {"asr_status": "completed", "speaker_status": "completed"},
+             "models": {label: {"status": "completed", "samples": [
+                 {"index": i, "cer": 0., "speaker_cosine": .8} for i in range(1, 19)
+             ]} for label in labels}}
+            for labels in GENERAL_LABELS
+        ]
+        self.assertEqual(merge_mix_reports(reports, GENERAL_LABELS, 18)["status"], "completed")
+        self.assertEqual(merge_mix_reports(reports, GENERAL_LABELS)["status"], "failed")
+        reports[1]["models"]["gen_soft025"]["samples"][-1]["index"] = 1
+        self.assertEqual(merge_mix_reports(reports, GENERAL_LABELS, 18)["status"], "failed")
+
     def test_arm_environment_isolated(self):
         with patch.dict(os.environ, {"GPT_SOVITS_GROKFAST": "1", "GPT_SOVITS_GROKKING_S1_LR": "9"}):
             a = _arm_env({"grokfast": False}, 0, Path("a.json"))
