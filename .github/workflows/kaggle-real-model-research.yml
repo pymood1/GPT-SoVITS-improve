@@ -166,3 +166,32 @@ jobs:
           print("REMOTE_RESULT_END")
           assert result["status"] == "completed", "Model experiment did not complete"
           PY
+          # Recover only the narrowly scoped diagnostic; no audio, checkpoints or raw logs.
+          if python - "$RUNNER_TEMP/kaggle-result/remote-result.json" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          sys.exit(0 if r.get("profile") == "s2_quality" and r.get("listening", {}).get("status") != "completed" else 1)
+          PY
+          then
+            mkdir -p "$RUNNER_TEMP/listening-diagnostic"
+            if kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/listening-diagnostic" --file-pattern '(^|/)listening-metrics[.]json$'; then
+              python - "$RUNNER_TEMP/listening-diagnostic" <<'PY'
+          import json, re, sys
+          from pathlib import Path
+          files = list(Path(sys.argv[1]).rglob("listening-metrics.json"))
+          if len(files) != 1:
+              print("LISTENING_DIAGNOSTIC unavailable")
+          else:
+              raw = json.loads(files[0].read_text())
+              def error(v):
+                  return v if isinstance(v, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", v) else None
+              result = {"error_type": error(raw.get("error_type")), "models": {}}
+              for k in ("base", "A_lr100", "B_lr030"):
+                  if k in raw.get("models", {}):
+                      result["models"][k] = {"error_type": error(raw["models"][k].get("error_type"))}
+              print("LISTENING_DIAGNOSTIC", json.dumps(result))
+          PY
+            fi
+            echo "::error::Training succeeded, but listening evaluation did not complete."
+            exit 1
+          fi
