@@ -33,3 +33,32 @@ def decode_soft_single_layer(quantizer, codes, probabilities, mix=1.0):
     if soft.shape != hard.shape:
         raise ValueError("Soft decode shape mismatch")
     return torch.lerp(hard, soft.to(hard.dtype), mix)
+
+
+def align_probability_trace(tokens, prompt_length, decoded_length, trace, eos_id):
+    """Match probabilities to the actual legacy decoder's trailing token slice.
+
+    The last sampled step may be removed by the existing EOS stopping rule.
+    Keep the same hard sequence, including the legacy early-stop slice.
+    Renormalize after excluding EOS; do not sample again.
+    """
+    generated = tokens.shape[-1] - int(prompt_length)
+    length = int(decoded_length)
+    if tokens.ndim != 2 or tokens.shape[0] != 1 or not 0 < length <= generated:
+        raise ValueError("Invalid generated semantic length")
+    if len(trace) not in (generated, generated + 1):
+        raise ValueError("Sampler trace does not match generated token count")
+    rows = []
+    for row in trace[:generated][-length:]:
+        if row.ndim != 2 or row.shape[0] != 1 or row.shape[-1] not in (eos_id, eos_id + 1):
+            raise ValueError("Unexpected sampler vocabulary; EOS must be last")
+        p = row[:, :eos_id].float()
+        mass = p.sum(-1, keepdim=True)
+        if not torch.isfinite(p).all() or (p < 0).any() or (mass <= 0).any():
+            raise ValueError("Invalid non-EOS probability mass")
+        rows.append(p / mass)
+    aligned = torch.stack(rows, dim=1)
+    hard = tokens[:, -length:]
+    if (hard < 0).any() or (hard >= eos_id).any():
+        raise ValueError("Non-codebook token in decoded sequence")
+    return aligned
