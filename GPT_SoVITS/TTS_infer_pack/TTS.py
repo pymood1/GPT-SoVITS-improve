@@ -1937,6 +1937,15 @@ class TTS:
             audio = sum(audio, [])
 
         audio = torch.cat(audio, dim=0)
+        # Check floating-point output before integer quantization can hide NaN/Inf.
+        if not bool(torch.isfinite(audio).all()):
+            raise RuntimeError("Nonfinite synthesized waveform")
+
+        def pcm16(samples):
+            samples = np.asarray(samples, dtype=np.float32)
+            if not np.isfinite(samples).all():
+                raise RuntimeError("Nonfinite waveform before PCM conversion")
+            return np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
 
         if super_sampling:
             print(f"############ {i18n('音频超采样')} ############")
@@ -1947,15 +1956,15 @@ class TTS:
                 max_audio = np.abs(audio).max()
                 if max_audio > 1:
                     audio /= max_audio
-                audio = np.rint(np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+                audio = pcm16(audio)
             else:
                 audio = audio.cpu().numpy()
-                audio = np.rint(np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+                audio = pcm16(audio)
             t2 = time.perf_counter()
             print(f"超采样用时：{t2 - t1:.3f}s")
         else:
             audio = audio.cpu().numpy()
-            audio = np.rint(np.clip(audio.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+            audio = pcm16(audio)
 
 
         # try:
