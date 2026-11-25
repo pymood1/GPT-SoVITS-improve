@@ -416,6 +416,7 @@ def run(ui):
         if not s1.is_file() or not s2.is_file():
             raise RuntimeError("Generic V5dev pretrained weights missing")
         state["failure_phase"] = "preprocessing"
+        print("[gsv-progress] parent preprocess all 0/1", flush=True)
         state["status"] = "preprocessing"
         _write_json(report / "summary.json", state)
         gpu_string = "0-1"
@@ -434,6 +435,7 @@ def run(ui):
                 completed = status == ui.process_info(ui.process_name_1abc, "finish")
         if not completed:
             raise RuntimeError("Canonical a/b/c preprocessing did not finish")
+        print("[gsv-progress] parent preprocess all 1/1", flush=True)
         state["failure_phase"] = "artifact_validation"
         preprocessed = (ROOT / ui.exp_root / exp).resolve()
         stages = ("gpt", "sovits") if profile == "quality_session" else ("gpt" if profile == "s1" else "sovits",)
