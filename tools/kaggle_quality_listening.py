@@ -1,5 +1,7 @@
 """Private listening comparison using identical reference and text for all models."""
 import json
+import os
+import traceback
 import re
 import shutil
 import sys
@@ -156,13 +158,20 @@ def main():
         # Export the usable checkpoints even if reference selection or synthesis fails.
         report["reference_counts"] = {}
         ref, prompt, prompt_lang = choose_reference(work / "A_lr100", report["reference_counts"])
+        # Keep the exact prompt privately for reproducible inference-only follow-ups.
+        shutil.copyfile(ref, output / "reference.wav")
+        (output / "reference.json").write_text(json.dumps({"text": prompt, "language": prompt_lang}, ensure_ascii=False), encoding="utf-8")
         for label, weight in models.items():
             result = {"samples": [], "status": "failed"}
             report["models"][label] = result
             try:
+                result["stage"] = "model_load"
                 config = dict(TTS_Config.default_configs["v5dev"], device="cuda:0",
                               is_half=False, vits_weights_path=str(weight))
                 tts = TTS(TTS_Config({"custom": config}))
+                result["stage"] = "reference"
+                tts.set_ref_audio(str(ref))
+                result["stage"] = "synthesis"
                 for index, text in enumerate(TEXTS, 1):
                     chunks = list(tts.run({
                         "text": text, "text_lang": "all_ko", "prompt_text": prompt,
@@ -178,7 +187,10 @@ def main():
                         raise RuntimeError("Unexpected synthesis chunks")
                     sr, audio = chunks[0]
                     audio = np.asarray(audio)
-                    if sr != 32000 or audio.size < sr or not np.isfinite(audio).all():
+                    result["stage"] = "output_validation"
+                    result["observed_sample_rate"] = int(sr)
+                    expected_sr = int(tts.vocoder_configs["sr"])
+                    if sr != expected_sr or audio.size < sr or not np.isfinite(audio).all():
                         raise RuntimeError("Invalid synthesis output")
                     normalized = audio.astype(np.float64)
                     if np.issubdtype(audio.dtype, np.integer):
@@ -187,11 +199,13 @@ def main():
                     if rms < 1e-4:
                         raise RuntimeError("Silent synthesis output")
                     write(output / f"{label}_{index:02d}.wav", sr, audio)
-                    result["samples"].append({"index": index, "seconds": audio.size / sr,
+                    result["samples"].append({"index": index, "sample_rate": int(sr), "seconds": audio.size / sr,
                                               "rms": rms, "peak": float(np.max(np.abs(normalized)))})
-                result["status"] = "completed"
+                result.update(status="completed", stage="finished")
             except Exception as exc:
                 result["error_type"] = type(exc).__name__
+                # Raw traceback is private Kaggle output, never returned to GitHub.
+                (output / (label + "-error.txt")).write_text(traceback.format_exc(), encoding="utf-8")
             finally:
                 if "tts" in locals():
                     del tts
