@@ -63,6 +63,15 @@ class KaggleRunnerTests(unittest.TestCase):
                 self.assertEqual((out / "4-cnhubert").resolve(), source / "4-cnhubert")
             self.assertFalse((source / "config.json").exists())
 
+    def test_character_error_normalizes_spacing_punctuation_and_unicode(self):
+        from tools.kaggle_quality_listening import character_errors
+        self.assertEqual(character_errors("안녕하세요!", "안녕 하세요."), (0, 5))
+        self.assertEqual(character_errors("가나다", "가다"), (1, 3))
+        self.assertEqual(character_errors("가나다", "가나마"), (1, 3))
+        self.assertEqual(character_errors("가", "가나다"), (2, 1))
+        self.assertEqual(character_errors("안녕", ""), (2, 2))
+        self.assertEqual(character_errors("Ａ", "a"), (0, 1))
+
     def test_quality_reference_prefers_korean_but_accepts_other_languages(self):
         import wave
         from tools.kaggle_quality_listening import choose_reference, ReferenceUnavailable
