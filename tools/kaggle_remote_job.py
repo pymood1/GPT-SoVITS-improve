@@ -137,12 +137,18 @@ def main():
                         if isinstance(counts, dict):
                             report["listening"]["reference_counts"] = {k: number(counts.get(k)) for k in
                                                                        ("rows", "readable", "duration_eligible", "text_eligible", "korean_eligible")}
+                        evaluation = raw.get("evaluation")
+                        if isinstance(evaluation, dict):
+                            report["listening"]["evaluation"] = {
+                                k: evaluation[k] for k in ("asr_status", "speaker_status")
+                                if evaluation.get(k) in ("completed", "failed", "unavailable")
+                            }
                         for label in ("base", "A_lr100", "B_lr030"):
                             v = raw.get("models", {}).get(label, {})
                             if v:
                                 report["listening"]["models"][label] = {
                                     "status": v.get("status") if v.get("status") in ("completed", "failed") else "unknown",
-                                    "samples": [{k: number(row.get(k)) for k in ("index", "seconds", "rms", "peak")}
+                                    "samples": [{k: number(row.get(k)) for k in ("index", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine")}
                                                 for row in v.get("samples", [])],
                                 }
                 except Exception as exc:
