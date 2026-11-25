@@ -44,10 +44,10 @@ SETTINGS = {
 S2_SETTINGS = {
     **SETTINGS,
     "stage": "s2",
-    "experiment": "s2_v5dev_cfm_grokfast_v1",
+    "experiment": "s2_v5dev_cfm_grokfast_long_v2",
     "batch_size": 1,
-    "base_epochs": 12,
-    "fixed_epochs": 12,
+    "base_epochs": 30,
+    "fixed_epochs": 30,
     "post_fit_epochs": 8,
     "lora_rank": 16,
     "max_validation_batches": 32,
@@ -97,6 +97,40 @@ def _collect_baseline(out, arm_report, arm_state, stage="s1"):
             return
         shutil.copyfile(path, arm_report / path.name)
         arm_state["pretrained_baseline"] = baseline
+
+
+def _progress_line(arm_id, rows, process, arm_report, settings, gpu_status):
+    try:
+        status = json.loads((arm_report / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = {}
+    if process.poll() is not None:
+        return f"{arm_id}: completed epochs={len(rows)} exit={process.poll()}"
+    epoch = status.get("epoch", len(rows) + 1)
+    stage = status.get("stage", "initializing")
+    batch = status.get("batch")
+    batches = status.get("total_batches")
+    detail = f" batch {batch}/{batches}" if batch is not None and batches else ""
+    gpu = f" | {gpu_status}" if gpu_status else ""
+    val = rows[-1].get("val_cfm", rows[-1].get("val_loss")) if rows else None
+    metric = f" | last val={val:.6f}" if isinstance(val, (float, int)) else ""
+    return f"{arm_id}: epoch {epoch}/{settings['fixed_epochs']} [{stage}]{detail}{metric}{gpu}"
+
+
+def _gpu_status():
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"], text=True, timeout=5,
+            stderr=subprocess.DEVNULL,
+        )
+        result = {}
+        for line in output.splitlines():
+            index, util, used, total = [v.strip() for v in line.split(",")]
+            result[int(index)] = f"GPU {util}% | VRAM {used}/{total} MiB"
+        return result
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
 
 
 def _stop(process):
@@ -334,12 +368,14 @@ def run(ui):
         deadline = time.monotonic() + settings["max_training_seconds"]
         while any(p.poll() is None for p, *_ in processes.values()):
             _require_tmp_space(state)
+            gpu_status = _gpu_status()
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
                 _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
                 state["arms"][arm_id]["returncode"] = process.poll()
-                print(arm_id, "epoch", len(rows), "exit", process.poll(), flush=True)
+                print(_progress_line(arm_id, rows, process, arm_report, settings,
+                                     gpu_status.get(state["arms"][arm_id]["gpu"])), flush=True)
                 for path in out.glob("grokking_*metrics*.jsonl"):
                     shutil.copyfile(path, arm_report / path.name)
             _write_json(report / "summary.json", state)
