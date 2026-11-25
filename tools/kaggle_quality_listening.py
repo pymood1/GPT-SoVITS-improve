@@ -121,7 +121,7 @@ def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
     if local is not None:
         try:
             from faster_whisper import WhisperModel
-            model = WhisperModel(str(local), device="cpu", compute_type="int8", cpu_threads=4)
+            model = WhisperModel(str(local), device="cpu", compute_type="int8", cpu_threads=2 if os.environ.get("GPT_SOVITS_MIX_WORKER") else 4)
             for _, sample, path in samples:
                 segments, _ = model.transcribe(str(path), language="ko", beam_size=5,
                                                condition_on_previous_text=False, vad_filter=False)
@@ -188,8 +188,28 @@ def main():
         base_s1 = ROOT / "GPT_SoVITS/pretrained_models/s1v3.ckpt"
         base_s2 = ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
         models = {"base": (base_s1, base_s2)}
-        reuse = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_reuse"
-        if reuse:
+        profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
+        reuse = profile in ("quality_reuse", "quality_mix")
+        mix_worker = os.environ.get("GPT_SOVITS_MIX_WORKER", "")
+        inference_options = {}
+        if profile == "quality_mix":
+            from tools.quality_model_mix import export_scaled_v5_checkpoint
+            s32 = work / "S2_rank32_grok_cfm_best.pth"
+            models = {}
+            if mix_worker == "0":
+                for label, scale in (("mix025", .25), ("mix050", .50), ("mix075", .75), ("mix125", 1.25)):
+                    weight = work / (label + ".pth")
+                    export_scaled_v5_checkpoint(s32, weight, scale)
+                    models[label] = (base_s1, weight)
+            elif mix_worker == "1":
+                models.update(base=(base_s1, base_s2), rank32=(base_s1, s32),
+                              cfg100=(base_s1, s32), cfg160=(base_s1, s32))
+                inference_options.update(cfg100={"cfg_rate": 1.0}, cfg160={"cfg_rate": 1.6})
+            else:
+                raise ValueError("Invalid mix worker")
+            reference_folder = work
+            torch.set_num_threads(2)
+        elif reuse:
             s1 = work / "S1_qkv_o-grok-best.ckpt"
             s16 = work / "S2_rank16_grok_cfm_best.pth"
             s32 = work / "S2_rank32_grok_cfm_best.pth"
@@ -233,7 +253,11 @@ def main():
                 result["stage"] = "model_load"
                 config = dict(TTS_Config.default_configs["v5dev"], device="cuda:0",
                               is_half=False, t2s_weights_path=str(gpt_weight), vits_weights_path=str(weight))
-                tts = TTS(TTS_Config({"custom": config}))
+                if not Path(gpt_weight).is_file() or not Path(weight).is_file():
+                    raise FileNotFoundError("Explicit candidate checkpoint missing")
+                tts_config = TTS_Config({"custom": config})
+                tts_config.configs_path = str(output / "tts-private.yaml")
+                tts = TTS(tts_config)
                 for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
                     result["stage"] = "reference"
                     tts.set_ref_audio(str(ref))
@@ -249,6 +273,7 @@ def main():
                             "text_split_method": "cut0", "split_bucket": False,
                             "return_fragment": False, "streaming_mode": False,
                             "cache_dit_mode": "off",
+                            **inference_options.get(label, {}),
                         }))
                         if len(chunks) != 1:
                             raise RuntimeError("Unexpected synthesis chunks")
@@ -269,6 +294,7 @@ def main():
                         result["samples"].append({"index": index, "reference_index": ref_index, "text_index": text_index, "sample_rate": int(sr), "seconds": audio.size / sr,
                                                   "rms": rms, "peak": float(np.max(np.abs(normalized)))})
                 result.update(status="completed", stage="finished")
+                print(f"[quality] {label}: completed {len(result['samples'])} samples", flush=True)
             except Exception as exc:
                 result["error_type"] = type(exc).__name__
                 # Raw traceback is private Kaggle output, never returned to GitHub.
