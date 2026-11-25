@@ -48,6 +48,8 @@ jobs:
             tools/kaggle_dataset.py \
             tools/kaggle_grokking_runner.py \
             tools/kaggle_grokking_bootstrap.py \
+            tools/kaggle_remote_job.py \
+            tools/kaggle_quality_listening.py \
             tools/kaggle_launch_webui.py \
             tools/my_utils.py
 
