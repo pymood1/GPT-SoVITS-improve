@@ -167,7 +167,7 @@ def _eta_text(seconds, wall_now, budget_seconds):
     return f"완료 예상 {finish} (남은 약 {duration})"
 
 
-def _progress_line(arm_id, rows, process, arm_report, arm_settings[arm_id], gpu_status, eta=None):
+def _progress_line(arm_id, rows, process, arm_report, settings, gpu_status, eta=None):
     try:
         status = json.loads((arm_report / "status.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -537,7 +537,7 @@ def run(ui):
                 else:
                     failed = failed or code != 0
                     state["arms"][arm_id].pop("estimated_remaining_seconds", None)
-                print(_progress_line(arm_id, rows, process, arm_report, settings,
+                print(_progress_line(arm_id, rows, process, arm_report, arm_settings[arm_id],
                                      gpu_status.get(state["arms"][arm_id]["gpu"]), eta), flush=True)
                 for path in out.glob("grokking_*metrics*.jsonl"):
                     shutil.copyfile(path, arm_report / path.name)
