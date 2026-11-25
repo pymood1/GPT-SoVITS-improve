@@ -100,6 +100,47 @@ class KaggleRunnerTests(unittest.TestCase):
             self.assertFalse(target.with_name("." + target.name + ".part").exists())
 
 
+    def test_single_archive_replaces_previous_run_without_mixing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "grokking_result.zip"
+            old = root / "old"
+            old.mkdir()
+            (old / "summary.json").write_text('{"run_id": "old"}')
+            _bundle(old, target)
+            current = root / "current"
+            (current / "bootstrap").mkdir(parents=True)
+            (current / "training").mkdir()
+            (current / "run.json").write_text('{"run_id": "new"}')
+            (current / "bootstrap" / "setup.log").write_text("setup")
+            (current / "training" / "summary.json").write_text("training")
+            _bundle(current, target)
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(set(archive.namelist()), {
+                    "run.json", "bootstrap/setup.log", "training/summary.json"
+                })
+                self.assertEqual(json.loads(archive.read("run.json"))["run_id"], "new")
+
+    def test_legacy_archive_migration_preserves_unrelated_files(self):
+        from tools.kaggle_grokking_bootstrap import _archive_legacy_results
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            working = root / "working"
+            working.mkdir()
+            backup = root / "backup"
+            old = {"grokking_20261125T013234_805522Z.zip",
+                   "grokking_bootstrap_20261125T013054_087532Z.zip"}
+            keep = {"grokking_result.zip", "grokking_notes.zip", "user.zip"}
+            for name in old | keep:
+                (working / name).write_text(name)
+            _archive_legacy_results(working, backup)
+            self.assertEqual({p.name for p in working.iterdir()}, keep)
+            self.assertEqual({p.name for p in backup.iterdir()}, old)
+            for name in old:
+                self.assertEqual((backup / name).read_text(), name)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
