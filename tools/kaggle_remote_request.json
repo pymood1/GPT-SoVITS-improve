@@ -1,0 +1,7 @@
+{
+  "code_sha": "b0f47597162756f6e72943b9bec09a7844fd867d",
+  "profile": "s2",
+  "epochs": 1,
+  "max_training_seconds": 1200,
+  "recover_kernel": ""
+}
