@@ -33,6 +33,47 @@ class KaggleRunnerTests(unittest.TestCase):
         self.assertEqual(ea["GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS"], "120")
         self.assertEqual(eb["GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS"], "120")
 
+    def test_s2_profile_isolates_stage_and_config(self):
+        from tools.kaggle_grokking_runner import S2_SETTINGS, _s2_config, DEFAULT_PROFILE
+        self.assertEqual(DEFAULT_PROFILE, "s2")
+        a, b = S2_SETTINGS["arms"]
+        ea = _arm_env(a, 0, Path("a.json"), S2_SETTINGS)
+        eb = _arm_env(b, 1, Path("b.json"), S2_SETTINGS)
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S1"], "0")
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S2"], "1")
+        self.assertEqual(ea["GPT_SOVITS_GROKFAST"], "0")
+        self.assertEqual(eb["GPT_SOVITS_GROKFAST"], "1")
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY"], eb["GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY"])
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS"], "12")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "2-name2text.txt").write_text("test")
+            (source / "4-cnhubert").mkdir()
+            (source / "5-wav32k").mkdir()
+            for gpu, arm in enumerate((a, b)):
+                out = root / arm["id"]
+                out.mkdir()
+                cfg = _s2_config(source, out, out / "weights", arm, root / "base.pth", gpu)
+                self.assertEqual(cfg["model"]["version"], "v5dev")
+                self.assertFalse(cfg["train"]["fp16_run"])
+                self.assertEqual(cfg["train"]["gpu_numbers"], str(gpu))
+                self.assertEqual(cfg["data"]["exp_dir"], str(out))
+                self.assertEqual((out / "4-cnhubert").resolve(), source / "4-cnhubert")
+            self.assertFalse((source / "config.json").exists())
+
+    def test_cfm_metrics_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / "grokking_s2_cfm_metrics.jsonl").write_text(
+                '{"epoch":1,"val_cfm":0.8}\n'
+                '{"epoch":2,"val_cfm":0.5,"delayed_improvement_candidate":true}\n'
+            )
+            s = _summarize(_read_metrics(p))
+            self.assertEqual(s["best"]["epoch"], 2)
+            self.assertEqual(s["candidate_epochs"], [2])
+
     def test_partial_metrics_and_best(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
