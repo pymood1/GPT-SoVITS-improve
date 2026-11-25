@@ -175,7 +175,7 @@ jobs:
           if python - "$RUNNER_TEMP/kaggle-result/remote-result.json" <<'PY'
           import json, sys
           r = json.load(open(sys.argv[1]))
-          sys.exit(0 if r.get("profile") in ("s2_quality", "s2_listening") and r.get("listening", {}).get("status") != "completed" else 1)
+          sys.exit(0 if r.get("profile") in ("s2_quality", "s2_listening", "quality_session") and r.get("listening", {}).get("status") != "completed" else 1)
           PY
           then
             mkdir -p "$RUNNER_TEMP/listening-diagnostic"
@@ -191,7 +191,7 @@ jobs:
               def error(v):
                   return v if isinstance(v, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", v) else None
               result = {"error_type": error(raw.get("error_type")), "models": {}}
-              for k in ("base", "A_lr100", "B_lr030"):
+              for k in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined"):
                   if k in raw.get("models", {}):
                       result["models"][k] = {"error_type": error(raw["models"][k].get("error_type"))}
               print("LISTENING_DIAGNOSTIC", json.dumps(result))
