@@ -162,26 +162,7 @@ jobs:
             echo "$status"
             if echo "$status" | grep -Eiq '(^|[."[:space:]])complete(d)?(["[:space:]]|$)'; then
               mkdir -p "$RUNNER_TEMP/kaggle-metrics"
-              if ! kaggle kernels output "$kernel" -p "$RUNNER_TEMP/kaggle-metrics" --file-pattern 'gpu-smoke[.]json
-              python - "$RUNNER_TEMP/kaggle-metrics/gpu-smoke.json" <<'PY'
-          import json, sys
-          with open(sys.argv[1]) as f:
-              result = json.load(f)
-          assert result.get("pass") is True
-          assert result["gpu_count"] == 2
-          print(json.dumps(result, indent=2))
-          PY
-              exit 0
-            fi
-            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
-              kaggle kernels logs "$kernel" || true
-              exit 1
-            fi
-            sleep 15
-          done
-          echo "::warning::Kaggle job not terminal yet; GPU success is not established. Query this private kernel later."
-          exit 1
-; then
+              if ! kaggle kernels output "$kernel" -p "$RUNNER_TEMP/kaggle-metrics" --file-pattern 'gpu-smoke[.]json$'; then
                 echo "Filtered output retrieval failed; retrying known synthetic-only kernel output."
                 kaggle kernels output "$kernel" -p "$RUNNER_TEMP/kaggle-metrics"
               fi
@@ -196,7 +177,6 @@ jobs:
               exit 0
             fi
             if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
-              kaggle kernels logs "$kernel" || true
               exit 1
             fi
             sleep 15
