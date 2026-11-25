@@ -9,7 +9,7 @@ permissions:
   pull-requests: write
 concurrency:
   group: kaggle-research-readonly-monitor
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   monitor:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/grokking-gpt-sovits-20261121'
