@@ -61,7 +61,7 @@ read from the training process environment.
 - S2 held-out validation cap: 32 batches
 
 All are overridable with environment variables defined in
-\`GPT_SoVITS/tools/grokking.py\`.
+\`tools/grokking.py\`.
 
 ## S1 outputs
 
