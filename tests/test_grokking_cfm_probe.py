@@ -112,6 +112,23 @@ class CFMProbeTests(unittest.TestCase):
         self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
         self.assertTrue(model.training)
 
+    def test_tts_pcm_full_scale_and_output_rate_pause(self):
+        import numpy as np
+        from types import SimpleNamespace
+        from typing import List, Tuple
+        tree = ast.parse((ROOT / "GPT_SoVITS/TTS_infer_pack/TTS.py").read_text(encoding="utf-8"))
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "TTS")
+        fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "audio_postprocess")
+        ns = dict(torch=torch, np=np, List=List, Tuple=Tuple)
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "<tts postprocess>", "exec"), ns)
+        stub = SimpleNamespace(configs=SimpleNamespace(sampling_rate=32000, device="cpu"), precision=torch.float32)
+        sr, pcm = ns["audio_postprocess"](stub, [[torch.tensor([1.0, -1.0, 0.5])]], 48000,
+                                          split_bucket=False, fragment_interval=0.01)
+        self.assertEqual(sr, 48000)
+        self.assertEqual(len(pcm), 483)
+        self.assertEqual(pcm[:3].tolist(), [32767, -32767, 16384])
+        self.assertTrue((pcm[3:] == 0).all())
+
     def test_actual_v5_cfm_forward_and_grokfast_optimizer_step(self):
         torch.manual_seed(42)
         model = self.CFMV5(3, TinyEstimator())
