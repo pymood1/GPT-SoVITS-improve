@@ -5,5 +5,5 @@
   "max_training_seconds": 10800,
   "source_kernel": "pymood1/gpt-sovits-research-45596470910",
   "recover_kernel": "",
-  "previous_kernel": "pymood1/gpt-sovits-research-45706052814"
+  "previous_kernel": ""
 }
