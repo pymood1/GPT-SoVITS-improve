@@ -70,7 +70,22 @@ QUALITY_SETTINGS = {
         {"id": "B_lr030", "grokfast": False, "weight_decay": 0.01, "learning_rate": 3e-5},
     ],
 }
+# Independent lanes share preprocessing, never share optimizer or writable weights.
+SESSION_SETTINGS = {
+    **QUALITY_SETTINGS,
+    "experiment": "quality_parallel_session_v1",
+    "fixed_epochs": 8,
+    "base_epochs": 8,
+    "max_training_seconds": 7200,
+    "arms": [
+        {"id": "S1_v_o", "gpu": 0, "stage": "s1", "grokfast": False, "adapter": "lora_v_o"},
+        {"id": "S2_rank16", "gpu": 1, "stage": "s2", "grokfast": False, "lora_rank": 16},
+        {"id": "S1_qkv_o", "gpu": 0, "stage": "s1", "grokfast": False, "adapter": "lora_qkv_o"},
+        {"id": "S2_rank32", "gpu": 1, "stage": "s2", "grokfast": False, "lora_rank": 32},
+    ],
+}
 PROFILES = {"s1": SETTINGS, "s2": S2_SETTINGS, "s2_quality": QUALITY_SETTINGS,
+            "quality_session": SESSION_SETTINGS,
             "s2_listening": {**QUALITY_SETTINGS, "experiment": "v5dev_reuse_listening", "fixed_epochs": 0, "base_epochs": 0}}
 DEFAULT_PROFILE = "s2"
 
@@ -152,7 +167,7 @@ def _eta_text(seconds, wall_now, budget_seconds):
     return f"완료 예상 {finish} (남은 약 {duration})"
 
 
-def _progress_line(arm_id, rows, process, arm_report, settings, gpu_status, eta=None):
+def _progress_line(arm_id, rows, process, arm_report, arm_settings[arm_id], gpu_status, eta=None):
     try:
         status = json.loads((arm_report / "status.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -283,13 +298,13 @@ def _arm_env(arm, gpu, status_path, settings=SETTINGS):
     return env
 
 
-def _config(preprocessed, output, weights, arm, pretrained, text_features):
+def _config(preprocessed, output, weights, arm, pretrained, text_features, settings=SETTINGS):
     import yaml
     data = yaml.safe_load((ROOT / "GPT_SoVITS/configs/s1longer-v2.yaml").read_text(encoding="utf-8"))
     data["train"].update({
-        "seed": SETTINGS["seed"], "epochs": SETTINGS["base_epochs"],
-        "batch_size": SETTINGS["batch_size"], "precision": "32-true",
-        "if_dpo": False, "s1_adapter": "full",
+        "seed": settings["seed"], "epochs": settings["base_epochs"],
+        "batch_size": settings["batch_size"], "precision": "32-true",
+        "if_dpo": False, "s1_adapter": arm.get("adapter", "full"),
         "s1_lora_rank": 8, "s1_lora_alpha": 16,
         "save_every_n_epoch": 100000,
         "if_save_every_weights": False, "if_save_latest": True,
@@ -317,7 +332,7 @@ def _s2_config(preprocessed, output, weights, arm, pretrained, gpu, settings=S2_
     data["train"].update({
         "seed": settings["seed"], "epochs": settings["base_epochs"],
         "batch_size": settings["batch_size"], "learning_rate": arm.get("learning_rate", settings["learning_rate"]),
-        "fp16_run": False, "grad_ckpt": True, "lora_rank": settings["lora_rank"],
+        "fp16_run": False, "grad_ckpt": True, "lora_rank": arm.get("lora_rank", settings["lora_rank"]),
         "pretrained_s2G": str(pretrained), "pretrained_s2D": "",
         "gpu_numbers": str(gpu), "if_save_latest": True,
         "if_save_every_weights": False, "save_every_epoch": 100000,
@@ -352,6 +367,7 @@ def run(ui):
     archive = Path("/kaggle/working/grokking_result.zip")
     exp = "grok_preprocess_" + run_id
     processes = {}
+    arm_settings = {}
     state = {"run_id": run_id, "status": "starting", "settings": settings, "arms": {}}
     _write_json(report / "summary.json", state)
     try:
@@ -386,9 +402,11 @@ def run(ui):
         if not completed:
             raise RuntimeError("Canonical a/b/c preprocessing did not finish")
         preprocessed = (ROOT / ui.exp_root / exp).resolve()
-        artifact_error = ui._training_artifact_error(preprocessed, "gpt" if profile == "s1" else "sovits", "v5dev")
-        if artifact_error:
-            raise RuntimeError(artifact_error)
+        stages = ("gpt", "sovits") if profile == "quality_session" else ("gpt" if profile == "s1" else "sovits",)
+        for stage in stages:
+            artifact_error = ui._training_artifact_error(preprocessed, stage, "v5dev")
+            if artifact_error:
+                raise RuntimeError(artifact_error)
         feature_path = preprocessed / "text_feature_config.json"
         features = json.loads(feature_path.read_text(encoding="utf-8"))
         if not features.get("multilingual_bert"):
@@ -426,21 +444,28 @@ def run(ui):
             state["training_epochs"] = 0
             return 0
         state["status"] = "training"
-        for gpu, arm in enumerate(settings["arms"]):
+        pending = [(arm.get("gpu", index), arm) for index, arm in enumerate(settings["arms"])]
+        observations = {}
+        def launch(gpu, arm):
             arm_id = arm["id"]
+            stage = arm.get("stage", settings["stage"])
+            local = {**settings, "stage": stage}
+            if profile == "quality_session" and stage == "s1":
+                local["batch_size"] = SETTINGS["batch_size"]
+            arm_settings[arm_id] = local
             out = work / arm_id
             out.mkdir()
             weight_dir = out / "weights"
             weight_dir.mkdir()
             arm_report = report / arm_id
             arm_report.mkdir()
-            if profile == "s1":
-                cfg = _config(preprocessed, out, weight_dir, arm, s1, features)
+            if stage == "s1":
+                cfg = _config(preprocessed, out, weight_dir, arm, s1, features, local)
                 cfg_path = arm_report / "config.yaml"
                 cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
                 cmd = [sys.executable, "-u", "GPT_SoVITS/s1_train.py", "--config_file", str(cfg_path)]
             else:
-                cfg = _s2_config(preprocessed, out, weight_dir, arm, s2, gpu, settings)
+                cfg = _s2_config(preprocessed, out, weight_dir, arm, s2, gpu, local)
                 cfg_path = arm_report / "config.json"
                 _write_json(cfg_path, cfg)
                 cmd = [sys.executable, "-u", "GPT_SoVITS/s2_train_v3_lora.py", "--config", str(cfg_path)]
@@ -448,18 +473,27 @@ def run(ui):
             try:
                 process = subprocess.Popen(
                     cmd,
-                    cwd=ROOT, env=_arm_env(arm, gpu, arm_report / "status.json", settings),
+                    cwd=ROOT, env=_arm_env(arm, gpu, arm_report / "status.json", local),
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                 )
             except BaseException:
                 log.close()
                 raise
             processes[arm_id] = (process, log, out, arm_report)
-            state["arms"][arm_id] = {"gpu": gpu, "status": "running"}
+            state["arms"][arm_id] = {"gpu": gpu, "stage": stage, "status": "running"}
+            observations[arm_id] = {"count": 0, "seen_at": time.monotonic(), "durations": []}
+
         deadline = time.monotonic() + settings["max_training_seconds"]
-        observations = {arm_id: {"count": 0, "seen_at": time.monotonic(), "durations": []}
-                        for arm_id in processes}
-        while any(p.poll() is None for p, *_ in processes.values()):
+        while pending or any(p.poll() is None for p, *_ in processes.values()):
+            # Each idle GPU takes its next predetermined job; completed jobs remain
+            # in the report. A new job cannot overwrite another job's output.
+            busy = {state["arms"][key]["gpu"] for key, (p, *_) in processes.items() if p.poll() is None}
+            for gpu, arm in list(pending):
+                if gpu not in busy and time.monotonic() < deadline:
+                    launch(gpu, arm)
+                    pending.remove((gpu, arm))
+                    busy.add(gpu)
+            state["pending_arms"] = len(pending)
             _require_tmp_space(state)
             gpu_status = _gpu_status()
             now = time.monotonic()
@@ -470,7 +504,7 @@ def run(ui):
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
-                _collect_baseline(out, arm_report, state["arms"][arm_id], settings["stage"])
+                _collect_baseline(out, arm_report, state["arms"][arm_id], arm_settings[arm_id]["stage"])
                 code = process.poll()
                 state["arms"][arm_id]["returncode"] = code
                 observation = observations[arm_id]
@@ -484,7 +518,7 @@ def run(ui):
                 eta = None
                 if code is None:
                     seconds = _remaining_seconds(
-                        rows, settings["fixed_epochs"], now - observation["seen_at"],
+                        rows, arm_settings[arm_id]["fixed_epochs"], now - observation["seen_at"],
                         observation["durations"],
                     )
                     active_estimates.append(seconds)
@@ -497,7 +531,7 @@ def run(ui):
                                      gpu_status.get(state["arms"][arm_id]["gpu"]), eta), flush=True)
                 for path in out.glob("grokking_*metrics*.jsonl"):
                     shutil.copyfile(path, arm_report / path.name)
-            overall = (max(active_estimates) if active_estimates
+            overall = (max(active_estimates) if not pending and active_estimates
                        and all(v is not None for v in active_estimates) else None)
             state["estimated_remaining_seconds"] = overall
             cutoff = datetime.fromtimestamp(wall_now + budget_seconds, KST).strftime("%m/%d %H:%M KST")
@@ -525,12 +559,25 @@ def run(ui):
                 shutil.copyfile(path, arm_report / path.name)
             rows = _read_metrics(out)
             state["arms"][arm_id].update(_summarize(rows))
-            _collect_baseline(out, arm_report, state["arms"][arm_id], settings["stage"])
+            _collect_baseline(out, arm_report, state["arms"][arm_id], arm_settings[arm_id]["stage"])
             state["arms"][arm_id]["returncode"] = process.returncode
             state["arms"][arm_id].pop("estimated_remaining_seconds", None)
             state["arms"][arm_id]["status"] = "completed" if process.returncode == 0 and rows else "incomplete"
         if state["status"] == "completed" and not all(a["status"] == "completed" for a in state["arms"].values()):
             state["status"] = "missing_metrics"
+        if profile == "quality_session":
+            # Save compact candidates even if another lane failed. No audio or
+            # checkpoints enter the publicly recovered metrics archive.
+            destination = Path("/kaggle/working/private-candidates")
+            destination.mkdir(parents=True, exist_ok=True)
+            state["candidate_exports"] = 0
+            for key, (_, _, out, _) in processes.items():
+                stage = arm_settings[key]["stage"]
+                name = key + ("-grok-best.ckpt" if stage == "s1" else "_grok_cfm_best.pth")
+                source = out / "weights" / name
+                if source.is_file():
+                    shutil.copyfile(source, destination / name)
+                    state["candidate_exports"] += 1
         state.pop("estimated_remaining_seconds", None)
         state["disk"] = _disk_state()
         _write_json(report / "summary.json", state)
