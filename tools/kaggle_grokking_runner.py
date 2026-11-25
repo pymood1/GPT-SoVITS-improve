@@ -21,8 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = {
     "seed": 1234,
     "batch_size": 2,
-    "base_epochs": 8,
-    "post_fit_epochs": 4,
+    "experiment": "s1_weight_decay_long_v2",
+    "base_epochs": 120,
+    "fixed_epochs": 120,
+    "post_fit_epochs": 100,
     "validation_fraction": 0.10,
     "min_validation_samples": 8,
     "learning_rate": 1e-4,
@@ -31,7 +33,10 @@ SETTINGS = {
     "grokfast_lambda": 0.5,
     "max_training_seconds": 5400,
     "bert_model": "google-bert/bert-base-multilingual-cased",
-    "arms": [{"id": "A_off", "grokfast": False}, {"id": "B_on", "grokfast": True}],
+    "arms": [
+        {"id": "A_wd001", "grokfast": False, "weight_decay": 0.01},
+        {"id": "B_wd1", "grokfast": False, "weight_decay": 1.0},
+    ],
 }
 
 
@@ -61,6 +66,17 @@ def _summarize(rows):
         "best": min(valid, key=lambda r: r["val_loss"]) if valid else None,
         "candidate_epochs": [r["epoch"] for r in rows if r.get("delayed_improvement")],
     }
+
+
+def _collect_baseline(out, arm_report, arm_state):
+    path = out / "grokking_s1_baseline.json"
+    if path.is_file():
+        try:
+            baseline = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        shutil.copyfile(path, arm_report / path.name)
+        arm_state["pretrained_baseline"] = baseline
 
 
 def _stop(process):
@@ -141,7 +157,8 @@ def _arm_env(arm, gpu, status_path):
         "GPT_SOVITS_GROKKING_VALIDATION_FRACTION": str(SETTINGS["validation_fraction"]),
         "GPT_SOVITS_GROKKING_MIN_VALIDATION_SAMPLES": str(SETTINGS["min_validation_samples"]),
         "GPT_SOVITS_GROKKING_S1_LR": str(SETTINGS["learning_rate"]),
-        "GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY": str(SETTINGS["weight_decay"]),
+        "GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY": str(arm.get("weight_decay", SETTINGS["weight_decay"])),
+        "GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS": str(SETTINGS["fixed_epochs"]),
         "GPT_SOVITS_GROKKING_S1_POST_FIT_EPOCHS": str(SETTINGS["post_fit_epochs"]),
         "GPT_SOVITS_GROKKING_S1_KEEP_DPO": "0",
         "GPT_SOVITS_GROKKING_S1_OPTIMIZER": "adamw",
@@ -260,6 +277,7 @@ def run(ui):
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
+                _collect_baseline(out, arm_report, state["arms"][arm_id])
                 state["arms"][arm_id]["returncode"] = process.poll()
                 print(arm_id, "epoch", len(rows), "exit", process.poll(), flush=True)
                 for path in out.glob("grokking_s1_metrics_*.jsonl"):
@@ -284,6 +302,7 @@ def run(ui):
                 shutil.copyfile(path, arm_report / path.name)
             rows = _read_metrics(out)
             state["arms"][arm_id].update(_summarize(rows))
+            _collect_baseline(out, arm_report, state["arms"][arm_id])
             state["arms"][arm_id]["returncode"] = process.returncode
             state["arms"][arm_id]["status"] = "completed" if process.returncode == 0 and rows else "incomplete"
         if state["status"] == "completed" and not all(a["status"] == "completed" for a in state["arms"].values()):
