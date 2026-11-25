@@ -212,7 +212,10 @@ def _run(rank, n_gpus, hps, use_ddp):
             raise RuntimeError("CFM grokking requires a fresh experiment name/output directory")
         if not hps.train.pretrained_s2G or not os.path.isfile(hps.train.pretrained_s2G):
             raise RuntimeError("CFM grokking requires an upstream pretrained S2 checkpoint")
-        hps.train.epochs = base_epochs + 4 * int(grokking["s2_post_fit_epochs"])
+        fixed_epochs = int(os.environ.get("GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS", "0"))
+        if fixed_epochs < 0:
+            raise ValueError("fixed S2 epoch budget must be nonnegative")
+        hps.train.epochs = fixed_epochs or (base_epochs + 4 * int(grokking["s2_post_fit_epochs"]))
         if rank == 0:
             logger.info("[grokking:CFM] version=%s train=%s heldout=%s hard_max=%s",
                         hps.model.version, len(train_dataset), len(eval_dataset), hps.train.epochs)
@@ -379,6 +382,16 @@ def _run(rank, n_gpus, hps, use_ddp):
     fit_epoch = None
     fit_val = None
     pre_fit_best = None
+    if grokking["enabled"] and rank == 0:
+        model = net_g.module if hasattr(net_g, "module") else net_g
+        baseline = _validate_cfm(model, eval_loader, rank, grokking)
+        (Path(hps.data.exp_dir) / "grokking_s2_baseline.json").write_text(
+            json.dumps({"epoch": 0, "val_cfm": baseline}, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("[grokking:CFM] pretrained baseline %.8f", baseline)
+    if grokking["enabled"] and use_ddp:
+        dist.barrier()
     for epoch in range(epoch_str, hps.train.epochs + 1):
         train_cfm = train_and_evaluate(
             rank, epoch, hps, [net_g, net_d], [optim_g, optim_d],
@@ -421,7 +434,7 @@ def _run(rank, n_gpus, hps, use_ddp):
                 with metrics_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, allow_nan=False) + "\n")
                 logger.info("[grokking:CFM] %s", record)
-                stop = bool(age is not None and age >= int(grokking["s2_post_fit_epochs"])
+                stop = bool(not fixed_epochs and age is not None and age >= int(grokking["s2_post_fit_epochs"])
                             and epoch >= base_epochs)
             if use_ddp:
                 flag = torch.tensor(int(stop), device=torch.device("cuda", rank))
