@@ -1383,6 +1383,10 @@ class TTS:
             if (self.configs.version not in V5_VERSIONS or parallel_infer or batch_size != 1
                     or inputs.get("streaming_mode", False) or return_fragment or emotion_enabled or not prompt_text.strip()):
                 raise ValueError("Soft semantic research requires prompted V5 serial non-streaming inference, batch size 1, no emotion steering")
+        research_style_ge = inputs.get("research_style_ge")
+        if research_style_ge is not None and (self.configs.version not in V5_VERSIONS or parallel_infer or batch_size != 1
+                or inputs.get("streaming_mode", False) or return_fragment or emotion_enabled or not prompt_text.strip()):
+            raise ValueError("Research style override requires prompted V5 serial non-streaming inference")
         self.apply_cache_dit(inputs, sample_steps)
         super_sampling = inputs.get("super_sampling", False)
         streaming_mode = inputs.get("streaming_mode", False)
@@ -1728,6 +1732,7 @@ class TTS:
                                     _pred_semantic, phones, speed=speed_factor,
                                     sample_steps=sample_steps, cfg_rate=cfg_rate,
                                     **({"soft_probabilities": soft_traces[i], "soft_mix": soft_mix} if soft_probe else {}),
+                                    research_style_ge=research_style_ge,
                                 )
                                 batch_audio_fragment.append(audio_fragment)
 
@@ -1991,7 +1996,7 @@ class TTS:
     def using_vocoder_synthesis(
         self, semantic_tokens: torch.Tensor, phones: torch.Tensor, speed: float = 1.0,
         sample_steps: int = None, cfg_rate: float = None,
-        soft_probabilities=None, soft_mix: float = 0.0,
+        soft_probabilities=None, soft_mix: float = 0.0, research_style_ge=None,
     ):
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
         cfg_rate = (1.30 if self.configs.version == "v5dev" else 0.0) if cfg_rate is None else float(cfg_rate)
@@ -2017,8 +2022,13 @@ class TTS:
         mel2 = mel_fn(ref_audio) if self.configs.version == "v3" else mel_fn_v4(ref_audio)
         mel2 = norm_spec(mel2)
         if self.configs.version in V5_VERSIONS:
+            target_ge = ge
+            if research_style_ge is not None:
+                if not isinstance(research_style_ge, torch.Tensor) or research_style_ge.shape != ge.shape or not torch.isfinite(research_style_ge).all():
+                    raise ValueError("Invalid research style override")
+                target_ge = research_style_ge.to(device=ge.device, dtype=ge.dtype)
             fea_todo, _ = self.vits_model.decode_encp(
-                semantic_tokens, phones, refer_audio_spec, ge, speed,
+                semantic_tokens, phones, refer_audio_spec, target_ge, speed,
                 **({"soft_probabilities": soft_probabilities, "soft_mix": soft_mix} if soft_probabilities is not None else {}),
             )
             mel = synthesize_v5_mel(
