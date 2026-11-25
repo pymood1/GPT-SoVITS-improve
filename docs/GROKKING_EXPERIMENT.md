@@ -215,24 +215,29 @@ probe output. Normal mode continues using the original training logic.
 
 ### Kaggle bridge
 
-The credential-free workflow `.github/workflows/kaggle-connectivity-smoke.yml`
-verified public DNS/HTTP, Kaggle CLI 2.2.5, and the T4 x2 accelerator option.
+The one-time connectivity and private synthetic GPU smoke workflows were
+retired after successful validation. Historical evidence is preserved in
+Git history and Actions: run 45565061672 recovered the result of the
+private kernel from run 45521697065 (attempt 2), confirming two Tesla T4
+GPUs, dataset mount, and all four FP32/AMP16 optimization tests.
 
-A dedicated private GPU smoke workflow is available at
-`.github/workflows/kaggle-private-gpu-smoke.yml`. It only submits a GPU job
-on an explicit head commit modifying that workflow (or an explicit rerun
-of such a commit), on this repository's research branch. It checks for a
-dedicated GitHub Actions secret named `KAGGLE_API_TOKEN` (preferred) or
-`KAGGLE_KEY` (legacy, username fixed to the repository owner's Kaggle ID).
-It does not print credentials. Do not place tokens in source, notebook cells,
-logs, issue comments, or chat. The private kernel uses synthetic data only,
-tests FP32 and AMP on each T4, and checks that the existing dataset directory
-is mounted. No source audio or learned weights are returned to GitHub.
+The active workflow is
+`.github/workflows/kaggle-real-model-research.yml`. An explicit change to
+`tools/kaggle_remote_request.json` requests a private, commit-pinned model
+experiment or result-only recovery. It uses the GitHub Actions secret
+`KAGGLE_API_TOKEN` (preferred) or `KAGGLE_KEY` (legacy) and never prints
+credentials. Only allowlisted numeric metrics and status are returned to
+GitHub; audio, transcripts, weights and raw logs remain private in Kaggle.
+Do not put credentials in source, notebook cells, logs, comments or chat.
 
-A missing credential deliberately blocks submission. A successful workflow
-with skipped GPU steps is **not** GPU proof. Check the submission and
-metrics-retrieval steps individually. A completed GPU smoke is a prerequisite
-for actual pretrained model training, not a substitute for it.
+The active workflow separates queue and execution time and reserves
+40 minutes in addition to the training budget for setup, preprocessing,
+and finalization. A retry can specify the previous kernel so the new
+submission is blocked unless the previous kernel is confirmed unsuccessful
+or cancellation is acknowledged. A skipped job is not proof of GPU success.
+The first real-model automation run was cancelled; its replacement
+run 45570042738 is the active validation as of this change. Ordinary
+regression CI and the manual notebook remain supported.
 
 
 ## 2026-11-25: First real Kaggle S1 ablation and next probe
