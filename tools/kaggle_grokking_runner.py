@@ -70,7 +70,8 @@ QUALITY_SETTINGS = {
         {"id": "B_lr030", "grokfast": False, "weight_decay": 0.01, "learning_rate": 3e-5},
     ],
 }
-PROFILES = {"s1": SETTINGS, "s2": S2_SETTINGS, "s2_quality": QUALITY_SETTINGS}
+PROFILES = {"s1": SETTINGS, "s2": S2_SETTINGS, "s2_quality": QUALITY_SETTINGS,
+            "s2_listening": {**QUALITY_SETTINGS, "experiment": "v5dev_reuse_listening", "fixed_epochs": 0, "base_epochs": 0}}
 DEFAULT_PROFILE = "s2"
 
 
@@ -338,7 +339,7 @@ def run(ui):
     # Explicit remote smoke overrides; ordinary notebook profiles are unchanged.
     epochs = int(os.environ.get("GPT_SOVITS_RESEARCH_EPOCHS", settings["fixed_epochs"]))
     seconds = int(os.environ.get("GPT_SOVITS_RESEARCH_MAX_SECONDS", settings["max_training_seconds"]))
-    if not 1 <= epochs <= 120 or not 60 <= seconds <= 14400:
+    if not ((epochs == 0 if profile == "s2_listening" else 1 <= epochs <= 120) and 60 <= seconds <= 14400):
         raise ValueError("Research budget out of range")
     settings.update(base_epochs=epochs, fixed_epochs=epochs, max_training_seconds=seconds)
     run_id = os.environ.get("GPT_SOVITS_RESEARCH_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
@@ -393,11 +394,37 @@ def run(ui):
         if not features.get("multilingual_bert"):
             raise RuntimeError("BERT was requested but feature marker does not confirm it")
         _require_tmp_space(state)
-        if profile == "s2_quality":
+        if profile in ("s2_quality", "s2_listening"):
             from tools.kaggle_quality_listening import choose_reference
             # Fail before spending GPU epochs if the listening prompt is unavailable.
             state["reference_counts"] = {}
             choose_reference(preprocessed, state["reference_counts"])
+        if profile == "s2_listening":
+            # Mount prior private Kaggle output; no optimizer/trainer is started.
+            import re
+            source_kernel = os.environ.get("GPT_SOVITS_RESEARCH_SOURCE_KERNEL", "")
+            if not re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", source_kernel):
+                raise ValueError("Invalid private source kernel")
+            input_root = Path("/kaggle/input")
+            slug = source_kernel.split("/")[-1]
+            candidates = [p for p in input_root.rglob("A_lr100.pth")
+                          if slug in p.parts and p.parent.name == "private-listening"
+                          and (p.parent / "B_lr030.pth").is_file()]
+            if len(candidates) != 1:
+                raise FileNotFoundError("Unique prior private checkpoints not mounted")
+            for arm in settings["arms"]:
+                arm_id = arm["id"]
+                out = work / arm_id
+                out.mkdir()
+                weights = out / "weights"
+                weights.mkdir()
+                for name in ("2-name2text.txt", "5-wav32k"):
+                    (out / name).symlink_to(preprocessed / name)
+                (weights / (arm_id + "_grok_cfm_best.pth")).symlink_to(candidates[0].parent / (arm_id + ".pth"))
+            state["status"] = "completed"
+            state["reused_checkpoints"] = 2
+            state["training_epochs"] = 0
+            return 0
         state["status"] = "training"
         for gpu, arm in enumerate(settings["arms"]):
             arm_id = arm["id"]
