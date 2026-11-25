@@ -137,7 +137,7 @@ def _split_cfm_dataset(dataset, cfg):
 
 
 @torch.no_grad()
-def _validate_cfm(model, loader, rank, cfg):
+def _validate_cfm(model, loader, rank, cfg, sample_losses=None):
     # CFM samples both prompt length and noise/time. Compare exactly the
     # same held-out utterances and two deterministic draws at every epoch.
     dev = torch.device("cuda", rank) if torch.cuda.is_available() else torch.device("cpu")
@@ -161,6 +161,8 @@ def _validate_cfm(model, loader, rank, cfg):
                     if not math.isfinite(value):
                         raise RuntimeError("Non-finite held-out CFM loss")
                     values.append(value)
+                if sample_losses is not None:
+                    sample_losses.append(sum(values[-2:]) / 2)
     finally:
         model.train(was_training)
     if not values:
@@ -263,9 +265,26 @@ def _run(rank, n_gpus, hps, use_ddp):
         **loader_kwargs,
     )
     eval_loader = None
+    train_probe_loader = None
     if eval_dataset is not None and rank == 0:
         eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False,
                                  num_workers=0, collate_fn=collate_fn)
+        # Use the same deterministic evaluation mode and draw count for
+        # train and held-out probes. Select unique names, never repeated
+        # padding entries from small datasets.
+        seen = set()
+        indices = []
+        limit = min(len(eval_dataset), int(grokking["max_validation_batches"]))
+        for i, row in enumerate(train_dataset.audiopaths_sid_text):
+            if row[0] not in seen:
+                seen.add(row[0])
+                indices.append(i)
+                if len(indices) >= limit:
+                    break
+        train_probe_loader = DataLoader(
+            torch.utils.data.Subset(train_dataset, indices),
+            batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_fn,
+        )
     save_root = "%s/logs_s2_%s_lora_%s" % (hps.data.exp_dir, hps.model.version, hps.train.lora_rank)
     if grokking["enabled"]:
         save_root += "_grok_cfm"
@@ -384,9 +403,15 @@ def _run(rank, n_gpus, hps, use_ddp):
     pre_fit_best = None
     if grokking["enabled"] and rank == 0:
         model = net_g.module if hasattr(net_g, "module") else net_g
-        baseline = _validate_cfm(model, eval_loader, rank, grokking)
+        val_samples = []
+        train_samples = []
+        baseline = _validate_cfm(model, eval_loader, rank, grokking, val_samples)
+        train_baseline = _validate_cfm(model, train_probe_loader, rank, grokking, train_samples)
         (Path(hps.data.exp_dir) / "grokking_s2_baseline.json").write_text(
-            json.dumps({"epoch": 0, "val_cfm": baseline}, allow_nan=False) + "\n",
+            json.dumps({"epoch": 0, "val_cfm": baseline,
+                        "train_eval_cfm": train_baseline,
+                        "val_sample_losses": val_samples,
+                        "train_eval_sample_losses": train_samples}, allow_nan=False) + "\n",
             encoding="utf-8",
         )
         logger.info("[grokking:CFM] pretrained baseline %.8f", baseline)
@@ -405,10 +430,16 @@ def _run(rank, n_gpus, hps, use_ddp):
             stop = False
             if rank == 0:
                 model = net_g.module if hasattr(net_g, "module") else net_g
-                val_cfm = _validate_cfm(model, eval_loader, rank, grokking)
-                if train_cfm < best_train * (1 - float(grokking["s2_plateau_relative_delta"])):
-                    best_train = train_cfm
+                val_samples = []
+                train_samples = []
+                val_cfm = _validate_cfm(model, eval_loader, rank, grokking, val_samples)
+                train_eval_cfm = _validate_cfm(model, train_probe_loader, rank, grokking, train_samples)
+                # Online training losses use random draws and evolving weights.
+                # Detect a plateau on the fixed, eval-mode train probe instead.
+                if train_eval_cfm < best_train * (1 - float(grokking["s2_plateau_relative_delta"])):
+                    best_train = train_eval_cfm
                     last_improvement = epoch
+                    fit_epoch = fit_val = pre_fit_best = None
                 if fit_epoch is None and epoch - last_improvement >= int(grokking["s2_plateau_patience"]):
                     fit_epoch = epoch
                     fit_val = val_cfm
@@ -417,13 +448,17 @@ def _run(rank, n_gpus, hps, use_ddp):
                 candidate = bool(
                     age is not None and age >= 2 and fit_val > 0
                     and val_cfm <= 0.95 * fit_val and val_cfm < pre_fit_best
-                    and train_cfm <= best_train * 1.05
+                    and train_eval_cfm <= best_train * 1.05
                 )
                 if val_cfm < best_val:
                     _save_cfm_best(model, hps, epoch)
                     best_val = val_cfm
                 record = {
                     "epoch": epoch, "train_cfm": train_cfm, "val_cfm": val_cfm,
+                    "train_eval_cfm": train_eval_cfm,
+                    "val_sample_losses": val_samples,
+                    "train_eval_sample_losses": train_samples,
+                    "fit_metric": "train_eval_cfm",
                     "best_val_cfm": best_val, "fit_epoch": fit_epoch,
                     "fit_val_cfm": fit_val, "post_fit_age": age,
                     "delayed_improvement_candidate": candidate,
@@ -545,6 +580,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     total_epochs=int(hps.train.epochs),
                     loss=float(loss_gen_all.detach().float().item()),
                     metric=f"LoRA rank {lora_rank}",
+                    extra={"batch": batch_idx + 1, "total_batches": len(train_loader)},
                 )
 
             if global_step % hps.train.log_interval == 0:
