@@ -21,6 +21,18 @@ class KaggleRunnerTests(unittest.TestCase):
         self.assertEqual(a["GPT_SOVITS_GROKKING_S1_LR"], b["GPT_SOVITS_GROKKING_S1_LR"])
         self.assertNotEqual(a["GPT_SOVITS_RUNTIME_STATUS_PATH"], b["GPT_SOVITS_RUNTIME_STATUS_PATH"])
 
+    def test_weight_decay_profile_changes_only_decay_and_gpu(self):
+        from tools.kaggle_grokking_runner import SETTINGS
+        a, b = SETTINGS["arms"]
+        ea = _arm_env(a, 0, Path("a.json"))
+        eb = _arm_env(b, 1, Path("b.json"))
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY"], "0.01")
+        self.assertEqual(eb["GPT_SOVITS_GROKKING_S1_WEIGHT_DECAY"], "1.0")
+        self.assertEqual(ea["GPT_SOVITS_GROKFAST"], "0")
+        self.assertEqual(eb["GPT_SOVITS_GROKFAST"], "0")
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS"], "120")
+        self.assertEqual(eb["GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS"], "120")
+
     def test_partial_metrics_and_best(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
