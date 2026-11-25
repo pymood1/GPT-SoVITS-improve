@@ -22,7 +22,9 @@ def calibration_indices(samples):
 def equivalent(stage, a, b):
     if stage == "asr":
         return a == b
-    return math.isfinite(a["speaker_cosine"]) and math.isfinite(b["speaker_cosine"]) and abs(a["speaker_cosine"] - b["speaker_cosine"]) <= 1e-4
+    if a.keys() != b.keys():
+        return False
+    return all(math.isfinite(a[k]) and math.isfinite(b[k]) and abs(a[k] - b[k]) <= 1e-4 for k in a)
 
 
 def make_scorer(stage, device, request):
@@ -64,12 +66,19 @@ def make_scorer(stage, device, request):
         with torch.inference_mode():
             return sv.compute_embedding3(wav).flatten().float()
     refs = [embedding(path) for path in request["references"]]
+    heldout = [embedding(path) for path in request.get("heldout_references", [])]
     def score(sample):
         ref = refs[sample["reference_index"] - 1]
-        value = float(torch.nn.functional.cosine_similarity(ref, embedding(sample["path"]), dim=0).item())
-        if not math.isfinite(value):
-            raise ValueError("Nonfinite speaker score")
-        return {"speaker_cosine": value}
+        emb = embedding(sample["path"])
+        def cosine(other):
+            value = float(torch.nn.functional.cosine_similarity(other, emb, dim=0).item())
+            if not math.isfinite(value):
+                raise ValueError("Nonfinite speaker score")
+            return value
+        result = {"speaker_cosine": cosine(ref)}
+        if heldout:
+            result["speaker_holdout_cosine"] = sum(cosine(r) for r in heldout) / len(heldout)
+        return result
     return score
 
 
@@ -82,11 +91,17 @@ def run(stage, device, request):
     score = make_scorer(stage, device, request)
     anchors = {}
     calibration_seconds = 0.0
+    cpu_calibration_seconds = gpu_calibration_seconds = 0.0
     if device == "cuda":
         t = time.monotonic()
         cpu = make_scorer(stage, "cpu", request)
         for i in calibration_indices(samples):
-            a, b = score(samples[i]), cpu(samples[i])
+            measured = time.monotonic()
+            a = score(samples[i])
+            gpu_calibration_seconds += time.monotonic() - measured
+            measured = time.monotonic()
+            b = cpu(samples[i])
+            cpu_calibration_seconds += time.monotonic() - measured
             if not equivalent(stage, a, b):
                 raise RuntimeError("CPU/GPU parity gate failed")
             anchors[i] = a
@@ -103,7 +118,9 @@ def run(stage, device, request):
             if stage == "asr" else ("cuda_fp32" if device == "cuda" else "cpu_fp32"),
             "seconds": round(time.monotonic() - started, 3),
             "calibration_seconds": round(calibration_seconds, 3),
-            "calibration_count": len(anchors)}
+            "calibration_count": len(anchors),
+            "cpu_calibration_seconds": round(cpu_calibration_seconds, 3),
+            "gpu_calibration_seconds": round(gpu_calibration_seconds, 3)}
 
 
 if __name__ == "__main__":
