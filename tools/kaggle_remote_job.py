@@ -167,6 +167,15 @@ def main():
                                 k: evaluation[k] for k in ("asr_status", "speaker_status")
                                 if evaluation.get(k) in ("completed", "failed", "unavailable")
                             }
+                            for stage, allowed in (("asr", ("cuda_int8_float32", "cpu_int8")),
+                                                   ("speaker", ("cuda_fp32", "cpu_fp32"))):
+                                backend = evaluation.get(stage + "_backend")
+                                if backend in allowed:
+                                    report["listening"]["evaluation"][stage + "_backend"] = backend
+                                for suffix in ("_seconds", "_calibration_seconds", "_calibration_count"):
+                                    value = number(evaluation.get(stage + suffix))
+                                    if value is not None and value >= 0:
+                                        report["listening"]["evaluation"][stage + suffix] = value
                         selected = raw.get("selected", {})
                         if isinstance(selected, dict) and selected.get("s1") in ("S1_v_o", "S1_qkv_o") and selected.get("s2") in ("S2_rank16", "S2_rank32"):
                             report["listening"]["selected"] = {"s1": selected["s1"], "s2": selected["s2"]}
