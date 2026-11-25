@@ -31,6 +31,20 @@ def collect(report, expected_sha):
         if "training/summary.json" not in z.namelist():
             return
         summary = json.loads(z.read("training/summary.json"))
+        histories = {}
+        for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1", "A_lr100", "B_lr030"):
+            prefix = "training/" + key + "/grokking_"
+            rows = []
+            for name in z.namelist():
+                if name.startswith(prefix) and name.endswith(".jsonl") and "metrics" in name:
+                    for line in z.read(name).decode("utf-8").splitlines():
+                        try:
+                            row = json.loads(line)
+                            if isinstance(row, dict):
+                                rows.append(row)
+                        except ValueError:
+                            continue
+            histories[key] = rows
     if summary.get("git_commit") != expected_sha:
         return
     status = summary.get("status")
@@ -41,7 +55,7 @@ def collect(report, expected_sha):
     def metrics(v):
         return {k: number(v[k]) for k in fields if k in v} if isinstance(v, dict) else {}
     report["arms"] = {}
-    for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1"):
+    for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1", "A_lr100", "B_lr030"):
         arm = summary.get("arms", {}).get(key)
         if not isinstance(arm, dict):
             continue
@@ -51,6 +65,7 @@ def collect(report, expected_sha):
             "baseline": metrics(arm.get("pretrained_baseline")),
             "best": metrics(arm.get("best")),
             "last": metrics(arm.get("last")),
+            "history": [metrics(row) for row in histories.get(key, [])],
             "candidate_epochs": [number(v) for v in arm.get("candidate_epochs", []) if type(v) is int],
         }
 
@@ -85,12 +100,47 @@ def main():
         report["stage"] = "collect"
         collect(report, sha)
         arms = report.get("arms", {})
-        expected = ("A_cfm_off", "B_cfm_on") if profile == "s2" else ("A_wd001", "B_wd1")
+        expected = {"s2": ("A_cfm_off", "B_cfm_on"), "s1": ("A_wd001", "B_wd1"),
+                    "s2_quality": ("A_lr100", "B_lr030")}[profile]
         if (proc.returncode == 0 and report.get("training_status") == "completed"
                 and len(report.get("gpus", [])) == 2
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
+            if profile == "s2_quality":
+                report["stage"] = "listening"
+                with zipfile.ZipFile(WORKING / "grokking_result.zip") as z:
+                    run_id = json.loads(z.read("run.json"))["run_id"]
+                import re
+                if not re.fullmatch(r"\d{8}T\d{6}_\d{6}Z", run_id):
+                    raise ValueError("Invalid run ID")
+                output = WORKING / "private-listening"
+                env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(ROOT / "GPT_SoVITS")])
+                env["HF_HOME"] = "/kaggle/tmp/huggingface"
+                env["CUDA_VISIBLE_DEVICES"] = "0"
+                # Only safe aggregate metrics are exported by this launcher.
+                try:
+                    proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
+                                           str(Path("/kaggle/tmp/grokking_runs") / run_id), str(output)],
+                                          cwd=ROOT, env=env, timeout=900)
+                    report["listening_exit"] = proc.returncode
+                    path = output / "listening-metrics.json"
+                    if path.is_file():
+                        raw = json.loads(path.read_text())
+                        report["listening"] = {"status": raw.get("status") if raw.get("status") in ("completed", "failed") else "unknown",
+                                               "models": {}}
+                        for label in ("base", "A_lr100", "B_lr030"):
+                            v = raw.get("models", {}).get(label, {})
+                            if v:
+                                report["listening"]["models"][label] = {
+                                    "status": v.get("status") if v.get("status") in ("completed", "failed") else "unknown",
+                                    "samples": [{k: number(row.get(k)) for k in ("index", "seconds", "rms", "peak")}
+                                                for row in v.get("samples", [])],
+                                }
+                except Exception as exc:
+                    report["listening_error_type"] = type(exc).__name__
+                report["stage"] = "finished"
+
     except Exception as exc:
         # Error class is safe; exception messages and traceback stay in private logs.
         report["error_type"] = type(exc).__name__
