@@ -20,7 +20,7 @@ class ReferenceUnavailable(RuntimeError):
     pass
 
 
-def choose_reference(folder, diagnostics=None):
+def choose_references(folder, diagnostics=None, count=1):
     """Prefer Korean; permit an accurately transcribed other-language prompt."""
     import wave
     diagnostics = diagnostics if diagnostics is not None else {}
@@ -56,8 +56,28 @@ def choose_reference(folder, diagnostics=None):
         candidates.append((not korean, abs(duration - 5.0), name, path, transcript, language))
     if not candidates:
         raise ReferenceUnavailable("No transcribed reference within the supported duration")
-    _, _, _, path, transcript, language = min(candidates)
-    return path, transcript, language
+    candidates.sort()
+    # Distinct prompt files, deterministic selection across short/mid/long lengths.
+    chosen = [candidates.pop(0)]
+    for duration in (3.8, 8.0):
+        if len(chosen) >= count or not candidates:
+            break
+        candidate = min(candidates, key=lambda x: (x[0], abs(_wave_duration(x[3]) - duration), x[2]))
+        candidates.remove(candidate)
+        chosen.append(candidate)
+    if len(chosen) != count:
+        raise ReferenceUnavailable("Insufficient distinct reference files")
+    return [(path, transcript, language) for _, _, _, path, transcript, language in chosen]
+
+
+def _wave_duration(path):
+    import wave
+    with wave.open(str(path), "rb") as audio:
+        return audio.getnframes() / audio.getframerate()
+
+
+def choose_reference(folder, diagnostics=None):
+    return choose_references(folder, diagnostics, 1)[0]
 
 
 def normalized_text(text):
@@ -77,7 +97,7 @@ def character_errors(expected, actual):
     return row[-1], len(expected)
 
 
-def evaluate_quality(output, reference, models):
+def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
     """Optional, local-only model evaluations. Never export recognized text or embeddings."""
     import math
     import numpy as np
@@ -102,7 +122,7 @@ def evaluate_quality(output, reference, models):
                 segments, _ = model.transcribe(str(path), language="ko", beam_size=5,
                                                condition_on_previous_text=False, vad_filter=False)
                 text = "".join(seg.text for seg in segments)
-                errors, count = character_errors(TEXTS[sample["index"] - 1], text)
+                errors, count = character_errors(texts[sample.get("text_index", sample["index"]) - 1], text)
                 sample.update(char_errors=errors, char_count=count, cer=errors / max(1, count))
             evaluation["asr_status"] = "completed"
         except Exception as exc:
@@ -124,8 +144,9 @@ def evaluate_quality(output, reference, models):
                     audio = resample_poly(audio, 16000 // g, int(sr) // g)
                 with torch.inference_mode():
                     return sv.compute_embedding3(torch.from_numpy(np.ascontiguousarray(audio)).float().unsqueeze(0)).flatten().float()
-            ref = embedding(reference)
+            refs = [embedding(path) for path in (references or [reference])]
             for _, sample, path in samples:
+                ref = refs[sample.get("reference_index", 1) - 1]
                 cosine = float(torch.nn.functional.cosine_similarity(ref, embedding(path), dim=0).item())
                 if not math.isfinite(cosine):
                     raise ValueError("Nonfinite speaker score")
@@ -163,7 +184,14 @@ def main():
         base_s1 = ROOT / "GPT_SoVITS/pretrained_models/s1v3.ckpt"
         base_s2 = ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"
         models = {"base": (base_s1, base_s2)}
-        if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_session":
+        reuse = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_reuse"
+        if reuse:
+            s1 = work / "S1_qkv_o-grok-best.ckpt"
+            s16 = work / "S2_rank16_grok_cfm_best.pth"
+            s32 = work / "S2_rank32_grok_cfm_best.pth"
+            models.update(rank16=(base_s1, s16), rank32=(base_s1, s32), combined=(s1, s32))
+            reference_folder = work
+        elif os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_session":
             with __import__("zipfile").ZipFile("/kaggle/working/grokking_result.zip") as z:
                 summary = json.loads(z.read("training/summary.json"))
             best_s1 = pick_candidate(summary["arms"], ("S1_v_o", "S1_qkv_o"), "val_loss")
@@ -186,10 +214,14 @@ def main():
                 models[arm] = (base_s1, destination)
             reference_folder = work / "A_lr100"
         report["reference_counts"] = {}
-        ref, prompt, prompt_lang = choose_reference(reference_folder, report["reference_counts"])
-        # Keep the exact prompt privately for reproducible inference-only follow-ups.
-        shutil.copyfile(ref, output / "reference.wav")
-        (output / "reference.json").write_text(json.dumps({"text": prompt, "language": prompt_lang}, ensure_ascii=False), encoding="utf-8")
+        references = choose_references(reference_folder, report["reference_counts"], 3 if reuse else 1)
+        texts = TEXTS + ("아니, 잠깐만요. 그건 제가 생각했던 것과 완전히 다른데요?", "지금부터 하나씩 차근차근 확인해 보겠습니다.") if reuse else TEXTS
+        # Keep exact prompts privately; no transcript enters the public report.
+        for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
+            stem = f"reference-{ref_index:02d}" if reuse else "reference"
+            shutil.copyfile(ref, output / (stem + ".wav"))
+            (output / (stem + ".json")).write_text(json.dumps({"text": prompt, "language": prompt_lang}, ensure_ascii=False), encoding="utf-8")
+        ref = references[0][0]
         for label, (gpt_weight, weight) in models.items():
             result = {"samples": [], "status": "failed"}
             report["models"][label] = result
@@ -198,39 +230,40 @@ def main():
                 config = dict(TTS_Config.default_configs["v5dev"], device="cuda:0",
                               is_half=False, t2s_weights_path=str(gpt_weight), vits_weights_path=str(weight))
                 tts = TTS(TTS_Config({"custom": config}))
-                result["stage"] = "reference"
-                tts.set_ref_audio(str(ref))
-                result["stage"] = "synthesis"
-                for index, text in enumerate(TEXTS, 1):
-                    result["stage"] = "synthesis"
-                    chunks = list(tts.run({
-                        "text": text, "text_lang": "all_ko", "prompt_text": prompt,
-                        "prompt_lang": prompt_lang, "ref_audio_path": str(ref),
-                        "sample_steps": 32, "cfg_rate": 1.30, "seed": 1234,
-                        "batch_size": 1, "parallel_infer": False,
-                        "use_cuda_graph": False, "use_flash_attention": False,
-                        "text_split_method": "cut0", "split_bucket": False,
-                        "return_fragment": False, "streaming_mode": False,
-                        "cache_dit_mode": "off",
-                    }))
-                    if len(chunks) != 1:
-                        raise RuntimeError("Unexpected synthesis chunks")
-                    sr, audio = chunks[0]
-                    audio = np.asarray(audio)
-                    result["stage"] = "output_validation"
-                    result["observed_sample_rate"] = int(sr)
-                    expected_sr = int(tts.vocoder_configs["sr"])
-                    if sr != expected_sr or audio.size < sr or not np.isfinite(audio).all():
-                        raise RuntimeError("Invalid synthesis output")
-                    normalized = audio.astype(np.float64)
-                    if np.issubdtype(audio.dtype, np.integer):
-                        normalized /= max(abs(np.iinfo(audio.dtype).min), np.iinfo(audio.dtype).max)
-                    rms = float(np.sqrt(np.mean(normalized ** 2)))
-                    if rms < 1e-4:
-                        raise RuntimeError("Silent synthesis output")
-                    write(output / f"{label}_{index:02d}.wav", sr, audio)
-                    result["samples"].append({"index": index, "sample_rate": int(sr), "seconds": audio.size / sr,
-                                              "rms": rms, "peak": float(np.max(np.abs(normalized)))})
+                for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
+                    result["stage"] = "reference"
+                    tts.set_ref_audio(str(ref))
+                    for text_index, text in enumerate(texts, 1):
+                        index = (ref_index - 1) * len(texts) + text_index
+                        result["stage"] = "synthesis"
+                        chunks = list(tts.run({
+                            "text": text, "text_lang": "all_ko", "prompt_text": prompt,
+                            "prompt_lang": prompt_lang, "ref_audio_path": str(ref),
+                            "sample_steps": 32, "cfg_rate": 1.30, "seed": 1234,
+                            "batch_size": 1, "parallel_infer": False,
+                            "use_cuda_graph": False, "use_flash_attention": False,
+                            "text_split_method": "cut0", "split_bucket": False,
+                            "return_fragment": False, "streaming_mode": False,
+                            "cache_dit_mode": "off",
+                        }))
+                        if len(chunks) != 1:
+                            raise RuntimeError("Unexpected synthesis chunks")
+                        sr, audio = chunks[0]
+                        audio = np.asarray(audio)
+                        result["stage"] = "output_validation"
+                        result["observed_sample_rate"] = int(sr)
+                        expected_sr = int(tts.vocoder_configs["sr"])
+                        if sr != expected_sr or audio.size < sr or not np.isfinite(audio).all():
+                            raise RuntimeError("Invalid synthesis output")
+                        normalized = audio.astype(np.float64)
+                        if np.issubdtype(audio.dtype, np.integer):
+                            normalized /= max(abs(np.iinfo(audio.dtype).min), np.iinfo(audio.dtype).max)
+                        rms = float(np.sqrt(np.mean(normalized ** 2)))
+                        if rms < 1e-4:
+                            raise RuntimeError("Silent synthesis output")
+                        write(output / f"{label}_{index:02d}.wav", sr, audio)
+                        result["samples"].append({"index": index, "reference_index": ref_index, "text_index": text_index, "sample_rate": int(sr), "seconds": audio.size / sr,
+                                                  "rms": rms, "peak": float(np.max(np.abs(normalized)))})
                 result.update(status="completed", stage="finished")
             except Exception as exc:
                 result["error_type"] = type(exc).__name__
@@ -240,7 +273,7 @@ def main():
                 if "tts" in locals():
                     del tts
                 torch.cuda.empty_cache()
-        report["evaluation"] = evaluate_quality(output, ref, report["models"])
+        report["evaluation"] = evaluate_quality(output, references[0][0], report["models"], texts, [r[0] for r in references])
         if all(report["models"].get(k, {}).get("status") == "completed" for k in models):
             report["status"] = "completed"
     except Exception as exc:
