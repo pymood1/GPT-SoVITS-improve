@@ -75,6 +75,7 @@ jobs:
       - name: Check grokking experiment utilities
         run: |
           python tests/test_grokking_utils.py
+          python tests/test_grokking_cfm_probe.py
 
       - name: Check multilingual BERT feature helpers
         env:
