@@ -63,6 +63,35 @@ class KaggleRunnerTests(unittest.TestCase):
                 self.assertEqual((out / "4-cnhubert").resolve(), source / "4-cnhubert")
             self.assertFalse((source / "config.json").exists())
 
+    def test_quality_reference_prefers_korean_but_accepts_other_languages(self):
+        import wave
+        from tools.kaggle_quality_listening import choose_reference, ReferenceUnavailable
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "5-wav32k"
+            audio.mkdir()
+            def wav(name, seconds):
+                with wave.open(str(audio / name), "wb") as out:
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(16000)
+                    out.writeframes(b"\x00\x00" * int(seconds * 16000))
+            wav("en.wav", 5)
+            wav("ko.wav", 9)
+            wav("short.wav", 2)
+            lines = root / "2-name2text.txt"
+            lines.write_text("en.wav\tx\tNone\tHello there.\nko.wav\tx\tNone\t안녕하세요.\nshort.wav\tx\tNone\t짧아요.\n", encoding="utf-8")
+            counts = {}
+            path, _, lang = choose_reference(root, counts)
+            self.assertEqual((path.name, lang), ("ko.wav", "all_ko"))
+            self.assertEqual(counts["duration_eligible"], 2)
+            (audio / "ko.wav").unlink()
+            path, _, lang = choose_reference(root)
+            self.assertEqual((path.name, lang), ("en.wav", "auto"))
+            (audio / "en.wav").unlink()
+            with self.assertRaises(ReferenceUnavailable):
+                choose_reference(root)
+
     def test_quality_profile_compares_learning_rate_only(self):
         from tools.kaggle_grokking_runner import QUALITY_SETTINGS, _s2_config, _arm_env
         a, b = QUALITY_SETTINGS["arms"]
