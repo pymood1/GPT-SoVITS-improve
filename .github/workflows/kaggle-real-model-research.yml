@@ -52,7 +52,7 @@ jobs:
           from pathlib import Path
           req = json.loads(Path("tools/kaggle_remote_request.json").read_text())
           assert re.fullmatch("[0-9a-f]{40}", req["code_sha"])
-          assert req["profile"] in ("s1", "s2")
+          assert req["profile"] in ("s1", "s2", "s2_quality")
           assert type(req["epochs"]) is int and 1 <= req["epochs"] <= 120
           assert type(req["max_training_seconds"]) is int and 60 <= req["max_training_seconds"] <= 14400
           recover = req.get("recover_kernel", "")
