@@ -233,3 +233,39 @@ A missing credential deliberately blocks submission. A successful workflow
 with skipped GPU steps is **not** GPU proof. Check the submission and
 metrics-retrieval steps individually. A completed GPU smoke is a prerequisite
 for actual pretrained model training, not a substitute for it.
+
+
+## 2026-11-25: First real Kaggle S1 ablation and next probe
+
+Run `20261125T013234_805522Z` (commit `2507958`): both single-T4 FP32
+arms loaded the generic S1 checkpoint with all keys matched and completed
+17 epochs. 244 training and 27 held-out utterances; one filtered sample.
+Grokfast OFF/ON (alpha .98, lambda .5, AdamW LR 1e-4, WD .01):
+
+| Metric | OFF | ON |
+|---|---:|---:|
+| best held-out CE | 3.108679 | 3.228725 |
+| final held-out CE | 4.815629 | 5.089155 |
+| final train top-3 | .987593 | .989849 |
+| final held-out top-3 | .346782 | .336310 |
+| memorization epoch | 13 | 13 |
+| delayed candidate | none | none |
+
+The observed window shows overfitting, not delayed generalization.
+There was no epoch-zero measurement; both stopped four epochs after
+the fit point, so the result does not rule out a later transition.
+The split is utterance-level within three long recordings, not an
+independent recording or independent speaker test.
+
+Next runner profile `s1_weight_decay_long_v2`: same generic checkpoint,
+seed, batch size, BERT and DPO settings; Grokfast OFF for both arms;
+WD .01 versus 1.0; fixed 120 epochs (90-minute safety limit).
+This is an exploratory comparison, not a validated training recipe.
+A full held-out sanity pass records the untouched pretrained epoch-zero
+baseline separately without advancing the phase tracker. If Lightning
+does not expose the sanity metrics, the baseline is missing/null, not
+a fabricated zero. Fixed epoch budgets are opt-in via
+`GPT_SOVITS_GROKKING_S1_FIXED_EPOCHS`; no change to ordinary training.
+Compare both curves at the same epoch; use the baseline as an external
+reference as the candidate tracker still compares only trained epochs.
+No inference quality or S2 GPU result has yet been established.
