@@ -119,7 +119,7 @@ def main():
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
-            if profile in ("s2_quality", "s2_listening"):
+            if profile in ("s2_quality", "s2_listening", "quality_session"):
                 report["stage"] = "listening"
                 with zipfile.ZipFile(WORKING / "grokking_result.zip") as z:
                     run_id = json.loads(z.read("run.json"))["run_id"]
@@ -141,7 +141,7 @@ def main():
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
                                            str(Path("/kaggle/tmp/grokking_runs") / run_id), str(output)],
-                                          cwd=ROOT, env=env, timeout=900)
+                                          cwd=ROOT, env=env, timeout=1500 if profile == "quality_session" else 900)
                     report["listening_exit"] = proc.returncode
                     path = output / "listening-metrics.json"
                     if path.is_file():
@@ -158,7 +158,10 @@ def main():
                                 k: evaluation[k] for k in ("asr_status", "speaker_status")
                                 if evaluation.get(k) in ("completed", "failed", "unavailable")
                             }
-                        for label in ("base", "A_lr100", "B_lr030"):
+                        selected = raw.get("selected", {})
+                        if isinstance(selected, dict) and selected.get("s1") in ("S1_v_o", "S1_qkv_o") and selected.get("s2") in ("S2_rank16", "S2_rank32"):
+                            report["listening"]["selected"] = {"s1": selected["s1"], "s2": selected["s2"]}
+                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined"):
                             v = raw.get("models", {}).get(label, {})
                             if v:
                                 report["listening"]["models"][label] = {
