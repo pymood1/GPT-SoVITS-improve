@@ -6,6 +6,8 @@ Each run gets its own training output and never resumes a checkpoint.
 from __future__ import annotations
 
 import json
+import math
+import statistics
 import os
 import signal
 import shutil
@@ -14,7 +16,7 @@ import sys
 import time
 import traceback
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,7 +101,44 @@ def _collect_baseline(out, arm_report, arm_state, stage="s1"):
         arm_state["pretrained_baseline"] = baseline
 
 
-def _progress_line(arm_id, rows, process, arm_report, settings, gpu_status):
+KST = timezone(timedelta(hours=9), "KST")
+
+
+def _remaining_seconds(rows, total_epochs, elapsed_in_epoch=0.0, observed_durations=()):
+    """Estimate from recent measured full epochs (training + validation)."""
+    remaining = max(0, total_epochs - len(rows))
+    if remaining == 0:
+        return 0.0
+    measured = [r.get("epoch_seconds") for r in rows]
+    durations = [float(v) for v in measured if isinstance(v, (int, float))
+                 and math.isfinite(v) and v > 0]
+    if not durations:
+        durations = [float(v) for v in observed_durations
+                     if isinstance(v, (int, float)) and math.isfinite(v) and v > 0]
+    if not durations:
+        return None
+    typical = statistics.median(durations[-5:])
+    # Do not claim zero remaining for an epoch that is still running.
+    current = max(typical * 0.1, typical - max(0.0, elapsed_in_epoch))
+    return (remaining - 1) * typical + current
+
+
+def _eta_text(seconds, wall_now, budget_seconds):
+    cutoff = max(0.0, budget_seconds)
+    if seconds is None:
+        return "ETA 계산 중 (완료 Epoch 대기)"
+    limited = seconds > cutoff
+    effective = min(seconds, cutoff)
+    minutes = math.ceil(effective / 60)
+    hours, minutes = divmod(minutes, 60)
+    duration = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+    finish = datetime.fromtimestamp(wall_now + effective, KST).strftime("%m/%d %H:%M KST")
+    if limited:
+        return f"시간 제한 종료 예상 {finish} (남은 {duration}; 목표 Epoch 미도달 예상)"
+    return f"완료 예상 {finish} (남은 약 {duration})"
+
+
+def _progress_line(arm_id, rows, process, arm_report, settings, gpu_status, eta=None):
     try:
         status = json.loads((arm_report / "status.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -114,7 +153,8 @@ def _progress_line(arm_id, rows, process, arm_report, settings, gpu_status):
     gpu = f" | {gpu_status}" if gpu_status else ""
     val = rows[-1].get("val_cfm", rows[-1].get("val_loss")) if rows else None
     metric = f" | last val={val:.6f}" if isinstance(val, (float, int)) else ""
-    return f"{arm_id}: epoch {epoch}/{settings['fixed_epochs']} [{stage}]{detail}{metric}{gpu}"
+    estimate = f" | {eta}" if eta else ""
+    return f"{arm_id}: epoch {epoch}/{settings['fixed_epochs']} [{stage}]{detail}{metric}{gpu}{estimate}"
 
 
 def _gpu_status():
@@ -366,18 +406,54 @@ def run(ui):
             processes[arm_id] = (process, log, out, arm_report)
             state["arms"][arm_id] = {"gpu": gpu, "status": "running"}
         deadline = time.monotonic() + settings["max_training_seconds"]
+        observations = {arm_id: {"count": 0, "seen_at": time.monotonic(), "durations": []}
+                        for arm_id in processes}
         while any(p.poll() is None for p, *_ in processes.values()):
             _require_tmp_space(state)
             gpu_status = _gpu_status()
+            now = time.monotonic()
+            wall_now = time.time()
+            budget_seconds = max(0.0, deadline - now)
+            active_estimates = []
+            failed = False
             for arm_id, (process, _, out, arm_report) in processes.items():
                 rows = _read_metrics(out)
                 state["arms"][arm_id].update(_summarize(rows))
                 _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
-                state["arms"][arm_id]["returncode"] = process.poll()
+                code = process.poll()
+                state["arms"][arm_id]["returncode"] = code
+                observation = observations[arm_id]
+                if len(rows) > observation["count"]:
+                    if observation["count"] > 0:
+                        observation["durations"].append(
+                            (now - observation["seen_at"]) / (len(rows) - observation["count"])
+                        )
+                    observation["count"] = len(rows)
+                    observation["seen_at"] = now
+                eta = None
+                if code is None:
+                    seconds = _remaining_seconds(
+                        rows, settings["fixed_epochs"], now - observation["seen_at"],
+                        observation["durations"],
+                    )
+                    active_estimates.append(seconds)
+                    eta = _eta_text(seconds, wall_now, budget_seconds)
+                    state["arms"][arm_id]["estimated_remaining_seconds"] = seconds
+                else:
+                    failed = failed or code != 0
+                    state["arms"][arm_id].pop("estimated_remaining_seconds", None)
                 print(_progress_line(arm_id, rows, process, arm_report, settings,
-                                     gpu_status.get(state["arms"][arm_id]["gpu"])), flush=True)
+                                     gpu_status.get(state["arms"][arm_id]["gpu"]), eta), flush=True)
                 for path in out.glob("grokking_*metrics*.jsonl"):
                     shutil.copyfile(path, arm_report / path.name)
+            overall = (max(active_estimates) if active_estimates
+                       and all(v is not None for v in active_estimates) else None)
+            state["estimated_remaining_seconds"] = overall
+            cutoff = datetime.fromtimestamp(wall_now + budget_seconds, KST).strftime("%m/%d %H:%M KST")
+            if failed:
+                print(f"[전체] 일부 모델 실패 | 안전 제한 {cutoff}", flush=True)
+            else:
+                print(f"[전체] {_eta_text(overall, wall_now, budget_seconds)} | 안전 제한 {cutoff}", flush=True)
             _write_json(report / "summary.json", state)
             _bundle(bundle_root, archive)
             if time.monotonic() >= deadline:
@@ -400,9 +476,11 @@ def run(ui):
             state["arms"][arm_id].update(_summarize(rows))
             _collect_baseline(out, arm_report, state["arms"][arm_id], profile)
             state["arms"][arm_id]["returncode"] = process.returncode
+            state["arms"][arm_id].pop("estimated_remaining_seconds", None)
             state["arms"][arm_id]["status"] = "completed" if process.returncode == 0 and rows else "incomplete"
         if state["status"] == "completed" and not all(a["status"] == "completed" for a in state["arms"].values()):
             state["status"] = "missing_metrics"
+        state.pop("estimated_remaining_seconds", None)
         state["disk"] = _disk_state()
         _write_json(report / "summary.json", state)
         _bundle(bundle_root, archive)
