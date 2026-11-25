@@ -4,7 +4,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/kaggle-private-gpu-smoke.yml'
-permissions: {}
+permissions:
+  contents: read
 concurrency:
   group: kaggle-private-gpu-smoke
   cancel-in-progress: false
@@ -14,7 +15,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
+      - name: Require an explicit smoke workflow change in the head commit
+        id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # PR path filters are cumulative. Do not submit GPU jobs on
+          # unrelated later commits or ordinary code changes.
+          python - <<'PY'
+          import json, os, re, urllib.request
+          sha = os.environ["HEAD_SHA"]
+          assert re.fullmatch("[0-9a-f]{40}", sha)
+          req = urllib.request.Request(
+              "https://api.github.com/repos/" + os.environ["REPO"] + "/commits/" + sha,
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Accept": "application/vnd.github+json"},
+          )
+          with urllib.request.urlopen(req, timeout=20) as response:
+              data = json.load(response)
+          changed = {item["filename"] for item in data.get("files", [])}
+          requested = ".github/workflows/kaggle-private-gpu-smoke.yml" in changed
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("submit=" + str(requested).lower() + "\n")
+          print("Explicit smoke request:", requested)
+          PY
       - name: Check dedicated Kaggle credential availability
+        if: steps.request.outputs.submit == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
@@ -25,8 +53,10 @@ jobs:
           fi
           echo "Dedicated Kaggle credential available (value not shown)."
       - name: Install tested Kaggle CLI
+        if: steps.request.outputs.submit == 'true'
         run: python -m pip install --disable-pip-version-check kaggle==2.2.5
       - name: Prepare private synthetic GPU training probe
+        if: steps.request.outputs.submit == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/kaggle-smoke"
           cd "$RUNNER_TEMP/kaggle-smoke"
@@ -107,6 +137,7 @@ jobs:
           PY
           python -m py_compile smoke.py
       - name: Submit private Kaggle smoke job
+        if: steps.request.outputs.submit == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
@@ -114,6 +145,7 @@ jobs:
         run: |
           kaggle kernels push -p "$RUNNER_TEMP/kaggle-smoke" --accelerator NvidiaTeslaT4 --timeout 600
       - name: Poll and retrieve only synthetic metrics
+        if: steps.request.outputs.submit == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
