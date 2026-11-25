@@ -51,8 +51,8 @@ def collect(report, expected_sha):
     if isinstance(counts, dict):
         report["reference_counts"] = {k: number(counts.get(k)) for k in
                                       ("rows", "readable", "duration_eligible", "text_eligible", "korean_eligible")}
-    if summary.get("reused_checkpoints") == 2 and summary.get("training_epochs") == 0:
-        report.update(reused_checkpoints=2, training_epochs=0)
+    if summary.get("reused_checkpoints") in (2, 4) and summary.get("training_epochs") == 0:
+        report.update(reused_checkpoints=summary["reused_checkpoints"], training_epochs=0)
     if type(summary.get("candidate_exports")) is int:
         report["candidate_exports"] = number(summary["candidate_exports"])
     status = summary.get("status")
@@ -111,15 +111,16 @@ def main():
         arms = report.get("arms", {})
         expected = {"s2": ("A_cfm_off", "B_cfm_on"), "s1": ("A_wd001", "B_wd1"),
                     "s2_quality": ("A_lr100", "B_lr030"), "s2_listening": (),
-                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32")}[profile]
+                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"), "quality_reuse": ()}[profile]
         if (proc.returncode == 0 and report.get("training_status") == "completed"
                 and len(report.get("gpus", [])) == 2
                 and (profile != "s2_listening" or report.get("reused_checkpoints") == 2)
                 and (profile != "quality_session" or report.get("candidate_exports") == 4)
+                and (profile != "quality_reuse" or report.get("reused_checkpoints") == 4)
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
-            if profile in ("s2_quality", "s2_listening", "quality_session"):
+            if profile in ("s2_quality", "s2_listening", "quality_session", "quality_reuse"):
                 report["stage"] = "listening"
                 with zipfile.ZipFile(WORKING / "grokking_result.zip") as z:
                     run_id = json.loads(z.read("run.json"))["run_id"]
@@ -141,7 +142,7 @@ def main():
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
                                            str(Path("/kaggle/tmp/grokking_runs") / run_id), str(output)],
-                                          cwd=ROOT, env=env, timeout=1500 if profile == "quality_session" else 900)
+                                          cwd=ROOT, env=env, timeout=5400 if profile == "quality_reuse" else 1500 if profile == "quality_session" else 900)
                     report["listening_exit"] = proc.returncode
                     path = output / "listening-metrics.json"
                     if path.is_file():
@@ -161,14 +162,14 @@ def main():
                         selected = raw.get("selected", {})
                         if isinstance(selected, dict) and selected.get("s1") in ("S1_v_o", "S1_qkv_o") and selected.get("s2") in ("S2_rank16", "S2_rank32"):
                             report["listening"]["selected"] = {"s1": selected["s1"], "s2": selected["s2"]}
-                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined"):
+                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined", "rank16", "rank32"):
                             v = raw.get("models", {}).get(label, {})
                             if v:
                                 report["listening"]["models"][label] = {
                                     "status": v.get("status") if v.get("status") in ("completed", "failed") else "unknown",
                                     "stage": v.get("stage") if v.get("stage") in ("model_load", "reference", "synthesis", "output_validation", "finished") else "unknown",
                                     "observed_sample_rate": number(v.get("observed_sample_rate")),
-                                    "samples": [{k: number(row.get(k)) for k in ("index", "sample_rate", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine")}
+                                    "samples": [{k: number(row.get(k)) for k in ("index", "reference_index", "text_index", "sample_rate", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine")}
                                                 for row in v.get("samples", [])],
                                 }
                 except Exception as exc:
