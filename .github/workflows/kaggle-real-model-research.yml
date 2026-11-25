@@ -52,8 +52,13 @@ jobs:
           from pathlib import Path
           req = json.loads(Path("tools/kaggle_remote_request.json").read_text())
           assert re.fullmatch("[0-9a-f]{40}", req["code_sha"])
-          assert req["profile"] in ("s1", "s2", "s2_quality")
-          assert type(req["epochs"]) is int and 1 <= req["epochs"] <= 120
+          assert req["profile"] in ("s1", "s2", "s2_quality", "s2_listening")
+          assert type(req["epochs"]) is int and (req["epochs"] == 0 if req["profile"] == "s2_listening" else 1 <= req["epochs"] <= 120)
+          source_kernel = req.get("source_kernel", "")
+          if req["profile"] == "s2_listening":
+              assert re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", source_kernel)
+          else:
+              assert not source_kernel
           assert type(req["max_training_seconds"]) is int and 60 <= req["max_training_seconds"] <= 14400
           recover = req.get("recover_kernel", "")
           if recover:
@@ -64,7 +69,7 @@ jobs:
           kernel = recover or "pymood1/gpt-sovits-research-" + os.environ["GITHUB_RUN_ID"]
           folder = Path(os.environ["RUNNER_TEMP"]) / "kaggle-research"
           folder.mkdir()
-          script = "REQUEST = " + repr({k: req[k] for k in ("code_sha", "profile", "epochs", "max_training_seconds")}) + "\n" + Path("tools/kaggle_remote_job.py").read_text()
+          script = "REQUEST = " + repr({**{k: req[k] for k in ("code_sha", "profile", "epochs", "max_training_seconds")}, "source_kernel": source_kernel}) + "\n" + Path("tools/kaggle_remote_job.py").read_text()
           compile(script, "research.py", "exec")
           (folder / "research.py").write_text(script)
           (folder / "kernel-metadata.json").write_text(json.dumps({
@@ -72,7 +77,7 @@ jobs:
               "language": "python", "kernel_type": "script", "is_private": True,
               "enable_gpu": True, "enable_internet": True, "machine_shape": "NvidiaTeslaT4",
               "dataset_sources": ["pymood1/w-voice-file"], "competition_sources": [],
-              "kernel_sources": [], "model_sources": []
+              "kernel_sources": [source_kernel] if source_kernel else [], "model_sources": []
           }))
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("kernel=" + kernel + "\n")
@@ -170,7 +175,7 @@ jobs:
           if python - "$RUNNER_TEMP/kaggle-result/remote-result.json" <<'PY'
           import json, sys
           r = json.load(open(sys.argv[1]))
-          sys.exit(0 if r.get("profile") == "s2_quality" and r.get("listening", {}).get("status") != "completed" else 1)
+          sys.exit(0 if r.get("profile") in ("s2_quality", "s2_listening") and r.get("listening", {}).get("status") != "completed" else 1)
           PY
           then
             mkdir -p "$RUNNER_TEMP/listening-diagnostic"
@@ -192,6 +197,6 @@ jobs:
               print("LISTENING_DIAGNOSTIC", json.dumps(result))
           PY
             fi
-            echo "::error::Training succeeded, but listening evaluation did not complete."
+            echo "::error::Model preparation succeeded, but listening evaluation did not complete."
             exit 1
           fi
