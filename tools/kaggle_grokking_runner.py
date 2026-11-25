@@ -89,6 +89,7 @@ PROFILES = {"s1": SETTINGS, "s2": S2_SETTINGS, "s2_quality": QUALITY_SETTINGS,
             "quality_reuse": {**SESSION_SETTINGS, "experiment": "v5dev_multi_reference_reuse", "fixed_epochs": 0, "base_epochs": 0},
             "quality_mix": {**SESSION_SETTINGS, "experiment": "v5dev_mix_and_cfg", "fixed_epochs": 0, "base_epochs": 0},
             "quality_soft": {**SESSION_SETTINGS, "experiment": "v5dev_soft_semantic_and_mix_refinement", "fixed_epochs": 0, "base_epochs": 0},
+            "quality_general": {**SESSION_SETTINGS, "experiment": "v5dev_multiseed_prompt_validation", "fixed_epochs": 0, "base_epochs": 0},
             "s2_listening": {**QUALITY_SETTINGS, "experiment": "v5dev_reuse_listening", "fixed_epochs": 0, "base_epochs": 0}}
 DEFAULT_PROFILE = "s2"
 
@@ -383,7 +384,7 @@ def run(ui):
     # Explicit remote smoke overrides; ordinary notebook profiles are unchanged.
     epochs = int(os.environ.get("GPT_SOVITS_RESEARCH_EPOCHS", settings["fixed_epochs"]))
     seconds = int(os.environ.get("GPT_SOVITS_RESEARCH_MAX_SECONDS", settings["max_training_seconds"]))
-    if not ((epochs == 0 if profile in ("s2_listening", "quality_reuse", "quality_mix", "quality_soft") else 1 <= epochs <= 120) and 60 <= seconds <= 14400):
+    if not ((epochs == 0 if profile in ("s2_listening", "quality_reuse", "quality_mix", "quality_soft", "quality_general") else 1 <= epochs <= 120) and 60 <= seconds <= 14400):
         raise ValueError("Research budget out of range")
     settings.update(base_epochs=epochs, fixed_epochs=epochs, max_training_seconds=seconds)
     run_id = os.environ.get("GPT_SOVITS_RESEARCH_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
@@ -446,7 +447,7 @@ def run(ui):
             # Fail before spending GPU epochs if the listening prompt is unavailable.
             state["reference_counts"] = {}
             choose_reference(preprocessed, state["reference_counts"])
-        if profile in ("quality_reuse", "quality_mix", "quality_soft"):
+        if profile in ("quality_reuse", "quality_mix", "quality_soft", "quality_general"):
             import re
             source_kernel = os.environ.get("GPT_SOVITS_RESEARCH_SOURCE_KERNEL", "")
             if not re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", source_kernel):
