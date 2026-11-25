@@ -127,6 +127,31 @@ class CFMProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mix_s1_state({"w": a}, {"w": b}, .5)
 
+    def test_v5_mix_export_keeps_version_header_and_frozen_state(self):
+        from io import BytesIO
+        from tempfile import TemporaryDirectory
+        from tools.quality_model_mix import export_scaled_v5_checkpoint
+        source_data = {"lora_rank": 2, "config": {"version": "v5dev"},
+                       "weight": {"cfm.q.lora_A.default.weight": torch.eye(2),
+                                  "cfm.q.lora_B.default.weight": torch.ones(2, 2),
+                                  "quantizer.buffer": torch.tensor([1., 2.])}}
+        with TemporaryDirectory() as folder:
+            original, mixed = Path(folder) / "source.pth", Path(folder) / "mixed.pth"
+            buffer = BytesIO()
+            torch.save(source_data, buffer)
+            original.write_bytes(b"07" + buffer.getvalue()[2:])
+            before = original.read_bytes()
+            export_scaled_v5_checkpoint(original, mixed, .75)
+            self.assertEqual(original.read_bytes(), before)
+            data = mixed.read_bytes()
+            self.assertEqual(data[:2], b"07")
+            result = torch.load(BytesIO(b"PK" + data[2:]), map_location="cpu", weights_only=True)
+            self.assertEqual(result["lora_rank"], 2)
+            self.assertTrue(torch.equal(result["weight"]["quantizer.buffer"], source_data["weight"]["quantizer.buffer"]))
+            self.assertTrue(torch.equal(result["weight"]["cfm.q.lora_B.default.weight"], torch.full((2, 2), .75)))
+            with self.assertRaises(ValueError):
+                export_scaled_v5_checkpoint(original, original, .75)
+
     def test_soft_semantic_onehot_matches_projected_hard_decode(self):
         from module.soft_semantics import decode_soft_single_layer
         from types import SimpleNamespace
