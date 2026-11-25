@@ -14,6 +14,9 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/grokking-gpt-sovits-20261121'
     runs-on: ubuntu-latest
     timeout-minutes: 14
+    env:
+      # Explicit recovery of an already completed job; empty for a new GPU smoke.
+      RECOVER_KERNEL: pymood1/gpt-sovits-gpu-smoke-45521697065-2
     steps:
       - name: Require an explicit smoke workflow change in the head commit
         id: request
@@ -56,7 +59,7 @@ jobs:
         if: steps.request.outputs.submit == 'true'
         run: python -m pip install --disable-pip-version-check kaggle==2.2.5
       - name: Prepare private synthetic GPU training probe
-        if: steps.request.outputs.submit == 'true'
+        if: steps.request.outputs.submit == 'true' && env.RECOVER_KERNEL == ''
         run: |
           mkdir -p "$RUNNER_TEMP/kaggle-smoke"
           cd "$RUNNER_TEMP/kaggle-smoke"
@@ -137,7 +140,7 @@ jobs:
           PY
           python -m py_compile smoke.py
       - name: Submit private Kaggle smoke job
-        if: steps.request.outputs.submit == 'true'
+        if: steps.request.outputs.submit == 'true' && env.RECOVER_KERNEL == ''
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
@@ -152,14 +155,14 @@ jobs:
           KAGGLE_USERNAME: pymood1
         run: |
           set -euo pipefail
-          kernel="pymood1/gpt-sovits-gpu-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          kernel="${RECOVER_KERNEL:-pymood1/gpt-sovits-gpu-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
           echo "Private kernel: $kernel"
           for i in $(seq 1 30); do
             status=$(kaggle kernels status "$kernel" 2>&1)
             echo "$status"
-            if echo "$status" | grep -Eiq '(^|[.[:space:]])complete(d)?([[:space:]]|$)'; then
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])complete(d)?(["[:space:]]|$)'; then
               mkdir -p "$RUNNER_TEMP/kaggle-metrics"
-              kaggle kernels output "$kernel" -p "$RUNNER_TEMP/kaggle-metrics" --file-pattern 'gpu-smoke[.]json$'
+              if ! kaggle kernels output "$kernel" -p "$RUNNER_TEMP/kaggle-metrics" --file-pattern 'gpu-smoke[.]json
               python - "$RUNNER_TEMP/kaggle-metrics/gpu-smoke.json" <<'PY'
           import json, sys
           with open(sys.argv[1]) as f:
@@ -170,7 +173,29 @@ jobs:
           PY
               exit 0
             fi
-            if echo "$status" | grep -Eiq '(^|[.[:space:]])(error|failed|cancelled)([[:space:]]|$)'; then
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
+              kaggle kernels logs "$kernel" || true
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::warning::Kaggle job not terminal yet; GPU success is not established. Query this private kernel later."
+          exit 1
+; then
+                echo "Filtered output retrieval failed; retrying known synthetic-only kernel output."
+                kaggle kernels output "$kernel" -p "$RUNNER_TEMP/kaggle-metrics"
+              fi
+              python - "$RUNNER_TEMP/kaggle-metrics/gpu-smoke.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              result = json.load(f)
+          assert result.get("pass") is True
+          assert result["gpu_count"] == 2
+          print(json.dumps(result, indent=2))
+          PY
+              exit 0
+            fi
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
               kaggle kernels logs "$kernel" || true
               exit 1
             fi
