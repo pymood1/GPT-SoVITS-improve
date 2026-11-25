@@ -111,16 +111,16 @@ def main():
         arms = report.get("arms", {})
         expected = {"s2": ("A_cfm_off", "B_cfm_on"), "s1": ("A_wd001", "B_wd1"),
                     "s2_quality": ("A_lr100", "B_lr030"), "s2_listening": (),
-                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"), "quality_reuse": ()}[profile]
+                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"), "quality_reuse": (), "quality_mix": ()}[profile]
         if (proc.returncode == 0 and report.get("training_status") == "completed"
                 and len(report.get("gpus", [])) == 2
                 and (profile != "s2_listening" or report.get("reused_checkpoints") == 2)
                 and (profile != "quality_session" or report.get("candidate_exports") == 4)
-                and (profile != "quality_reuse" or report.get("reused_checkpoints") == 4)
+                and (profile not in ("quality_reuse", "quality_mix") or report.get("reused_checkpoints") == 4)
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
-            if profile in ("s2_quality", "s2_listening", "quality_session", "quality_reuse"):
+            if profile in ("s2_quality", "s2_listening", "quality_session", "quality_reuse", "quality_mix"):
                 report["stage"] = "listening"
                 with zipfile.ZipFile(WORKING / "grokking_result.zip") as z:
                     run_id = json.loads(z.read("run.json"))["run_id"]
@@ -142,7 +142,7 @@ def main():
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
                                            str(Path("/kaggle/tmp/grokking_runs") / run_id), str(output)],
-                                          cwd=ROOT, env=env, timeout=5400 if profile == "quality_reuse" else 1500 if profile == "quality_session" else 900)
+                                          cwd=ROOT, env=env, timeout=9600 if profile == "quality_mix" else 5400 if profile == "quality_reuse" else 1500 if profile == "quality_session" else 900)
                     report["listening_exit"] = proc.returncode
                     path = output / "listening-metrics.json"
                     if path.is_file():
@@ -162,7 +162,7 @@ def main():
                         selected = raw.get("selected", {})
                         if isinstance(selected, dict) and selected.get("s1") in ("S1_v_o", "S1_qkv_o") and selected.get("s2") in ("S2_rank16", "S2_rank32"):
                             report["listening"]["selected"] = {"s1": selected["s1"], "s2": selected["s2"]}
-                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined", "rank16", "rank32"):
+                        for label in ("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combined", "rank16", "rank32", "mix025", "mix050", "mix075", "mix125", "cfg100", "cfg160"):
                             v = raw.get("models", {}).get(label, {})
                             if v:
                                 report["listening"]["models"][label] = {
