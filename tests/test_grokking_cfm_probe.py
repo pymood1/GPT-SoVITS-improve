@@ -102,9 +102,13 @@ class CFMProbeTests(unittest.TestCase):
         model = RandomValidationModel()
         validate = self.helpers["_validate_cfm"]
         before = torch.random.get_rng_state().clone()
-        first = validate(model, loader, 0, self.cfg)
-        second = validate(model, loader, 0, self.cfg)
+        losses_a, losses_b = [], []
+        first = validate(model, loader, 0, self.cfg, losses_a)
+        second = validate(model, loader, 0, self.cfg, losses_b)
         self.assertEqual(first, second)
+        self.assertEqual(losses_a, losses_b)
+        self.assertEqual(len(losses_a), self.cfg["max_validation_batches"])
+        self.assertAlmostEqual(first, sum(losses_a) / len(losses_a))
         self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
         self.assertTrue(model.training)
 
