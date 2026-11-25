@@ -51,6 +51,8 @@ def collect(report, expected_sha):
     if isinstance(counts, dict):
         report["reference_counts"] = {k: number(counts.get(k)) for k in
                                       ("rows", "readable", "duration_eligible", "text_eligible", "korean_eligible")}
+    if summary.get("reused_checkpoints") == 2 and summary.get("training_epochs") == 0:
+        report.update(reused_checkpoints=2, training_epochs=0)
     status = summary.get("status")
     report["training_status"] = status if status in ("starting", "preprocessing", "training", "completed", "failed", "time_limit", "training_failed", "missing_metrics") else "unknown"
     report["gpus"] = [v if v in ("Tesla T4", "NVIDIA Tesla T4") else "other" for v in summary.get("gpus", [])]
@@ -96,6 +98,7 @@ def main():
         env.update(GPT_SOVITS_RESEARCH_PROFILE=profile,
                    GPT_SOVITS_RESEARCH_EPOCHS=str(epochs),
                    GPT_SOVITS_RESEARCH_MAX_SECONDS=str(budget),
+                   GPT_SOVITS_RESEARCH_SOURCE_KERNEL=req.get("source_kernel", ""),
                    PYTHONUNBUFFERED="1")
         # No GitHub credential is injected into this kernel.
         proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_grokking_bootstrap.py")],
@@ -105,13 +108,14 @@ def main():
         collect(report, sha)
         arms = report.get("arms", {})
         expected = {"s2": ("A_cfm_off", "B_cfm_on"), "s1": ("A_wd001", "B_wd1"),
-                    "s2_quality": ("A_lr100", "B_lr030")}[profile]
+                    "s2_quality": ("A_lr100", "B_lr030"), "s2_listening": ()}[profile]
         if (proc.returncode == 0 and report.get("training_status") == "completed"
                 and len(report.get("gpus", [])) == 2
+                and (profile != "s2_listening" or report.get("reused_checkpoints") == 2)
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
-            if profile == "s2_quality":
+            if profile in ("s2_quality", "s2_listening"):
                 report["stage"] = "listening"
                 with zipfile.ZipFile(WORKING / "grokking_result.zip") as z:
                     run_id = json.loads(z.read("run.json"))["run_id"]
@@ -122,6 +126,13 @@ def main():
                 env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(ROOT / "GPT_SoVITS")])
                 env["HF_HOME"] = "/kaggle/tmp/huggingface"
                 env["CUDA_VISIBLE_DEVICES"] = "0"
+                env["version"] = "v5dev"
+                env["language"] = "ko_KR"
+                from importlib.util import spec_from_file_location, module_from_spec
+                spec = spec_from_file_location("kaggle_launcher", ROOT / "tools/kaggle_launch_webui.py")
+                launcher = module_from_spec(spec)
+                spec.loader.exec_module(launcher)
+                launcher.apply_nvidia_library_path(env)
                 # Only safe aggregate metrics are exported by this launcher.
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
@@ -148,7 +159,9 @@ def main():
                             if v:
                                 report["listening"]["models"][label] = {
                                     "status": v.get("status") if v.get("status") in ("completed", "failed") else "unknown",
-                                    "samples": [{k: number(row.get(k)) for k in ("index", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine")}
+                                    "stage": v.get("stage") if v.get("stage") in ("model_load", "reference", "synthesis", "output_validation", "finished") else "unknown",
+                                    "observed_sample_rate": number(v.get("observed_sample_rate")),
+                                    "samples": [{k: number(row.get(k)) for k in ("index", "sample_rate", "seconds", "rms", "peak", "cer", "char_errors", "char_count", "speaker_cosine")}
                                                 for row in v.get("samples", [])],
                                 }
                 except Exception as exc:
