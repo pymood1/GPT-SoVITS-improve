@@ -1375,6 +1375,14 @@ class TTS:
         cfg_rate = inputs.get("cfg_rate")
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
         cfg_rate = (1.30 if self.configs.version == "v5dev" else 0.0) if cfg_rate is None else float(cfg_rate)
+        soft_probe = "soft_semantic_mix" in inputs
+        soft_mix = float(inputs.get("soft_semantic_mix", 0.0))
+        if soft_probe:
+            if not math.isfinite(soft_mix) or not 0.0 <= soft_mix <= 1.0:
+                raise ValueError("soft_semantic_mix must be finite and in [0, 1]")
+            if (self.configs.version not in V5_VERSIONS or parallel_infer or batch_size != 1
+                    or inputs.get("streaming_mode", False) or return_fragment or emotion_enabled or not prompt_text.strip()):
+                raise ValueError("Soft semantic research requires prompted V5 serial non-streaming inference, batch size 1, no emotion steering")
         self.apply_cache_dit(inputs, sample_steps)
         super_sampling = inputs.get("super_sampling", False)
         streaming_mode = inputs.get("streaming_mode", False)
@@ -1591,7 +1599,7 @@ class TTS:
                     if self.t2s_accel is not None and self.t2s_accel.max_batch_size != accel_batch_size:
                         self.t2s_accel.close()
                         self.t2s_accel = None
-                    if self.t2s_accel is None and not emotion_enabled:
+                    if self.t2s_accel is None and not emotion_enabled and not soft_probe:
                         self.t2s_accel = create_acceleration(
                             self.configs.t2s_weights_path,
                             device=torch.device(self.configs.device),
@@ -1604,10 +1612,11 @@ class TTS:
                     # would bypass the S1 emotion tilt. Only emotion-enabled
                     # requests fall back to the ordinary infer_panel path.
                     use_accel = (
-                        not emotion_enabled
+                        not emotion_enabled and not soft_probe
                         and self.t2s_accel is not None
                         and self.t2s_accel.prepare(use_cuda_graph, use_flash_attention)
                     )
+                    soft_traces = [] if soft_probe else None
                     if use_accel:
                         pred_semantic_list, idx_list = [], []
                         for start in range(0, len(all_phoneme_ids), accel_batch_size):
@@ -1642,7 +1651,10 @@ class TTS:
                             repetition_penalty=repetition_penalty,
                             emotion_id=emotion_id if emotion_enabled else None,
                             emotion_strength=emotion_strength,
+                            **({"soft_probability_traces": soft_traces} if soft_probe else {}),
                         )
+                    if soft_probe and len(soft_traces) != len(idx_list):
+                        raise RuntimeError("Soft semantic probability trace count mismatch")
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
 
@@ -1714,7 +1726,8 @@ class TTS:
                                 )  # .unsqueeze(0)#mq要多unsqueeze一次
                                 audio_fragment = self.using_vocoder_synthesis(
                                     _pred_semantic, phones, speed=speed_factor,
-                                    sample_steps=sample_steps, cfg_rate=cfg_rate
+                                    sample_steps=sample_steps, cfg_rate=cfg_rate,
+                                    **({"soft_probabilities": soft_traces[i], "soft_mix": soft_mix} if soft_probe else {}),
                                 )
                                 batch_audio_fragment.append(audio_fragment)
 
@@ -1977,7 +1990,8 @@ class TTS:
 
     def using_vocoder_synthesis(
         self, semantic_tokens: torch.Tensor, phones: torch.Tensor, speed: float = 1.0,
-        sample_steps: int = None, cfg_rate: float = None
+        sample_steps: int = None, cfg_rate: float = None,
+        soft_probabilities=None, soft_mix: float = 0.0,
     ):
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
         cfg_rate = (1.30 if self.configs.version == "v5dev" else 0.0) if cfg_rate is None else float(cfg_rate)
@@ -2003,7 +2017,10 @@ class TTS:
         mel2 = mel_fn(ref_audio) if self.configs.version == "v3" else mel_fn_v4(ref_audio)
         mel2 = norm_spec(mel2)
         if self.configs.version in V5_VERSIONS:
-            fea_todo, _ = self.vits_model.decode_encp(semantic_tokens, phones, refer_audio_spec, ge, speed)
+            fea_todo, _ = self.vits_model.decode_encp(
+                semantic_tokens, phones, refer_audio_spec, ge, speed,
+                **({"soft_probabilities": soft_probabilities, "soft_mix": soft_mix} if soft_probabilities is not None else {}),
+            )
             mel = synthesize_v5_mel(
                 self.vits_model, fea_ref, fea_todo, mel2.to(self.precision), sample_steps, cfg_rate,
             )
