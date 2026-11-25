@@ -12,6 +12,10 @@ import platform
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import torch
 from AR.data.data_module import Text2SemanticDataModule
 from AR.models.t2s_lightning_module import Text2SemanticLightningModule
@@ -28,10 +32,6 @@ from collections import OrderedDict
 
 from AR.utils import get_newest_ckpt
 from process_ckpt import my_save
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from tools.grokking import (
     GrokkingPhaseTracker,
