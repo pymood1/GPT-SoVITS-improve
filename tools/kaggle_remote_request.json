@@ -1,6 +1,6 @@
 {
-  "code_sha": "813dc2450bbbcdde389ab9a845784e4b816fdbc3",
-  "profile": "quality_mix",
+  "code_sha": "092bae85453d245552f37effaa993c2c2be667dc",
+  "profile": "quality_soft",
   "epochs": 0,
   "max_training_seconds": 10800,
   "source_kernel": "pymood1/gpt-sovits-research-45596470910",
