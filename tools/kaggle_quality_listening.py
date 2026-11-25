@@ -103,6 +103,12 @@ def character_errors(expected, actual):
     return row[-1], len(expected)
 
 
+def progress(phase, label, done, total):
+    worker = os.environ.get("GPT_SOVITS_MIX_WORKER", "")
+    worker = "gpu" + worker if worker in ("0", "1") else "parent"
+    print(f"[gsv-progress] {worker} {phase} {label} {done}/{total}", flush=True)
+
+
 def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
     """Optional, local-only model evaluations. Never export recognized text or embeddings."""
     import math
@@ -124,12 +130,14 @@ def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
         try:
             from faster_whisper import WhisperModel
             model = WhisperModel(str(local), device="cpu", compute_type="int8", cpu_threads=2 if os.environ.get("GPT_SOVITS_MIX_WORKER") else 4)
-            for _, sample, path in samples:
+            progress("asr", "all", 0, len(samples))
+            for done, (_, sample, path) in enumerate(samples, 1):
                 segments, _ = model.transcribe(str(path), language="ko", beam_size=5,
                                                condition_on_previous_text=False, vad_filter=False)
                 text = "".join(seg.text for seg in segments)
                 errors, count = character_errors(texts[sample.get("text_index", sample["index"]) - 1], text)
                 sample.update(char_errors=errors, char_count=count, cer=errors / max(1, count))
+                progress("asr", "all", done, len(samples))
             evaluation["asr_status"] = "completed"
         except Exception as exc:
             evaluation["asr_status"] = "failed"
@@ -151,12 +159,14 @@ def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
                 with torch.inference_mode():
                     return sv.compute_embedding3(torch.from_numpy(np.ascontiguousarray(audio)).float().unsqueeze(0)).flatten().float()
             refs = [embedding(path) for path in (references or [reference])]
-            for _, sample, path in samples:
+            progress("speaker", "all", 0, len(samples))
+            for done, (_, sample, path) in enumerate(samples, 1):
                 ref = refs[sample.get("reference_index", 1) - 1]
                 cosine = float(torch.nn.functional.cosine_similarity(ref, embedding(path), dim=0).item())
                 if not math.isfinite(cosine):
                     raise ValueError("Nonfinite speaker score")
                 sample["speaker_cosine"] = cosine
+                progress("speaker", "all", done, len(samples))
             evaluation["speaker_status"] = "completed"
         except Exception as exc:
             evaluation["speaker_status"] = "failed"
@@ -379,6 +389,7 @@ def main():
             report["models"][label] = result
             try:
                 result["stage"] = "model_load"
+                progress("model_load", label, 0, len(references) * len(cases))
                 config = dict(TTS_Config.default_configs["v5dev"], device="cuda:0",
                               is_half=False, t2s_weights_path=str(gpt_weight), vits_weights_path=str(weight))
                 if not Path(gpt_weight).is_file() or not Path(weight).is_file():
@@ -392,6 +403,7 @@ def main():
                     for case_index, (text_index, text, seed) in enumerate(cases, 1):
                         index = (ref_index - 1) * len(cases) + case_index
                         result["stage"] = "synthesis"
+                        progress("synthesis", label, len(result["samples"]), len(references) * len(cases))
                         chunks = list(tts.run({
                             "text": text, "text_lang": "all_ko", "prompt_text": prompt,
                             "prompt_lang": prompt_lang, "ref_audio_path": str(ref),
@@ -421,9 +433,11 @@ def main():
                         write(output / f"{label}_{index:02d}.wav", sr, audio)
                         result["samples"].append({"index": index, "reference_index": ref_index, "text_index": text_index, "seed": seed, "sample_rate": int(sr), "seconds": audio.size / sr,
                                                   "rms": rms, "peak": float(np.max(np.abs(normalized)))})
+                progress("synthesis", label, len(result["samples"]), len(references) * len(cases))
                 result.update(status="completed", stage="finished")
                 print(f"[quality] {label}: completed {len(result['samples'])} samples", flush=True)
             except Exception as exc:
+                progress("failed", label, len(result["samples"]), len(references) * len(cases))
                 result["error_type"] = type(exc).__name__
                 # Raw traceback is private Kaggle output, never returned to GitHub.
                 (output / (label + "-error.txt")).write_text(traceback.format_exc(), encoding="utf-8")
@@ -442,6 +456,7 @@ def main():
                                         for model in report["models"].values() for sample in model["samples"])
         if complete:
             report["status"] = "completed"
+        progress("finished" if complete else "failed", "all", int(complete), 1)
     except Exception as exc:
         report["error_type"] = type(exc).__name__
     finally:
