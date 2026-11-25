@@ -18,7 +18,7 @@ LABELS = frozenset(("base", "A_lr100", "B_lr030", "s1_only", "s2_only", "combine
     "soft000", "soft005", "soft010", "soft025", "soft050", "soft100", "soft000b",
     "mix065", "mix085", "gen_base", "gen_hard", "gen_soft010", "gen_hardb",
     "gen_soft010b", "gen_soft025", "A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1",
-    "S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"))
+    "S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32", "style_base", "style_base_mean", "style_base_sv", "style_lora", "style_lora_mean", "style_lora_sv"))
 PHASES = frozenset(("bootstrap", "preprocess", "training", "model_load", "synthesis", "asr",
                     "speaker", "finished", "failed"))
 STATES = frozenset(("queued", "running", "complete", "completed", "error", "failed",
