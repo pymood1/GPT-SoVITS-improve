@@ -3,5 +3,6 @@
   "profile": "s2",
   "epochs": 1,
   "max_training_seconds": 1200,
-  "recover_kernel": ""
+  "recover_kernel": "",
+  "previous_kernel": "pymood1/gpt-sovits-research-45565827956"
 }
