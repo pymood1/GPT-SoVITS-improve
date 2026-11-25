@@ -58,6 +58,83 @@ def choose_reference(folder, diagnostics=None):
     return path, transcript, language
 
 
+def normalized_text(text):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
+
+
+def character_errors(expected, actual):
+    """Return edit count and reference character count, excluding whitespace/punctuation."""
+    expected, actual = normalized_text(expected), normalized_text(actual)
+    row = list(range(len(actual) + 1))
+    for i, a in enumerate(expected, 1):
+        nxt = [i]
+        for j, b in enumerate(actual, 1):
+            nxt.append(min(nxt[-1] + 1, row[j] + 1, row[j - 1] + (a != b)))
+        row = nxt
+    return row[-1], len(expected)
+
+
+def evaluate_quality(output, reference, models):
+    """Optional, local-only model evaluations. Never export recognized text or embeddings."""
+    import math
+    import numpy as np
+    import torch
+    import soundfile as sf
+    from scipy.signal import resample_poly
+    samples = [(label, sample, output / f"{label}_{sample['index']:02d}.wav")
+               for label, result in models.items() for sample in result["samples"]]
+    evaluation = {"asr_status": "unavailable", "speaker_status": "unavailable"}
+    if not samples:
+        return evaluation
+    # Reuse a cached multilingual ASR model; never download another solely for scoring.
+    asr_root = ROOT / "tools/asr/models"
+    candidates = [asr_root / f"faster-whisper-{name}" for name in ("large-v3-turbo", "large-v3", "medium", "small")]
+    local = next((p for p in candidates if (p / "model.bin").is_file()
+                  and (p / "config.json").is_file()), None)
+    if local is not None:
+        try:
+            from faster_whisper import WhisperModel
+            model = WhisperModel(str(local), device="cpu", compute_type="int8", cpu_threads=4)
+            for _, sample, path in samples:
+                segments, _ = model.transcribe(str(path), language="ko", beam_size=5,
+                                               condition_on_previous_text=False, vad_filter=False)
+                text = "".join(seg.text for seg in segments)
+                errors, count = character_errors(TEXTS[sample["index"] - 1], text)
+                sample.update(char_errors=errors, char_count=count, cer=errors / max(1, count))
+            evaluation["asr_status"] = "completed"
+        except Exception as exc:
+            evaluation["asr_status"] = "failed"
+            evaluation["asr_error_type"] = type(exc).__name__
+        finally:
+            if "model" in locals():
+                del model
+    sv_path = ROOT / "GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
+    if sv_path.is_file():
+        try:
+            from sv import SV
+            sv = SV("cpu", False)
+            def embedding(path):
+                audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
+                audio = audio.mean(axis=1)
+                g = math.gcd(int(sr), 16000)
+                if sr != 16000:
+                    audio = resample_poly(audio, 16000 // g, int(sr) // g)
+                with torch.inference_mode():
+                    return sv.compute_embedding3(torch.from_numpy(np.ascontiguousarray(audio)).float().unsqueeze(0)).flatten().float()
+            ref = embedding(reference)
+            for _, sample, path in samples:
+                cosine = float(torch.nn.functional.cosine_similarity(ref, embedding(path), dim=0).item())
+                if not math.isfinite(cosine):
+                    raise ValueError("Nonfinite speaker score")
+                sample["speaker_cosine"] = cosine
+            evaluation["speaker_status"] = "completed"
+        except Exception as exc:
+            evaluation["speaker_status"] = "failed"
+            evaluation["speaker_error_type"] = type(exc).__name__
+    return evaluation
+
+
 def main():
     import numpy as np
     import torch
@@ -119,6 +196,7 @@ def main():
                 if "tts" in locals():
                     del tts
                 torch.cuda.empty_cache()
+        report["evaluation"] = evaluate_quality(output, ref, report["models"])
         if all(report["models"].get(k, {}).get("status") == "completed" for k in models):
             report["status"] = "completed"
     except Exception as exc:
