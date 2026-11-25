@@ -14,28 +14,48 @@ TEXTS = (
 )
 
 
-def choose_reference(folder):
-    import soundfile as sf
+class ReferenceUnavailable(RuntimeError):
+    pass
+
+
+def choose_reference(folder, diagnostics=None):
+    """Prefer Korean; permit an accurately transcribed other-language prompt."""
+    import wave
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics.update(rows=0, readable=0, duration_eligible=0, text_eligible=0, korean_eligible=0)
     candidates = []
     for row in (folder / "2-name2text.txt").read_text(encoding="utf-8").splitlines():
+        diagnostics["rows"] += 1
         parts = row.split("\t", 3)
         if len(parts) != 4:
             continue
         name, _, _, transcript = parts
-        if Path(name).name != name or not re.search("[가-힣]", transcript):
+        if Path(name).name != name:
             continue
         path = folder / "5-wav32k" / name
         try:
-            info = sf.info(path)
-        except (OSError, RuntimeError):
+            with wave.open(str(path), "rb") as audio:
+                duration = audio.getnframes() / audio.getframerate()
+        except (OSError, EOFError, wave.Error):
             continue
-        duration = info.duration
-        if 3.2 <= duration <= 8.0 and len(transcript.strip()) >= 5:
-            candidates.append((abs(duration - 5.0), name, path, transcript.strip()))
+        diagnostics["readable"] += 1
+        # The canonical TTS accepts 3-10 seconds. Keep a small boundary margin.
+        if not 3.05 <= duration <= 9.95:
+            continue
+        diagnostics["duration_eligible"] += 1
+        transcript = transcript.strip()
+        if len(transcript) < 2 or not re.search(r"\w", transcript):
+            continue
+        diagnostics["text_eligible"] += 1
+        korean = bool(re.search("[가-힣]", transcript))
+        diagnostics["korean_eligible"] += int(korean)
+        # auto uses the canonical language segmenter for other or mixed scripts.
+        language = "all_ko" if korean and not re.search("[A-Za-zぁ-ゖァ-ヺ一-龯]", transcript) else "auto"
+        candidates.append((not korean, abs(duration - 5.0), name, path, transcript, language))
     if not candidates:
-        raise RuntimeError("No suitable Korean reference")
-    _, _, path, transcript = min(candidates)
-    return path, transcript
+        raise ReferenceUnavailable("No transcribed reference within the supported duration")
+    _, _, _, path, transcript, language = min(candidates)
+    return path, transcript, language
 
 
 def main():
@@ -48,7 +68,6 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     report = {"status": "failed", "models": {}}
     try:
-        ref, prompt = choose_reference(work / "A_lr100")
         models = {"base": ROOT / "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5dev.pth"}
         for arm in ("A_lr100", "B_lr030"):
             path = work / arm / "weights" / (arm + "_grok_cfm_best.pth")
@@ -57,6 +76,9 @@ def main():
             destination = output / (arm + ".pth")
             shutil.copyfile(path, destination)
             models[arm] = destination
+        # Export the usable checkpoints even if reference selection or synthesis fails.
+        report["reference_counts"] = {}
+        ref, prompt, prompt_lang = choose_reference(work / "A_lr100", report["reference_counts"])
         for label, weight in models.items():
             result = {"samples": [], "status": "failed"}
             report["models"][label] = result
@@ -67,7 +89,7 @@ def main():
                 for index, text in enumerate(TEXTS, 1):
                     chunks = list(tts.run({
                         "text": text, "text_lang": "all_ko", "prompt_text": prompt,
-                        "prompt_lang": "all_ko", "ref_audio_path": str(ref),
+                        "prompt_lang": prompt_lang, "ref_audio_path": str(ref),
                         "sample_steps": 32, "cfg_rate": 1.30, "seed": 1234,
                         "batch_size": 1, "parallel_infer": False,
                         "use_cuda_graph": False, "use_flash_attention": False,
