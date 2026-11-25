@@ -6,6 +6,7 @@ on:
       - 'tools/kaggle_remote_request.json'
 permissions:
   contents: read
+  pull-requests: write
 concurrency:
   group: kaggle-real-model-research-v2
   cancel-in-progress: false
@@ -116,10 +117,20 @@ jobs:
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           KAGGLE_USERNAME: pymood1
           KERNEL: ${{ steps.prepare.outputs.kernel }}
+          GH_TOKEN: ${{ github.token }}
+          RESEARCH_PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/kaggle-result"
           echo "Private kernel: $KERNEL"
+          # Independently publish safe live progress while polling. Never forward raw Kaggle logs.
+          python -u tools/kaggle_live_status.py "$KERNEL" "$RUNNER_TEMP/research-status-comment" 14400 &
+          monitor_pid=$!
+          stop_monitor() {
+            kill "$monitor_pid" 2>/dev/null || true
+            wait "$monitor_pid" 2>/dev/null || true
+          }
+          trap stop_monitor EXIT
           poll_start=$(date +%s)
           running_start=0
           for i in $(seq 1 570); do
@@ -158,6 +169,9 @@ jobs:
             fi
             sleep 30
           done
+          stop_monitor
+          trap - EXIT
+          python -u tools/kaggle_live_status.py "$KERNEL" "$RUNNER_TEMP/research-status-comment" 0 || true
           python - "$RUNNER_TEMP/kaggle-result/remote-result.json" <<'PY'
           import json, sys
           from pathlib import Path
