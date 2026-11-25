@@ -47,6 +47,10 @@ def collect(report, expected_sha):
             histories[key] = rows
     if summary.get("git_commit") != expected_sha:
         return
+    counts = summary.get("reference_counts")
+    if isinstance(counts, dict):
+        report["reference_counts"] = {k: number(counts.get(k)) for k in
+                                      ("rows", "readable", "duration_eligible", "text_eligible", "korean_eligible")}
     status = summary.get("status")
     report["training_status"] = status if status in ("starting", "preprocessing", "training", "completed", "failed", "time_limit", "training_failed", "missing_metrics") else "unknown"
     report["gpus"] = [v if v in ("Tesla T4", "NVIDIA Tesla T4") else "other" for v in summary.get("gpus", [])]
@@ -129,6 +133,10 @@ def main():
                         raw = json.loads(path.read_text())
                         report["listening"] = {"status": raw.get("status") if raw.get("status") in ("completed", "failed") else "unknown",
                                                "models": {}}
+                        counts = raw.get("reference_counts")
+                        if isinstance(counts, dict):
+                            report["listening"]["reference_counts"] = {k: number(counts.get(k)) for k in
+                                                                       ("rows", "readable", "duration_eligible", "text_eligible", "korean_eligible")}
                         for label in ("base", "A_lr100", "B_lr030"):
                             v = raw.get("models", {}).get(label, {})
                             if v:
