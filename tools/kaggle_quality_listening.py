@@ -109,69 +109,90 @@ def progress(phase, label, done, total):
     print(f"[gsv-progress] {worker} {phase} {label} {done}/{total}", flush=True)
 
 
+def run_score_stage(output, stage, request, *, cpu_only=False):
+    """GPU runtime failures stay inside a subprocess; retry the entire stage on CPU."""
+    import subprocess
+    import time
+    started = time.monotonic()
+    source = output / "scoring-input.json"
+    target = output / (stage + "-scores.json")
+    for device in (("cpu",) if cpu_only else ("cuda", "cpu")):
+        target.unlink(missing_ok=True)
+        log = output / (stage + "-" + device + "-error.log")
+        try:
+            # stdout holds only counters, while raw diagnostics remain private.
+            with log.open("w", encoding="utf-8") as error:
+                p = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_score.py"),
+                                    str(source), stage, device, str(target)],
+                                   cwd=ROOT, stderr=error, timeout=1800)
+            if p.returncode != 0 or not target.is_file():
+                continue
+            result = json.loads(target.read_text(encoding="utf-8"))
+            if len(result["scores"]) != len(request["samples"]):
+                continue
+            result["total_seconds"] = round(time.monotonic() - started, 3)
+            return result
+        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def apply_score_stage(models, evaluation, stage, request, result):
+    if result is None:
+        evaluation[stage + "_status"] = "failed"
+        return
+    for item, score in zip(request["samples"], result["scores"]):
+        sample = next(s for s in models[item["label"]]["samples"] if s["index"] == item["index"])
+        sample.update(score)
+    evaluation.update({stage + "_status": "completed",
+                       stage + "_backend": result["backend"],
+                       stage + "_seconds": result["total_seconds"],
+                       stage + "_calibration_seconds": result["calibration_seconds"],
+                       stage + "_calibration_count": result["calibration_count"]})
+
+
 def evaluate_quality(output, reference, models, texts=TEXTS, references=None):
-    """Optional, local-only model evaluations. Never export recognized text or embeddings."""
-    import math
-    import numpy as np
-    import torch
-    import soundfile as sf
-    from scipy.signal import resample_poly
-    samples = [(label, sample, output / f"{label}_{sample['index']:02d}.wav")
-               for label, result in models.items() for sample in result["samples"]]
+    """Score completed synthesis on idle T4; CPU parity and fallback preserve comparability."""
+    import os
+    request = {"samples": [
+        {"label": label, "index": s["index"], "text_index": s.get("text_index", s["index"]),
+         "reference_index": s.get("reference_index", 1),
+         "path": str(output / f"{label}_{s['index']:02d}.wav")}
+        for label, result in models.items() for s in result["samples"]],
+        "texts": list(texts), "references": [str(p) for p in (references or [reference])],
+        "cpu_threads": 2 if os.environ.get("GPT_SOVITS_MIX_WORKER") else 4}
     evaluation = {"asr_status": "unavailable", "speaker_status": "unavailable"}
-    if not samples:
+    if not request["samples"]:
         return evaluation
-    # Reuse a cached multilingual ASR model; never download another solely for scoring.
-    asr_root = ROOT / "tools/asr/models"
-    candidates = [asr_root / f"faster-whisper-{name}" for name in ("large-v3-turbo", "large-v3", "medium", "small")]
-    local = next((p for p in candidates if (p / "model.bin").is_file()
-                  and (p / "config.json").is_file()), None)
-    if local is not None:
-        try:
-            from faster_whisper import WhisperModel
-            model = WhisperModel(str(local), device="cpu", compute_type="int8", cpu_threads=2 if os.environ.get("GPT_SOVITS_MIX_WORKER") else 4)
-            progress("asr", "all", 0, len(samples))
-            for done, (_, sample, path) in enumerate(samples, 1):
-                segments, _ = model.transcribe(str(path), language="ko", beam_size=5,
-                                               condition_on_previous_text=False, vad_filter=False)
-                text = "".join(seg.text for seg in segments)
-                errors, count = character_errors(texts[sample.get("text_index", sample["index"]) - 1], text)
-                sample.update(char_errors=errors, char_count=count, cer=errors / max(1, count))
-                progress("asr", "all", done, len(samples))
-            evaluation["asr_status"] = "completed"
-        except Exception as exc:
-            evaluation["asr_status"] = "failed"
-            evaluation["asr_error_type"] = type(exc).__name__
-        finally:
-            if "model" in locals():
-                del model
-    sv_path = ROOT / "GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
-    if sv_path.is_file():
-        try:
-            from sv import SV
-            sv = SV("cpu", False)
-            def embedding(path):
-                audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
-                audio = audio.mean(axis=1)
-                g = math.gcd(int(sr), 16000)
-                if sr != 16000:
-                    audio = resample_poly(audio, 16000 // g, int(sr) // g)
-                with torch.inference_mode():
-                    return sv.compute_embedding3(torch.from_numpy(np.ascontiguousarray(audio)).float().unsqueeze(0)).flatten().float()
-            refs = [embedding(path) for path in (references or [reference])]
-            progress("speaker", "all", 0, len(samples))
-            for done, (_, sample, path) in enumerate(samples, 1):
-                ref = refs[sample.get("reference_index", 1) - 1]
-                cosine = float(torch.nn.functional.cosine_similarity(ref, embedding(path), dim=0).item())
-                if not math.isfinite(cosine):
-                    raise ValueError("Nonfinite speaker score")
-                sample["speaker_cosine"] = cosine
-                progress("speaker", "all", done, len(samples))
-            evaluation["speaker_status"] = "completed"
-        except Exception as exc:
-            evaluation["speaker_status"] = "failed"
-            evaluation["speaker_error_type"] = type(exc).__name__
+    (output / "scoring-input.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+    for stage in ("asr", "speaker"):
+        result = run_score_stage(output, stage, request)
+        apply_score_stage(models, evaluation, stage, request, result)
     return evaluation
+
+
+def reconcile_score_backends(reports, folders):
+    """If one lane fell back, re-score the other on CPU before comparing candidates."""
+    for stage in ("asr", "speaker"):
+        if len(reports) != 2 or any(r.get("evaluation", {}).get(stage + "_status") != "completed" for r in reports):
+            continue
+        backends = [r["evaluation"].get(stage + "_backend") for r in reports]
+        if backends[0] == backends[1]:
+            continue
+        for index, backend in enumerate(backends):
+            if not isinstance(backend, str) or not backend.startswith("cuda_"):
+                continue
+            folder = folders[index]
+            report = reports[index]
+            request = json.loads((folder / "scoring-input.json").read_text(encoding="utf-8"))
+            old_seconds = report["evaluation"].get(stage + "_seconds", 0)
+            result = run_score_stage(folder, stage, request, cpu_only=True)
+            apply_score_stage(report["models"], report["evaluation"], stage, request, result)
+            if result is None:
+                report["status"] = "failed"
+            else:
+                report["evaluation"][stage + "_seconds"] += old_seconds
+            (folder / "listening-metrics.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def pick_candidate(arms, names, metric):
@@ -217,6 +238,14 @@ def merge_mix_reports(reports, labels=MIX_LABELS, sample_count=15):
     for key in ("asr_status", "speaker_status"):
         result["evaluation"][key] = "completed" if all(r.get("evaluation", {}).get(key) == "completed" for r in reports) else "failed"
         complete = complete and result["evaluation"][key] == "completed"
+        stage = key.removesuffix("_status")
+        backends = [r.get("evaluation", {}).get(stage + "_backend") for r in reports]
+        if any(backends):
+            complete = complete and len(set(backends)) == 1
+            result["evaluation"][stage + "_backend"] = backends[0] if len(set(backends)) == 1 else "mixed"
+            result["evaluation"][stage + "_seconds"] = max(r.get("evaluation", {}).get(stage + "_seconds", 0) for r in reports)
+            result["evaluation"][stage + "_calibration_count"] = sum(r.get("evaluation", {}).get(stage + "_calibration_count", 0) for r in reports)
+
     if reports[0].get("reference_counts") != reports[1].get("reference_counts"):
         complete = False
     result["reference_counts"] = reports[0].get("reference_counts", {})
@@ -263,6 +292,7 @@ def run_mix_workers(work, output):
             reports.append(report)
         profile = os.environ.get("GPT_SOVITS_RESEARCH_PROFILE")
         labels = GENERAL_LABELS if profile == "quality_general" else SOFT_LABELS if profile == "quality_soft" else MIX_LABELS
+        reconcile_score_backends(reports, [folder for _, folder in workers])
         result = merge_mix_reports(reports, labels, 18 if profile == "quality_general" else 15)
         (output / "listening-metrics.json").write_text(json.dumps(result, indent=2, allow_nan=False))
     return 0 if result["status"] == "completed" else 1
@@ -445,6 +475,9 @@ def main():
                 if "tts" in locals():
                     del tts
                 torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
         report["evaluation"] = evaluate_quality(output, references[0][0], report["models"], texts, [r[0] for r in references])
         complete = all(report["models"].get(k, {}).get("status") == "completed"
                        and len(report["models"][k]["samples"]) == len(references) * len(cases)
