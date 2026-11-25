@@ -32,7 +32,7 @@ def collect(report, expected_sha):
             return
         summary = json.loads(z.read("training/summary.json"))
         histories = {}
-        for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1", "A_lr100", "B_lr030"):
+        for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1", "A_lr100", "B_lr030", "S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"):
             prefix = "training/" + key + "/grokking_"
             rows = []
             for name in z.namelist():
@@ -53,6 +53,8 @@ def collect(report, expected_sha):
                                       ("rows", "readable", "duration_eligible", "text_eligible", "korean_eligible")}
     if summary.get("reused_checkpoints") == 2 and summary.get("training_epochs") == 0:
         report.update(reused_checkpoints=2, training_epochs=0)
+    if type(summary.get("candidate_exports")) is int:
+        report["candidate_exports"] = number(summary["candidate_exports"])
     status = summary.get("status")
     report["training_status"] = status if status in ("starting", "preprocessing", "training", "completed", "failed", "time_limit", "training_failed", "missing_metrics") else "unknown"
     report["gpus"] = [v if v in ("Tesla T4", "NVIDIA Tesla T4") else "other" for v in summary.get("gpus", [])]
@@ -61,7 +63,7 @@ def collect(report, expected_sha):
     def metrics(v):
         return {k: number(v[k]) for k in fields if k in v} if isinstance(v, dict) else {}
     report["arms"] = {}
-    for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1", "A_lr100", "B_lr030"):
+    for key in ("A_cfm_off", "B_cfm_on", "A_wd001", "B_wd1", "A_lr100", "B_lr030", "S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32"):
         arm = summary.get("arms", {}).get(key)
         if not isinstance(arm, dict):
             continue
@@ -108,10 +110,12 @@ def main():
         collect(report, sha)
         arms = report.get("arms", {})
         expected = {"s2": ("A_cfm_off", "B_cfm_on"), "s1": ("A_wd001", "B_wd1"),
-                    "s2_quality": ("A_lr100", "B_lr030"), "s2_listening": ()}[profile]
+                    "s2_quality": ("A_lr100", "B_lr030"), "s2_listening": (),
+                    "quality_session": ("S1_v_o", "S1_qkv_o", "S2_rank16", "S2_rank32")}[profile]
         if (proc.returncode == 0 and report.get("training_status") == "completed"
                 and len(report.get("gpus", [])) == 2
                 and (profile != "s2_listening" or report.get("reused_checkpoints") == 2)
+                and (profile != "quality_session" or report.get("candidate_exports") == 4)
                 and all(arms.get(k, {}).get("epochs_recorded") == epochs
                         and arms[k].get("returncode") == 0 for k in expected)):
             report.update(status="completed", stage="finished")
