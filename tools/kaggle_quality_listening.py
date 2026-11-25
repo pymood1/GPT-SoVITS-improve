@@ -175,7 +175,82 @@ def pick_candidate(arms, names, metric):
     return min(valid)[1]
 
 
+MIX_LABELS = (("mix025", "mix050", "mix075", "mix125"),
+              ("base", "rank32", "cfg100", "cfg160"))
+
+
+def merge_mix_reports(reports):
+    """Require complete, disjoint matched evaluations before accepting a sweep."""
+    result = {"status": "failed", "models": {}, "evaluation": {}}
+    if len(reports) != 2:
+        return result
+    complete = True
+    for index, report in enumerate(reports):
+        models = report.get("models", {})
+        expected = set(MIX_LABELS[index])
+        complete = complete and report.get("status") == "completed" and set(models) == expected
+        result["models"].update({k: models[k] for k in expected if k in models})
+        for label in expected:
+            model = models.get(label, {})
+            samples = model.get("samples", [])
+            complete = complete and model.get("status") == "completed" and len(samples) == 15
+            complete = complete and {s.get("index") for s in samples} == set(range(1, 16))
+            complete = complete and all("speaker_cosine" in s and "cer" in s for s in samples)
+    for key in ("asr_status", "speaker_status"):
+        result["evaluation"][key] = "completed" if all(r.get("evaluation", {}).get(key) == "completed" for r in reports) else "failed"
+        complete = complete and result["evaluation"][key] == "completed"
+    if reports[0].get("reference_counts") != reports[1].get("reference_counts"):
+        complete = False
+    result["reference_counts"] = reports[0].get("reference_counts", {})
+    if complete:
+        result["status"] = "completed"
+    return result
+
+
+def run_mix_workers(work, output):
+    """Both workers share read-only preprocessed inputs, never writable configs."""
+    import subprocess
+    import time
+    output.mkdir(parents=True, exist_ok=True)
+    workers = []
+    reports = []
+    deadline = time.monotonic() + 9000
+    try:
+        for index in range(2):
+            folder = output / f"gpu{index}"
+            folder.mkdir(exist_ok=True)
+            env = os.environ.copy()
+            env.update(GPT_SOVITS_MIX_WORKER=str(index), CUDA_VISIBLE_DEVICES=str(index),
+                       _CUDA_VISIBLE_DEVICES=str(index), OMP_NUM_THREADS="2", MKL_NUM_THREADS="2")
+            workers.append((subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()),
+                                              str(work), str(folder)], cwd=ROOT, env=env), folder))
+        while any(p.poll() is None for p, _ in workers) and time.monotonic() < deadline:
+            time.sleep(10)
+    finally:
+        for p, _ in workers:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+        for p, folder in workers:
+            try:
+                report = json.loads((folder / "listening-metrics.json").read_text())
+            except (OSError, ValueError):
+                report = {"status": "failed"}
+            if p.returncode != 0:
+                report["status"] = "failed"
+            reports.append(report)
+        result = merge_mix_reports(reports)
+        (output / "listening-metrics.json").write_text(json.dumps(result, indent=2, allow_nan=False))
+    return 0 if result["status"] == "completed" else 1
+
+
 def main():
+    if os.environ.get("GPT_SOVITS_RESEARCH_PROFILE") == "quality_mix" and not os.environ.get("GPT_SOVITS_MIX_WORKER"):
+        return run_mix_workers(*map(Path, sys.argv[1:3]))
     import numpy as np
     import torch
     from scipy.io.wavfile import write
