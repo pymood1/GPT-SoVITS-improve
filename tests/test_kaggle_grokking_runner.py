@@ -44,7 +44,7 @@ class KaggleRunnerTests(unittest.TestCase):
         self.assertEqual(ea["GPT_SOVITS_GROKFAST"], "0")
         self.assertEqual(eb["GPT_SOVITS_GROKFAST"], "1")
         self.assertEqual(ea["GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY"], eb["GPT_SOVITS_GROKKING_S2_WEIGHT_DECAY"])
-        self.assertEqual(ea["GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS"], "12")
+        self.assertEqual(ea["GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS"], "30")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source"
@@ -62,6 +62,23 @@ class KaggleRunnerTests(unittest.TestCase):
                 self.assertEqual(cfg["data"]["exp_dir"], str(out))
                 self.assertEqual((out / "4-cnhubert").resolve(), source / "4-cnhubert")
             self.assertFalse((source / "config.json").exists())
+
+    def test_progress_line_displays_current_batch_and_gpu(self):
+        from tools.kaggle_grokking_runner import _progress_line, S2_SETTINGS
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp)
+            (report / "status.json").write_text(json.dumps({
+                "epoch": 1, "stage": "training", "batch": 95, "total_batches": 245,
+            }))
+            process = Mock()
+            process.poll.return_value = None
+            line = _progress_line("A", [], process, report, S2_SETTINGS, "GPU 88%")
+            self.assertIn("epoch 1/30", line)
+            self.assertIn("batch 95/245", line)
+            self.assertIn("GPU 88%", line)
+            process.poll.return_value = 0
+            self.assertIn("exit=0", _progress_line("A", [], process, report, S2_SETTINGS, None))
 
     def test_cfm_metrics_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
