@@ -171,7 +171,10 @@ def deterministic_holdout_indices(
     first_index: Dict[str, int] = {}
     for idx, name in enumerate(item_names):
         first_index.setdefault(str(name), idx)
-    unique_indices = list(first_index.values())
+    # Dataset order may originate from set() and differ by DDP process.
+    # Shuffle canonical identities, not local positional indices.
+    unique_names = sorted(first_index)
+    unique_indices = [first_index[name] for name in unique_names]
     if len(unique_indices) < 3:
         raise ValueError("need at least 3 unique samples for a held-out split")
 
@@ -184,8 +187,9 @@ def deterministic_holdout_indices(
     )
     val_count = min(max(1, requested), len(unique_indices) - 1)
 
-    val_indices = sorted(unique_indices[:val_count])
-    train_indices = sorted(unique_indices[val_count:])
+    # Keep the same identity order across ranks even when local indices differ.
+    val_indices = unique_indices[:val_count]
+    train_indices = unique_indices[val_count:]
     return train_indices, val_indices
 
 
@@ -227,10 +231,22 @@ def gradfilter_ema(
 
     alpha = float(alpha)
     lamb = float(lamb)
-    for name, parameter in module.named_parameters():
-        grad = parameter.grad
-        if not parameter.requires_grad or grad is None:
-            continue
+    if lamb == 0:
+        return state
+    active = [(name, p.grad) for name, p in module.named_parameters()
+              if p.requires_grad and p.grad is not None]
+    # GradScaler skips overflowed optimizer steps, but a persistent EMA
+    # would otherwise keep NaNs/Infs and poison every subsequent step.
+    # Group checks by device to synchronize at most once per device.
+    finite_by_device = {}
+    for _, grad in active:
+        finite_by_device.setdefault(grad.device, []).append(
+            torch.isfinite(grad).all()
+        )
+    if any(not bool(torch.stack(flags).all().item())
+           for flags in finite_by_device.values()):
+        return state
+    for name, grad in active:
         current = grad.detach()
         previous = state.get(name)
         if previous is None or previous.shape != current.shape or previous.device != current.device:
