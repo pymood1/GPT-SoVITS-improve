@@ -52,7 +52,7 @@ jobs:
           from pathlib import Path
           req = json.loads(Path("tools/kaggle_remote_request.json").read_text())
           assert re.fullmatch("[0-9a-f]{40}", req["code_sha"])
-          assert req["profile"] in ("s1", "s2", "s2_quality", "s2_listening")
+          assert req["profile"] in ("s1", "s2", "s2_quality", "s2_listening", "quality_session")
           assert type(req["epochs"]) is int and (req["epochs"] == 0 if req["profile"] == "s2_listening" else 1 <= req["epochs"] <= 120)
           source_kernel = req.get("source_kernel", "")
           if req["profile"] == "s2_listening":
