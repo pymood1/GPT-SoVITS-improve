@@ -57,6 +57,10 @@ def choose_references(folder, diagnostics=None, count=1):
     if not candidates:
         raise ReferenceUnavailable("No transcribed reference within the supported duration")
     candidates.sort()
+    unique = {}
+    for candidate in candidates:
+        unique.setdefault(candidate[2], candidate)
+    candidates = list(unique.values())
     # Distinct prompt files, deterministic selection across short/mid/long lengths.
     chosen = [candidates.pop(0)]
     for duration in (3.8, 8.0):
@@ -274,7 +278,15 @@ def main():
                     del tts
                 torch.cuda.empty_cache()
         report["evaluation"] = evaluate_quality(output, references[0][0], report["models"], texts, [r[0] for r in references])
-        if all(report["models"].get(k, {}).get("status") == "completed" for k in models):
+        complete = all(report["models"].get(k, {}).get("status") == "completed"
+                       and len(report["models"][k]["samples"]) == len(references) * len(texts)
+                       for k in models)
+        if reuse:
+            complete = complete and all(report["evaluation"].get(k) == "completed"
+                                        for k in ("asr_status", "speaker_status"))
+            complete = complete and all("cer" in sample and "speaker_cosine" in sample
+                                        for model in report["models"].values() for sample in model["samples"])
+        if complete:
             report["status"] = "completed"
     except Exception as exc:
         report["error_type"] = type(exc).__name__
