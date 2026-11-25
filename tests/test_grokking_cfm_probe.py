@@ -128,6 +128,10 @@ class CFMProbeTests(unittest.TestCase):
         self.assertEqual(len(pcm), 483)
         self.assertEqual(pcm[:3].tolist(), [32767, -32767, 16384])
         self.assertTrue((pcm[3:] == 0).all())
+        for value in (float("nan"), float("inf"), -float("inf")):
+            with self.assertRaisesRegex(RuntimeError, "Nonfinite"):
+                ns["audio_postprocess"](stub, [[torch.tensor([0.1, value])]], 48000,
+                                        split_bucket=False, fragment_interval=0)
 
     def test_actual_v5_cfm_forward_and_grokfast_optimizer_step(self):
         torch.manual_seed(42)
