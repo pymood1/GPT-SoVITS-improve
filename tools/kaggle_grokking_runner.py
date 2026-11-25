@@ -540,6 +540,7 @@ def run(ui):
             processes[arm_id] = (process, log, out, arm_report)
             state["arms"][arm_id] = {"gpu": gpu, "stage": stage, "status": "running"}
             observations[arm_id] = {"count": 0, "seen_at": time.monotonic(), "durations": []}
+            print(f"[gsv-progress] gpu{gpu} training {arm_id} 0/{local['fixed_epochs']}", flush=True)
 
         deadline = time.monotonic() + settings["max_training_seconds"]
         while pending or any(p.poll() is None for p, *_ in processes.values()):
@@ -584,6 +585,12 @@ def run(ui):
                 else:
                     failed = failed or code != 0
                     state["arms"][arm_id].pop("estimated_remaining_seconds", None)
+                # Only the active job for a GPU reports progress; completed prior jobs cannot overwrite it.
+                if code is None or (code != 0 and state["arms"][arm_id]["gpu"] not in busy):
+                    gpu = state["arms"][arm_id]["gpu"]
+                    total = arm_settings[arm_id]["fixed_epochs"]
+                    phase = "training" if code is None else "failed"
+                    print(f"[gsv-progress] gpu{gpu} {phase} {arm_id} {min(len(rows), total)}/{total}", flush=True)
                 print(_progress_line(arm_id, rows, process, arm_report, arm_settings[arm_id],
                                      gpu_status.get(state["arms"][arm_id]["gpu"]), eta), flush=True)
                 for path in out.glob("grokking_*metrics*.jsonl"):
