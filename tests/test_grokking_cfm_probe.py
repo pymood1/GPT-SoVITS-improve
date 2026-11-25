@@ -14,6 +14,7 @@ from torch.utils.data import Dataset, DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "GPT_SoVITS"))
+sys.path.insert(0, str(ROOT))
 from tools.grokking import deterministic_holdout_indices, repeat_indices_to_minimum, gradfilter_ema
 
 
