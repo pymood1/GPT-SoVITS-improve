@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -19,6 +20,20 @@ from tools.grokking import (
 
 
 class GrokkingUtilsTests(unittest.TestCase):
+    def test_setup_smoke_imports_canonical_tools_package(self):
+        code = """
+import sys
+from pathlib import Path
+repo = Path.cwd()
+sys.path.insert(0, str(repo / "GPT_SoVITS"))
+import tools
+from tools import grokking
+from tools import runtime_status
+assert Path(grokking.__file__).resolve() == repo / "tools" / "grokking.py"
+assert Path(runtime_status.__file__).resolve() == repo / "tools" / "runtime_status.py"
+"""
+        subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
+
     def test_holdout_is_deterministic_and_deduplicated(self):
         names = ["a", "b", "c", "d", "a", "b"]
         train1, val1 = deterministic_holdout_indices(names, 0.25, 1, 1234)
