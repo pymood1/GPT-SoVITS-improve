@@ -57,6 +57,14 @@ def collect(report, expected_sha):
         report["candidate_exports"] = number(summary["candidate_exports"])
     status = summary.get("status")
     report["training_status"] = status if status in ("starting", "preprocessing", "training", "completed", "failed", "time_limit", "training_failed", "missing_metrics") else "unknown"
+    if status == "failed":
+        phase = summary.get("failure_phase")
+        report["failure_phase"] = phase if phase in ("disk_preflight", "pretrained_setup", "preprocessing", "artifact_validation", "candidate_mount", "candidate_link") else "unknown"
+        error = summary.get("error_type")
+        report["training_error_type"] = error if error in ("RuntimeError", "FileNotFoundError", "KeyError", "ValueError", "OSError", "PermissionError", "JSONDecodeError", "CalledProcessError", "ImportError", "ModuleNotFoundError") else "other"
+        if type(summary.get("candidate_mount_matches")) is int:
+            report["candidate_mount_matches"] = number(summary["candidate_mount_matches"])
+
     report["gpus"] = [v if v in ("Tesla T4", "NVIDIA Tesla T4") else "other" for v in summary.get("gpus", [])]
     fields = ("epoch", "val_loss", "train_cfm", "val_cfm", "train_eval_cfm", "epoch_seconds",
               "train_top3", "val_top3", "trainable_parameter_l2", "fit_epoch")
