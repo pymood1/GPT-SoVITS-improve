@@ -1,0 +1,129 @@
+name: S1 Next public corpus Kaggle pilot
+on:
+  pull_request:
+    branches: [research/grokking-gpt-sovits-20261121]
+    paths: ['tools/s1_next_pilot_request.json']
+permissions:
+  contents: read
+concurrency:
+  group: kaggle-real-model-research-v2
+  cancel-in-progress: false
+jobs:
+  pilot:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/s1-next-distillation-20261126'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Check explicit request and pin source
+        id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json, os, re, urllib.request, subprocess
+          from pathlib import Path
+          head=os.environ["HEAD"]
+          request=urllib.request.Request("https://api.github.com/repos/"+os.environ["REPO"]+"/commits/"+head,
+              headers={"Authorization":"Bearer "+os.environ["GH_TOKEN"],"Accept":"application/vnd.github+json"})
+          with urllib.request.urlopen(request,timeout=20) as r:
+              commit=json.load(r)
+          submit=any(f["filename"]=="tools/s1_next_pilot_request.json" for f in commit["files"])
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("submit="+str(submit).lower()+"\n")
+          if submit:
+              cfg=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+              assert cfg=={"code_sha":commit["parents"][0]["sha"],"profile":"public-fleurs-ko-pilot"}
+              assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
+          PY
+      - uses: actions/setup-python@v5
+        if: steps.request.outputs.submit == 'true'
+        with:
+          python-version: '3.12'
+      - name: Mandatory pre-submit regression tests
+        if: steps.request.outputs.submit == 'true'
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tools/kaggle_s1_next_pilot.py
+          python tests/test_s1_next.py -v
+          python tests/test_s1_next_efficiency.py -v
+      - name: Prepare private Kaggle job
+        if: steps.request.outputs.submit == 'true'
+        id: prepare
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          kernel="pymood1/gpt-sovits-s1-next-"+os.environ["GITHUB_RUN_ID"]
+          folder=Path(os.environ["RUNNER_TEMP"])/"s1-next-pilot"
+          folder.mkdir()
+          script="REQUEST = "+repr(req)+"\n"+Path("tools/kaggle_s1_next_pilot.py").read_text()
+          compile(script,"pilot.py","exec")
+          (folder/"pilot.py").write_text(script)
+          (folder/"kernel-metadata.json").write_text(json.dumps({
+            "id":kernel,"title":kernel.split("/")[-1],"code_file":"pilot.py",
+            "language":"python","kernel_type":"script","is_private":True,
+            "enable_gpu":True,"enable_internet":True,"machine_shape":"NvidiaTeslaT4",
+            "dataset_sources":[],"competition_sources":[],"kernel_sources":[],"model_sources":[]}))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("kernel="+kernel+"\n")
+          PY
+      - name: Submit bounded public-corpus pilot
+        if: steps.request.outputs.submit == 'true' && github.run_attempt == 1
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}${KAGGLE_KEY:-}"
+          python -m pip install --disable-pip-version-check kaggle==2.2.5
+          kaggle kernels push -p "$RUNNER_TEMP/s1-next-pilot" --accelerator NvidiaTeslaT4 --timeout 5400
+      - name: Recover aggregate pilot metrics
+        if: steps.request.outputs.submit == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+          KERNEL: ${{ steps.prepare.outputs.kernel }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check kaggle==2.2.5
+          mkdir -p "$RUNNER_TEMP/s1-next-result"
+          for i in $(seq 1 220); do
+            if ! status=$(kaggle kernels status "$KERNEL" 2>&1); then
+              sleep 30
+              continue
+            fi
+            echo "$status"
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])complete(d)?(["[:space:]]|$)'; then
+              for retry in $(seq 1 5); do
+                if kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/s1-next-result" --file-pattern '^s1-next-result[.]json$' && test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json"; then
+                  break
+                fi
+                sleep 10
+              done
+              break
+            fi
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
+              exit 1
+            fi
+            sleep 30
+          done
+          python - "$RUNNER_TEMP/s1-next-result/s1-next-result.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          r=json.loads(Path(sys.argv[1]).read_text())
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          assert r["code_sha"]==req["code_sha"]
+          print("S1_NEXT_RESULT_BEGIN")
+          print(json.dumps(r,indent=2))
+          print("S1_NEXT_RESULT_END")
+          assert r["status"]=="completed"
+          PY
