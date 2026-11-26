@@ -83,8 +83,7 @@ class PracticalV5:
         cfg = TTS_Config({"custom": config})
         cfg.configs_path = str(Path(self.config_dir.name) / "tts.yaml")
         self.tts = TTS(cfg)
-        self.styles = [extract_style(self.tts, self.tts._get_ref_spec(str(self.bundle / p["file"])))
-                       for p in self.meta["references"]]
+        self.styles = None
         self.lock = threading.Lock()
 
     def synthesize(self, text, seed=2027, reference=2, use_mean=False):
@@ -104,6 +103,9 @@ class PracticalV5:
             self.tts.set_ref_audio(ref)
             opts = {}
             if use_mean:
+                if self.styles is None:
+                    self.styles = [extract_style(self.tts, self.tts._get_ref_spec(str(self.bundle / p["file"])))
+                                   for p in self.meta["references"]]
                 primary = extract_style(self.tts, self.tts.prompt_cache["refer_spec"][0])
                 other = [style for i, style in enumerate(self.styles, 1) if i != reference]
                 opts["research_style_ge"] = blend_style(
@@ -140,7 +142,7 @@ def export(repo, work, output, *, candidate_kernel, reference_kernel, input_root
     from tools.quality_model_mix import export_scaled_v5_checkpoint
     output.mkdir(parents=True, exist_ok=True)
     status_path = output / "deploy-status.json"
-    status = {"status": "failed", "smoke_count": 0}
+    status = {"status": "failed", "smoke_count": 0, "baseline_count": 0, "mean_count": 0}
     target = output / "V5dev-practical-private.zip"
     target.unlink(missing_ok=True)
     try:
@@ -191,12 +193,21 @@ def export(repo, work, output, *, candidate_kernel, reference_kernel, input_root
             for mean in (False, True):
                 label = "mean" if mean else "baseline"
                 for i, text in enumerate(texts, 1):
-                    sr, audio = engine.synthesize(text, seed=8200 + i, reference=i, use_mean=mean)
-                    path = bundle / f"smoke-{label}-{i}.wav"
-                    write(path, sr, audio)
-                    samples.append({"label": label, "index": i, "text_index": i,
-                                    "reference_index": i, "path": str(path)})
-                    status["smoke_count"] += 1
+                    try:
+                        sr, audio = engine.synthesize(text, seed=8200 + i, reference=i, use_mean=mean)
+                        path = bundle / f"smoke-{label}-{i}.wav"
+                        write(path, sr, audio)
+                        samples.append({"label": label, "index": i, "text_index": i,
+                                        "reference_index": i, "path": str(path)})
+                        status["smoke_count"] += 1
+                        status[label + "_count"] += 1
+                    except Exception:
+                        if not mean:
+                            raise
+                        # Optional research feature must not block a working baseline export.
+                        import traceback
+                        (output / "private-mean-error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+                        break
             del engine
             import gc
             import torch
@@ -212,13 +223,14 @@ def export(repo, work, output, *, candidate_kernel, reference_kernel, input_root
                 raise RuntimeError("ASR smoke verification failed")
             for label in ("baseline", "mean"):
                 scores = [v for sample, v in zip(samples, result["scores"]) if sample["label"] == label]
-                cer = sum(v["char_errors"] for v in scores) / max(1, sum(v["char_count"] for v in scores))
+                cer = (sum(v["char_errors"] for v in scores) / sum(v["char_count"] for v in scores)
+                       if len(scores) == 3 and sum(v["char_count"] for v in scores) > 0 else None)
                 status[label + "_cer"] = cer
-            if status["baseline_cer"] > .05:
+            if status["baseline_cer"] is None or status["baseline_cer"] > .05:
                 raise RuntimeError("Baseline CER exceeds deployment threshold")
             manifest["mean_smoke_cer"] = status["mean_cer"]
             manifest["baseline_smoke_cer"] = status["baseline_cer"]
-            manifest["mean_available"] = status["mean_cer"] <= .05
+            manifest["mean_available"] = status["mean_cer"] is not None and status["mean_cer"] <= .05
             (bundle / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             # Zip only after loading and synthesizing from the exported weights.
             partial = target.with_suffix(".partial")
