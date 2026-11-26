@@ -152,15 +152,48 @@ def read_shards(root,world,split):
     return rows
 
 
+@torch.no_grad()
 def evaluate_distributed(model,rows,device,rank,world):
+    """Matched CE for student and teacher on identical held-out pseudo-targets."""
     local=rows[rank::world]
     if not local:
         raise ValueError("Empty validation shard")
-    metrics=evaluate(model,local,device,True)
-    keys=sorted(metrics)
-    packed=torch.tensor([metrics[k]*len(local) for k in keys]+[len(local)],device=device,dtype=torch.float64)
-    dist.all_reduce(packed)
-    return {k:float(packed[i]/packed[-1]) for i,k in enumerate(keys)}
+    model.eval()
+    # Match the exact target boundary, including EOS, and weight by token count.
+    totals=torch.zeros(8,device=device,dtype=torch.float64)
+    for e in local:
+        x,b,y=(e[k].to(device) for k in ("x","b","y"))
+        t=e["target"].to(device)
+        teacher=e["teacher"].to(device)
+        z,_=model(x,b,y)
+        z=z[:,e["prompt"]:]
+        _,ce,kd=kd_loss(z,teacher,t,temperature=2.,alpha=.7)
+        n=t.numel()
+        teacher_ce=torch.nn.functional.cross_entropy(teacher.float().flatten(0,1),t.flatten())
+        g=torch.Generator(device=device).manual_seed(40100+e["index"])
+        ids,_=model.generate(x,b,y[:,:e["prompt"]],max_new=384,min_new=10,top_k=15,
+                             repetition_penalty=1.35,generator=g)
+        ratio=ids.size(1)/e["target_count"]
+        totals+=torch.stack([ce.double()*n,teacher_ce.double()*n,kd.double()*n,
+                            totals.new_tensor(n),totals.new_tensor(ratio),
+                            totals.new_tensor(float(ratio<.5)),totals.new_tensor(float(ids.size(1)==384)),
+                            totals.new_tensor(1.)])
+    dist.all_reduce(totals)
+    ce,tce,kd,n,ratio,short,cap,count=totals.tolist()
+    return {"ce":ce/n,"teacher_ce":tce/n,"ce_ratio":ce/max(tce,1e-12),
+            "kd":kd/n,"mean_length_ratio":ratio/count,"short_rate":short/count,"cap_rate":cap/count,
+            "validation_tokens":int(n),"validation_pairs":int(count)}
+
+
+def teacher_gate(metrics,ce_tolerance=.05):
+    """Candidate gate only: actual independent waveform quality is separately required."""
+    import math
+    keys=("ce","teacher_ce","kd","short_rate","cap_rate","mean_length_ratio")
+    if not all(k in metrics and math.isfinite(metrics[k]) for k in keys):
+        return False
+    return (metrics["teacher_ce"]>0 and metrics["ce"]<=metrics["teacher_ce"]*(1+ce_tolerance)
+            and metrics["short_rate"]==0 and metrics["cap_rate"]==0
+            and .9<=metrics["mean_length_ratio"]<=1.1)
 
 
 def train_worker(args):
@@ -198,15 +231,24 @@ def train_worker(args):
         steps=0
         started=time.monotonic()
         best=float("inf")
+        gate_streak=0
+        stop_reason="epoch_budget"
         def record(epoch,metrics,seconds,loss=None):
-            nonlocal best
+            nonlocal best,gate_streak
+            passed=teacher_gate(metrics,args.ce_tolerance)
+            gate_streak=gate_streak+1 if passed else 0
             row={"epoch":epoch,"validation":metrics,"tokens":count,"steps":steps,
-                 "seconds":seconds,"tokens_per_second":count/max(.001,time.monotonic()-started)}
+                 "seconds":seconds,"tokens_per_second":count/max(.001,time.monotonic()-started),
+                 "teacher_gate_passed":passed,"gate_streak":gate_streak}
             if loss is not None:
                 row["train_loss"]=loss
             history.append(row)
             score=metrics["kd"]+2*metrics["short_rate"]+2*metrics["cap_rate"]+abs(metrics["mean_length_ratio"]-1)
             if rank==0:
+                if args.until_teacher and passed:
+                    save_atomic({"format":"s1-next-v1","config":asdict(cfg),"state_dict":student.state_dict(),
+                                 "teacher_config":teacher_cfg,"epoch":epoch,"tokens":count,"validation":metrics},
+                                args.output/"s1-next-teacher-gate.pt")
                 if score<best:
                     best=score
                     save_atomic({"format":"s1-next-v1","config":asdict(cfg),"state_dict":student.state_dict(),
@@ -215,7 +257,9 @@ def train_worker(args):
                 print(json.dumps(row,allow_nan=False),flush=True)
                 report={"world_size":world,"precision":"fp32","train_pairs":len(train),
                         "val_pairs":len(valid),"history":history,
-                        "seconds":time.monotonic()-started,"selected_score":best}
+                        "seconds":time.monotonic()-started,"selected_score":best,
+                        "teacher_gate_met":gate_streak>=args.gate_checks,
+                        "ce_tolerance":args.ce_tolerance,"gate_checks":args.gate_checks}
                 tmp=args.output/"metrics.tmp"
                 tmp.write_text(json.dumps(report,allow_nan=False))
                 os.replace(tmp,args.output/"metrics.json")
@@ -255,6 +299,30 @@ def train_worker(args):
             dist.all_reduce(packed)
             metrics=evaluate_distributed(student,valid,device,rank,world)
             record(epoch,metrics,time.monotonic()-t,float(packed[0]/packed[1]))
+            if args.until_teacher:
+                # Identical validation metrics on every rank; synchronize wall-clock decision.
+                stop=torch.tensor([int(gate_streak>=args.gate_checks),int(time.monotonic()-started>=args.max_train_seconds)],device=device)
+                dist.broadcast(stop,src=0)
+                if stop[0].item():
+                    stop_reason="teacher_gate_met"
+                    break
+                if stop[1].item():
+                    stop_reason="time_budget"
+                    break
+        if rank==0:
+            if args.until_teacher:
+                # Preserve a continuation checkpoint separately from validation-best.
+                save_atomic({"format":"s1-next-v1","config":asdict(cfg),"state_dict":student.state_dict(),
+                             "teacher_config":teacher_cfg,"epoch":history[-1]["epoch"],"tokens":count,
+                             "validation":history[-1]["validation"]},args.output/"s1-next-last.pt")
+            path=args.output/"metrics.json"
+            report=json.loads(path.read_text())
+            report["stop_reason"]=stop_reason
+            report["until_teacher"]=args.until_teacher
+            tmp=path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(report,allow_nan=False))
+            os.replace(tmp,path)
+        dist.barrier()
     finally:
         dist.destroy_process_group()
 
@@ -271,7 +339,13 @@ def main():
     p.add_argument("--epochs",type=int,default=8)
     p.add_argument("--micro",type=int,default=4)
     p.add_argument("--lr",type=float,default=5e-5)
+    p.add_argument("--until-teacher",action="store_true")
+    p.add_argument("--ce-tolerance",type=float,default=.05)
+    p.add_argument("--gate-checks",type=int,default=3)
+    p.add_argument("--max-train-seconds",type=int,default=5400)
     a=p.parse_args()
+    if a.epochs<1 or not 0<=a.ce_tolerance<=.1 or a.gate_checks<2 or a.max_train_seconds<1:
+        p.error("Invalid convergence limits")
     (prepare_worker if a.mode=="prepare" else train_worker)(a)
 
 if __name__=="__main__":
