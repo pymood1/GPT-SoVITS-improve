@@ -133,7 +133,7 @@ def train(args):
                  "lr":opt.param_groups[0]["lr"],"gate_streak":streak}
             history.append(row)
             # Prefer teacher distribution, then CE; no selection on held-out audio quality.
-            score=m["kl"]+.1*max(0.,m["ce"]-m["teacher_ce"])
+            score=m["kl"]+.1*max(0.,m["ce"]-m["teacher_ce"])+(0. if passed(m) else 10.)
             if score<best:
                 best=score
                 if rank==0:
@@ -180,6 +180,7 @@ def train(args):
                     "initial_warm":initial_warm,"history":history,"stop_reason":stop,
                     "selected":torch.load(args.output/"ffn-best.pt",map_location="cpu",weights_only=True)["validation"],
                     "seconds":time.monotonic()-started,"gate_met":streak>=2}
+            assert not report["gate_met"] or passed(report["selected"])
             (args.output/"metrics.json").write_text(json.dumps(report,indent=2,allow_nan=False))
         dist.barrier()
     finally:
