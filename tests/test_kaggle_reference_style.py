@@ -26,6 +26,17 @@ class ReferenceStyleTests(unittest.TestCase):
         self.assertEqual([r[0] for r in aux], ["6", "7", "8"])
         self.assertEqual([r[0] for r in score], ["9", "10", "11"])
 
+    def test_replication_excludes_previous_references(self):
+        refs = [(str(i), "text", "auto") for i in range(21)]
+        def choose(folder, count, exclude=()):
+            return [r for r in refs if r[0] not in exclude][:count]
+        original = reference_groups(choose, None)
+        repeated = reference_groups(choose, None, replication=True)
+        self.assertEqual([r[0] for group in repeated for r in group],
+                         [str(i) for i in range(12, 21)])
+        self.assertFalse({r[0] for group in original for r in group}
+                         & {r[0] for group in repeated for r in group})
+
     def test_style_report_requires_disjoint_reference_scores(self):
         reports = [{"status": "completed", "reference_counts": {},
                     "evaluation": {"asr_status": "completed", "speaker_status": "completed"},
