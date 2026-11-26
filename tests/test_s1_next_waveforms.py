@@ -8,9 +8,27 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/"GPT_SoVITS")]
 from tools.evaluate_s1_next_waveforms import read_manifest,token_stats,summarize
 from tools.kaggle_s1_next_waveforms import prior_assets,SOURCE,SOURCE_SHA
+from tools.train_s1_next_prompt import make_pairs,target_slice
 
 
 class WaveformContractTests(unittest.TestCase):
+    def test_prompt_target_boundary(self):
+        logits=torch.arange(18).reshape(1,6,3)
+        targets=torch.arange(6).reshape(1,6)
+        z,t=target_slice(logits,targets,3)
+        self.assertTrue(torch.equal(z,logits[:,3:]))
+        self.assertEqual(t.tolist(),[[3,4,5]])
+        with self.assertRaises(ValueError):
+            target_slice(logits,targets,5)
+
+    def test_prompt_pairs(self):
+        rows=[{"path":str(i),"text":"sample "+str(i)} for i in range(12)]
+        pairs=make_pairs(rows,10,2027)
+        self.assertEqual(len(pairs),10)
+        self.assertFalse({r["path"] for r,t in pairs}&{t["path"] for r,t in pairs})
+        self.assertEqual(len({(r["path"],t["path"]) for r,t in pairs}),10)
+
+
     def test_pinned_prior_assets(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
