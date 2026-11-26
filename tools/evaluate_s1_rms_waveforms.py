@@ -34,6 +34,8 @@ def main():
                        vits_weights_path=str(a.s2.resolve()))})
         cfg.configs_path=str(Path(tmp)/"tts.yaml")
         engine=TTS(cfg)
+        from tools.s1_waveform_frontend import ensure_worker_nltk
+        ensure_worker_nltk()
         teacher=engine.t2s_model.model.eval()
         gs=generators(teacher,a.stack,a.resume,a.refined,next(teacher.parameters()).device)
         for ri,ref in enumerate(m["references"]):
