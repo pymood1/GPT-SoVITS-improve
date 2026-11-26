@@ -20,7 +20,8 @@ os.environ.setdefault("hz","25hz")
 os.environ.setdefault("language","ko_KR")
 
 import torch
-from AR.models.s1_next import NextConfig,S1Next
+from AR.models.s1_next import NextConfig,S1Next,SemanticResidualBridge
+from module.s1_next_bridge import FrozenV5Bridge
 from tools.train_s1_next import teacher_generate
 
 
@@ -77,7 +78,7 @@ def token_stats(ids,cap):
 
 
 @torch.inference_mode()
-def synthesize(engine,student,teacher,ref,target,seed,cap,arm):
+def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache=None):
     import numpy as np
     px,pb=features(engine,ref["text"])
     tx,tb=features(engine,target)
@@ -86,19 +87,60 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm):
     engine.prompt_cache["phones"]=px[0].tolist()
     prompt=engine.prompt_cache["prompt_semantic"].reshape(1,-1).long()
     started=time.monotonic()
-    if arm=="teacher":
-        ids=teacher_generate(teacher,x,b,prompt,cap=cap,top_k=15,penalty=1.35,seed=seed)
+    teacher_arm=arm!="student"
+    key=(seed,teacher_arm)
+    if cache is not None and key in cache:
+        ids,hidden,generate_seconds=cache[key]
     else:
-        g=torch.Generator(device=x.device).manual_seed(seed)
-        ids,_=student.generate(x,b,prompt,max_new=cap,min_new=10,top_k=15,
-                               repetition_penalty=1.35,generator=g)
+        if teacher_arm:
+            ids=teacher_generate(teacher,x,b,prompt,cap=cap,top_k=15,penalty=1.35,seed=seed)
+            hidden=None
+        else:
+            g=torch.Generator(device=x.device).manual_seed(seed)
+            ids,hidden=student.generate(x,b,prompt,max_new=cap,min_new=10,top_k=15,
+                                       repetition_penalty=1.35,generator=g)
+        generate_seconds=time.monotonic()-started
+        if cache is not None:
+            cache[key]=(ids,hidden,generate_seconds)
     stats=token_stats(ids,cap)
-    stats["s1_seconds"]=time.monotonic()-started
+    stats["s1_seconds"]=generate_seconds
     if ids.numel()==0 or int(ids.max())>=student.cfg.codes:
         raise ValueError("Empty or invalid generated semantic tokens")
     # Equal acoustic sampling seed, identical frozen S2 and vocoder settings.
     torch.manual_seed(seed+100000)
-    wave=engine.using_vocoder_synthesis(ids[:,None,:],tx,sample_steps=32,cfg_rate=1.30)
+    if arm in ("teacher","student"):
+        wave=engine.using_vocoder_synthesis(ids[:,None,:],tx,sample_steps=32,cfg_rate=1.30)
+    else:
+        from TTS_infer_pack.TTS import norm_spec,denorm_spec,mel_fn_v4,resample
+        from module.models_v5 import synthesize_v5_mel
+        model,global_mean=bridges[arm]
+        raw=engine.prompt_cache["refer_spec"][0]
+        refer=(raw[0] if isinstance(raw,tuple) else raw).float()
+        if arm=="aligned":
+            y=torch.cat((prompt,ids),dim=1)
+            xy,mask,_=teacher.make_input_data(x,torch.tensor([x.size(1)],device=x.device),
+                                            y,torch.tensor([y.size(1)],device=x.device),b)
+            h,_=teacher.h((xy,None),mask=mask)
+            hidden=h[:,-ids.size(1):]
+        elif arm=="global_mean":
+            hidden=global_mean.to(x.device).expand(1,ids.size(1),-1)
+        else:
+            raise ValueError("Unknown arm")
+        fea_ref,ge=engine.vits_model.decode_encp(prompt[:,None,:],px,refer)
+        original,_=engine.vits_model.decode_encp(ids[:,None,:],tx,refer,ge,1.)
+        hard,_=model.features(ids[:,None,:],hidden,tx,refer,enabled=False)
+        torch.testing.assert_close(hard,original,rtol=1e-5,atol=1e-5)
+        fea,_=model.features(ids[:,None,:],hidden,tx,refer)
+        ref_audio=engine.prompt_cache["raw_audio"].to(x.device).float()
+        if ref_audio.shape[0]==2:
+            ref_audio=ref_audio.mean(0,keepdim=True)
+        sr0=engine.prompt_cache["raw_sr"]
+        if sr0!=32000:
+            ref_audio=resample(ref_audio,sr0,32000,x.device)
+        mel=norm_spec(mel_fn_v4(ref_audio))
+        torch.manual_seed(seed+100000)
+        mel=synthesize_v5_mel(engine.vits_model,fea_ref,fea,mel,32,1.30)
+        wave=engine.vocoder(denorm_spec(mel))[0,0]
     wave=wave.detach().float().cpu().numpy()
     sr=int(engine.vocoder_configs["sr"])
     if sr!=48000 or wave.ndim!=1 or wave.size<sr//10 or not np.isfinite(wave).all():
@@ -113,7 +155,7 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm):
 
 def summarize(rows):
     out={}
-    for arm in ("teacher","student"):
+    for arm in sorted({r["arm"] for r in rows}):
         subset=[r for r in rows if r["arm"]==arm]
         successful=[r for r in subset if r["status"]=="ok"]
         out[arm]={"attempts":len(subset),"successes":len(successful)}
@@ -131,7 +173,15 @@ def main():
     p.add_argument("--manifest",type=Path,required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--max-tokens",type=int,default=512)
+    p.add_argument("--aligned",type=Path)
+    p.add_argument("--global-mean",type=Path)
+    p.add_argument("--worker-index",type=int,default=0)
+    p.add_argument("--worker-count",type=int,default=1)
     args=p.parse_args()
+    if not 0<=args.worker_index<args.worker_count:
+        p.error("Invalid worker index")
+    if bool(args.aligned)!=bool(args.global_mean):
+        p.error("Provide both bridge checkpoints or neither")
     if not 32<=args.max_tokens<=1024:
         p.error("Use a predeclared generation cap of 32-1024 tokens")
     m=read_manifest(args.manifest.resolve())
@@ -155,18 +205,33 @@ def main():
         cfg.configs_path=str(Path(tmp)/"tts.yaml")
         engine=TTS(cfg)
         teacher=engine.t2s_model.model.eval()
+        bridges={}
+        if args.aligned:
+            for mode,path in (("aligned",args.aligned),("global_mean",args.global_mean)):
+                saved=torch.load(path,map_location="cpu",weights_only=True)
+                if saved["condition"]!=mode or saved["initialization"]!="zero_projection" or saved["source"]!="original-s1-teacher":
+                    raise ValueError("Bridge checkpoint contract mismatch")
+                adapter=SemanticResidualBridge(student.cfg.dim,768,128,initialization="zero_projection")
+                adapter.load_state_dict(saved["adapter"],strict=True)
+                bridges[mode]=(FrozenV5Bridge(engine.vits_model,adapter.cuda()).eval(),saved["global_mean"])
         for ri,ref in enumerate(m["references"]):
+            if ri%args.worker_count!=args.worker_index:
+                continue
             engine.set_ref_audio(ref["path"])
+            cache={}
             for ti,target in enumerate(m["targets"]):
                 seed=2027+ri*1009+ti
-                for arm in ("teacher","student"):
+                for arm in ("teacher","student",*bridges):
                     row={"arm":arm,"reference_index":ri+1,"text_index":ti+1,"seed":seed}
                     try:
-                        sr,wave,stats=synthesize(engine,student,teacher,ref,target,seed,args.max_tokens,arm)
+                        sr,wave,stats=synthesize(engine,student,teacher,ref,target,seed,args.max_tokens,arm,bridges,cache)
                         name=f"{arm}-{ri+1:02}-{ti+1:02}.wav"
                         sf.write(args.output/name,wave,sr,subtype="PCM_16")
                         row.update(status="ok",file=name,**stats)
                     except Exception as exc:
+                        import traceback
+                        with (args.output/"private-errors.log").open("a",encoding="utf-8") as log:
+                            log.write(f"{arm}/{ri+1}/{ti+1}:\n"+traceback.format_exc()+"\n")
                         row.update(status="failed",error_type=type(exc).__name__)
                     rows.append(row)
                     # Only aggregate identifiers in stdout; no audio or text.
