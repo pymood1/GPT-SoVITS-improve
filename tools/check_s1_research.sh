@@ -25,3 +25,5 @@ python -m py_compile tools/kaggle_s1_rms_listen.py tools/evaluate_s1_rms_listen.
 PYTHONPATH=.:GPT_SoVITS python tools/kaggle_s1_live_status.py --selftest
 python -m py_compile tools/s1_waveform_frontend.py
 python tools/s1_waveform_frontend.py
+python -m py_compile tools/s1_inference_export.py
+PYTHONPATH=.:GPT_SoVITS python tools/s1_inference_export.py
