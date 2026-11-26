@@ -7,14 +7,13 @@ on:
 permissions:
   contents: read
   pull-requests: write
-concurrency:
-  group: kaggle-real-model-research-v2
-  cancel-in-progress: false
 jobs:
-  research:
+  request:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/grokking-gpt-sovits-20261121'
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 5
+    outputs:
+      submit: ${{ steps.request.outputs.submit }}
     steps:
       - name: Verify explicit request commit
         id: request
@@ -38,14 +37,36 @@ jobs:
               f.write("submit=" + str(requested).lower() + "\n")
           print("Explicit research request:", requested)
           PY
+  research:
+    needs: request
+    if: needs.request.outputs.submit == 'true'
+    concurrency:
+      group: kaggle-real-model-research-v2
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
       - name: Checkout request
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Validate deployment path before GPU submission
+        if: needs.request.outputs.submit == 'true'
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          req = json.loads(Path("tools/kaggle_remote_request.json").read_text())
+          if req.get("deploy", False):
+              subprocess.run([sys.executable, "-m", "py_compile", "tools/practical_v5.py",
+                              "tools/kaggle_remote_job.py", "tools/kaggle_grokking_bootstrap.py"], check=True)
+              subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                              "-p", "test_practical_v5.py", "-v"], check=True)
+          PY
       - name: Prepare private pinned Kaggle job
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         id: prepare
         run: |
           python - <<'PY'
@@ -55,12 +76,20 @@ jobs:
           assert re.fullmatch("[0-9a-f]{40}", req["code_sha"])
           assert req["profile"] in ("s1", "s2", "s2_quality", "s2_listening", "quality_session", "quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style")
           assert type(req["epochs"]) is int and (req["epochs"] == 0 if req["profile"] in ("s2_listening", "quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style") else 1 <= req["epochs"] <= 120)
+          assert type(req.get("deploy", False)) is bool
+          assert not req.get("deploy", False) or req["profile"] == "quality_style"
           source_kernel = req.get("source_kernel", "")
           if req["profile"] in ("s2_listening", "quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style"):
               assert re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", source_kernel)
           else:
               assert not source_kernel
           assert type(req["max_training_seconds"]) is int and 60 <= req["max_training_seconds"] <= 14400
+          reference_kernel = req.get("reference_kernel", "")
+          if req.get("deploy", False):
+              assert re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", reference_kernel)
+              assert reference_kernel != source_kernel
+          else:
+              assert not reference_kernel
           recover = req.get("recover_kernel", "")
           if recover:
               assert re.fullmatch(r"pymood1/gpt-sovits-research-[0-9]+", recover)
@@ -70,15 +99,15 @@ jobs:
           kernel = recover or "pymood1/gpt-sovits-research-" + os.environ["GITHUB_RUN_ID"]
           folder = Path(os.environ["RUNNER_TEMP"]) / "kaggle-research"
           folder.mkdir()
-          script = "REQUEST = " + repr({**{k: req[k] for k in ("code_sha", "profile", "epochs", "max_training_seconds")}, "source_kernel": source_kernel}) + "\n" + Path("tools/kaggle_remote_job.py").read_text()
+          script = "REQUEST = " + repr({**{k: req[k] for k in ("code_sha", "profile", "epochs", "max_training_seconds")}, "source_kernel": source_kernel, "deploy": req.get("deploy", False), "reference_kernel": reference_kernel}) + "\n" + Path("tools/kaggle_remote_job.py").read_text()
           compile(script, "research.py", "exec")
           (folder / "research.py").write_text(script)
           (folder / "kernel-metadata.json").write_text(json.dumps({
               "id": kernel, "title": kernel.split("/")[-1], "code_file": "research.py",
               "language": "python", "kernel_type": "script", "is_private": True,
               "enable_gpu": True, "enable_internet": True, "machine_shape": "NvidiaTeslaT4",
-              "dataset_sources": ["pymood1/w-voice-file"], "competition_sources": [],
-              "kernel_sources": [source_kernel] if source_kernel else [], "model_sources": []
+              "dataset_sources": [] if req.get("deploy", False) else ["pymood1/w-voice-file"], "competition_sources": [],
+              "kernel_sources": [k for k in (source_kernel, reference_kernel) if k], "model_sources": []
           }))
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("kernel=" + kernel + "\n")
@@ -89,10 +118,10 @@ jobs:
           print("Private job:", kernel, "commit:", req["code_sha"], "profile:", req["profile"], "epochs:", req["epochs"], "runtime_limit_seconds:", req["max_training_seconds"] + 2400)
           PY
       - name: Install Kaggle CLI
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         run: python -m pip install --disable-pip-version-check kaggle==2.2.5
       - name: Submit actual model experiment
-        if: steps.request.outputs.submit == 'true' && steps.prepare.outputs.recover == 'false'
+        if: needs.request.outputs.submit == 'true' && steps.prepare.outputs.recover == 'false'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
@@ -111,7 +140,7 @@ jobs:
           fi
           kaggle kernels push -p "$RUNNER_TEMP/kaggle-research" --accelerator NvidiaTeslaT4 --timeout "${{ steps.prepare.outputs.runtime_limit }}"
       - name: Poll and recover numeric metrics only
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
@@ -184,12 +213,15 @@ jobs:
           print(json.dumps(result, indent=2))
           print("REMOTE_RESULT_END")
           assert result["status"] == "completed", "Model experiment did not complete"
+          if req.get("deploy", False):
+              d = result.get("deployment", {})
+              assert d.get("status") == "completed" and d.get("baseline_count") == 3 and 0 <= d.get("baseline_cer", 1) <= .05 and d.get("archive_bytes", 0) > 0, "Private deployment export failed"
           PY
           # Recover only the narrowly scoped diagnostic; no audio, checkpoints or raw logs.
           if python - "$RUNNER_TEMP/kaggle-result/remote-result.json" <<'PY'
           import json, sys
           r = json.load(open(sys.argv[1]))
-          sys.exit(0 if r.get("profile") in ("s2_quality", "s2_listening", "quality_session", "quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style") and r.get("listening", {}).get("status") != "completed" else 1)
+          sys.exit(0 if not r.get("deployment") and r.get("profile") in ("s2_quality", "s2_listening", "quality_session", "quality_reuse", "quality_mix", "quality_soft", "quality_general", "quality_style") and r.get("listening", {}).get("status") != "completed" else 1)
           PY
           then
             mkdir -p "$RUNNER_TEMP/listening-diagnostic"
