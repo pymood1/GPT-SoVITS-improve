@@ -184,3 +184,16 @@ and global mean .10 with frozen teacher tokens. Compare 36 synthesis
 attempts across two new references and three new target transcripts,
 excluding first 29 test selections. Scores are exploratory; another
 fresh confirmation and listening are required before deployment.
+
+### Round 5 retry: confirmed frontend resource error
+The first run (45747069668) completed 20/30 teacher/bridge syntheses, no
+student training. The CPU-only diagnostic run 45754800367 recovered the
+same LookupError in both workers: NLTK averaged_perceptron_tagger_eng
+missing, from English G2P reached by mixed-language text. The four matched
+successful cases had teacher CER 3.51%, SV .868737; aligned .35 CER
+3.51%, SV .877907. This is preliminary and excludes two failed cases.
+Retry the exact round-5 design after verifying nltk.pos_tag and explicitly
+setting NLTK_DATA. Stream bounded numerical worker progress and return
+sanitized exception signatures in aggregate output. No model or data
+selection change, no production integration, no GPU submission by
+diagnostic profile.
