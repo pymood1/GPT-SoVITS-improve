@@ -240,3 +240,26 @@ This gate is necessary but not sufficient for production replacement:
 compare CER, speaker similarity and listening on a fresh test corpus,
 not the repeatedly consulted validation data. The current code supports
 the stop policy; the next Kaggle request must explicitly enable it.
+
+## Round 7: teacher-relative convergence
+Round 6 (45760100606) succeeded on both T4s, 1019 accepted training
+pairs from 442 source recordings, 24 validation pairs, 1,249,309 tokens,
+1024 updates, 1154.65s training/validation and 3243.69s total.
+Validation CE minimum 4.6669 (epoch 5), KD minimum 2.5649 (epoch 6),
+both worsen by epoch 8. Selected checkpoint epoch 3. On the same eight
+independent test syntheses, teacher/prior/new CER 7.53/95.89/95.55%,
+speaker cosine .7904/.7404/.6873. No deployment.
+Round 7 starts from selected round-6 weights, replays the 1019 cached
+training trajectories and fixed 24 validation trajectories. Reconstruct
+the exact 442-source selection and generate 1024 new reversed reference/
+target pair attempts with disjoint indices; these are novel pairings,
+not additional source recordings. Reserve another six test rows after
+excluding round-6 data. Two-GPU FP32 DDP, AdamW reset at 3e-5, reduce
+LR by half on validation CE+KD plateau (patience 2, floor 1e-6).
+Up to 60 epochs or 5400s training budget checked at epoch boundaries;
+stop earlier only on three consecutive teacher-relative gate passes.
+Save best and latest weights after epochs, evaluate the gate candidate
+if attained, otherwise validation-best. Cached original trajectories
+remain in round-6 output, new trajectories in round-7 output. CE is on
+teacher-generated labels, not ground-truth audio; fresh matched waveform
+evaluation remains essential. A budget stop is not convergence.
