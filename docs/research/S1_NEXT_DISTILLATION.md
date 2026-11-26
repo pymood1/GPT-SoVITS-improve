@@ -167,3 +167,20 @@ Report synthesis failures, cap rates, duration, repetitions, CER, SV cosine
 and private listening samples. Timings are diagnostics only: teacher uses
 full forward, student cached generation, bridge arms reuse semantic tokens.
 No training, production integration or deployment in this round.
+
+## Round 5: repair after waveform failure
+Round 4: 24/24 waveform files, teacher CER 2.27%, SV .90879, duration
+6.39s; student CER 96.02%, SV .53751, duration .56s. Aligned/global
+bridge CER 31.25%/55.68%, SV .84394/.71828. None is deployable.
+The student used same-utterance prefixes during earlier training, not
+independent references; this is a plausible distribution mismatch, not
+a proven sole cause. Round 5 generates 96/12 teacher trajectories from
+distinct reference/target utterances in the prior train/validation splits
+using the actual TTS frontend and prompt extractor. Target-only KD/CE
+excludes reference tokens, includes EOS. Starting checkpoint is round-3
+trajectory KD; 12 epochs, LR 5e-5; select by validation KD and free-running
+length diagnostics. In parallel, sweep aligned residual scale .05/.15/.35
+and global mean .10 with frozen teacher tokens. Compare 36 synthesis
+attempts across two new references and three new target transcripts,
+excluding first 29 test selections. Scores are exploratory; another
+fresh confirmation and listening are required before deployment.
