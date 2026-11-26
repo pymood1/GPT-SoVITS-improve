@@ -51,11 +51,17 @@ def to_device(example,device):
 
 
 def evaluate(model,examples,device):
-    scores={"hard":0.,"bridge":0.}
+    scores={"hard":0.,"bridge":0.,"shuffled":0.}
+    deltas=[]
     for i,ex in enumerate(examples):
         for seed in (8201+i,9201+i):
-            row=paired_losses(model,to_device(ex,device),seed)
+            example=to_device(ex,device)
+            row=paired_losses(model,example,seed)
+            shuffled=dict(example,hidden=example["hidden"].flip(1))
+            row["shuffled"]=paired_losses(model,shuffled,seed)["bridge"]
+            deltas.append(row["bridge"]-row["hard"])
             for k in scores: scores[k]+=row[k]/(2*len(examples))
+    scores["paired_win_rate"]=sum(x<0 for x in deltas)/len(deltas)
     return scores
 
 
@@ -67,17 +73,21 @@ def main():
     p.add_argument("--validation",type=Path,required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--device",default="cuda:0")
+    p.add_argument("--train-count",type=int,default=8)
+    p.add_argument("--val-count",type=int,default=4)
+    p.add_argument("--epochs",type=int,default=2)
+    p.add_argument("--compare-initializations",action="store_true")
     args=p.parse_args()
     torch.manual_seed(2027)
     device=torch.device(args.device)
     teacher,cfg,config=load_teacher(args.teacher,device)
     train,ti=dataset(args.train,cfg,config)
     val,vi=dataset(args.validation,cfg,config)
-    if ti.keys() & vi.keys() or len(ti)<8 or len(vi)<4:
+    if min(args.train_count,args.val_count,args.epochs)<1 or ti.keys() & vi.keys() or len(ti)<args.train_count or len(vi)<args.val_count:
         raise ValueError("Disjoint corpora with at least 8/4 utterances required")
     allow=not (config.get("text_features") or {}).get("multilingual_bert",False)
-    a=extract(teacher,cfg,train,list(ti.values())[:8],args.train,device,allow)
-    b=extract(teacher,cfg,val,list(vi.values())[:4],args.validation,device,allow)
+    a=extract(teacher,cfg,train,list(ti.values())[:args.train_count],args.train,device,allow)
+    b=extract(teacher,cfg,val,list(vi.values())[:args.val_count],args.validation,device,allow)
     del teacher
     torch.cuda.empty_cache()
     from module.models import SynthesizerTrnV3
@@ -89,37 +99,50 @@ def main():
     if any(k.startswith(("quantizer.","enc_p.","ref_enc.","bridge.","wns1.","cfm.")) for k in result.missing_keys):
         raise RuntimeError("Critical V5dev weights missing")
     del state
-    model=FrozenV5Bridge(s2,SemanticResidualBridge(cfg.dim,768,128)).to(device).train()
-    initial=evaluate(model,b,device)
-    if abs(initial["hard"]-initial["bridge"])>1e-6:
-        raise RuntimeError("Bridge zero parity failed")
-    opt=torch.optim.AdamW(model.adapter.parameters(),lr=3e-4,weight_decay=.01)
     args.output.mkdir(parents=True,exist_ok=False)
-    best=initial["bridge"]
-    rows=[]
-    for epoch in range(2):
-        for ex in a:
-            opt.zero_grad(set_to_none=True)
-            loss=model.loss(**to_device(ex,device))
-            if not torch.isfinite(loss): raise FloatingPointError("Bridge loss nonfinite")
-            loss.backward()
-            if any(p.grad is not None for p in model.s2.parameters()):
-                raise RuntimeError("S2 unexpectedly received weight gradients")
-            torch.nn.utils.clip_grad_norm_(model.adapter.parameters(),1.,error_if_nonfinite=True)
-            opt.step()
-        metrics=evaluate(model,b,device)
-        rows.append(metrics)
-        if metrics["bridge"]<best:
-            best=metrics["bridge"]
-            tmp=args.output/"bridge.tmp"
-            torch.save({"format":"s1-next-bridge-pilot-v1","source":"original-s1-teacher",
-                "adapter":model.adapter.state_dict(),"metrics":metrics},tmp)
-            os.replace(tmp,args.output/"bridge-best.pt")
-    report={"status":"completed","initial":initial,"epochs":rows,"best":best,
-            "train_count":len(a),"validation_count":len(b),"gate":float(model.adapter.gate.detach()),
-            "checkpoint_saved":(args.output/"bridge-best.pt").exists()}
+    arms=("zero_gate","zero_projection") if args.compare_initializations else ("zero_gate",)
+    results={}
+    for arm in arms:
+        torch.manual_seed(2027)
+        model=FrozenV5Bridge(s2,SemanticResidualBridge(cfg.dim,768,128,initialization=arm)).to(device).train()
+        initial=evaluate(model,b,device)
+        if abs(initial["hard"]-initial["bridge"])>1e-6:
+            raise RuntimeError("Bridge zero parity failed")
+        opt=torch.optim.AdamW(filter(lambda p:p.requires_grad,model.adapter.parameters()),lr=3e-4,weight_decay=.01)
+        best=initial["bridge"]
+        rows=[]
+        target=args.output/(arm+"-best.pt")
+        for epoch in range(args.epochs):
+            model.train()
+            for i,ex in enumerate(a):
+                # Matched noise across arms, distinct across examples and epochs.
+                torch.manual_seed(2027+epoch*len(a)+i)
+                opt.zero_grad(set_to_none=True)
+                loss=model.loss(**to_device(ex,device))
+                if not torch.isfinite(loss): raise FloatingPointError("Bridge loss nonfinite")
+                loss.backward()
+                if any(p.grad is not None for p in model.s2.parameters()):
+                    raise RuntimeError("S2 unexpectedly received weight gradients")
+                torch.nn.utils.clip_grad_norm_(model.adapter.parameters(),1.,error_if_nonfinite=True)
+                opt.step()
+            model.eval()
+            metrics=evaluate(model,b,device)
+            rows.append(metrics)
+            print(json.dumps({"arm":arm,"epoch":epoch+1,**metrics}),flush=True)
+            if metrics["bridge"]<best:
+                best=metrics["bridge"]
+                tmp=target.with_suffix(".tmp")
+                torch.save({"format":"s1-next-bridge-pilot-v2","source":"original-s1-teacher",
+                    "initialization":arm,"adapter":model.adapter.state_dict(),"metrics":metrics},tmp)
+                os.replace(tmp,target)
+        results[arm]={"initial":initial,"epochs":rows,"best":best,
+                      "gate":float(model.adapter.gate.detach()),"checkpoint_saved":target.exists()}
+        del model,opt
+        torch.cuda.empty_cache()
+    report={"status":"completed","arms":results,"train_count":len(a),"validation_count":len(b)}
     (args.output/"metrics.json").write_text(json.dumps(report,allow_nan=False,indent=2))
     print(json.dumps(report),flush=True)
+
 
 if __name__=="__main__":
     main()
