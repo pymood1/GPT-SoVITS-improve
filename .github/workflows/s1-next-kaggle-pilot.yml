@@ -41,7 +41,7 @@ jobs:
               assert cfg["code_sha"]==commit["parents"][0]["sha"]
               assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
               diagnostic=cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-diagnostic-v5","source_kernel":"pymood1/gpt-sovits-s1-next-45747069668"}
-              assert diagnostic or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-repair-v5","source_kernel":"pymood1/gpt-sovits-s1-next-45741706616"}
+              assert diagnostic or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-scale-ddp-v6","source_kernel":"pymood1/gpt-sovits-s1-next-45754943705"}
               with open(os.environ["GITHUB_OUTPUT"],"a") as f:
                   f.write("diagnostic="+str(diagnostic).lower()+"\n")
           PY
@@ -52,7 +52,7 @@ jobs:
       group: kaggle-real-model-research-v2
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 190
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,10 +66,11 @@ jobs:
         if: needs.request.outputs.submit == 'true'
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tools/kaggle_s1_next_pilot.py tools/kaggle_s1_next_waveforms.py tools/evaluate_s1_next_waveforms.py tools/train_s1_next_prompt.py tools/kaggle_s1_next_repair.py
+          python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tools/kaggle_s1_next_pilot.py tools/kaggle_s1_next_waveforms.py tools/evaluate_s1_next_waveforms.py tools/train_s1_next_prompt.py tools/kaggle_s1_next_repair.py tools/train_s1_next_ddp.py tools/kaggle_s1_next_scale.py tests/test_s1_next_ddp.py
           python tests/test_s1_next.py -v
           python tests/test_s1_next_efficiency.py -v
           python tests/test_s1_next_waveforms.py -v
+          python tests/test_s1_next_ddp.py -v
       - name: Prepare private Kaggle job
         if: needs.request.outputs.submit == 'true'
         id: prepare
@@ -81,7 +82,7 @@ jobs:
           kernel="pymood1/gpt-sovits-s1-next-"+os.environ["GITHUB_RUN_ID"]
           folder=Path(os.environ["RUNNER_TEMP"])/"s1-next-pilot"
           folder.mkdir()
-          script="REQUEST = "+repr(req)+"\n"+Path("tools/kaggle_s1_next_repair.py").read_text()
+          script="REQUEST = "+repr(req)+"\n"+Path("tools/kaggle_s1_next_scale.py").read_text()
           compile(script,"pilot.py","exec")
           (folder/"pilot.py").write_text(script)
           (folder/"kernel-metadata.json").write_text(json.dumps({
@@ -116,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${KAGGLE_API_TOKEN:-}${KAGGLE_KEY:-}"
-          kaggle kernels push -p "$RUNNER_TEMP/s1-next-pilot" --accelerator NvidiaTeslaT4 --timeout 5400
+          kaggle kernels push -p "$RUNNER_TEMP/s1-next-pilot" --accelerator NvidiaTeslaT4 --timeout 9000
       - name: Recover aggregate pilot metrics
         if: needs.request.outputs.submit == 'true'
         env:
@@ -127,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/s1-next-result"
-          for i in $(seq 1 220); do
+          for i in $(seq 1 320); do
             if ! status=$(kaggle kernels status "$KERNEL" 2>&1); then
               sleep 30
               continue
