@@ -42,7 +42,7 @@ jobs:
               assert cfg["code_sha"]==commit["parents"][0]["sha"]
               assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
               observe=(set(cfg)=={"code_sha","profile","source_kernel"} and cfg["profile"]=="public-fleurs-ko-observe" and re.fullmatch(r"pymood1/gpt-sovits-s1-next-[0-9]{1,18}",cfg["source_kernel"]) is not None)
-              assert observe or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-convergence-v7","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-transfer-audit-v8","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-progressive-ffn-v9","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-progressive-stack-v10","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-joint-ffn-v11","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-fullwidth-ffn-v12","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-stack-kv-v13","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-affine-rms-v14","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-rms-polish-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-rms-listen-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45834021558"}
+              assert observe or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-convergence-v7","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-transfer-audit-v8","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-progressive-ffn-v9","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-progressive-stack-v10","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-joint-ffn-v11","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-fullwidth-ffn-v12","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-stack-kv-v13","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-affine-rms-v14","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-rms-polish-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-rms-listen-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45834021558"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-acoustic-isolation-v1","source_kernel":"pymood1/gpt-sovits-s1-next-45840975381"}
               with open(os.environ["GITHUB_OUTPUT"],"a") as f:
                   f.write("observe="+str(observe).lower()+"\n")
           PY
@@ -68,6 +68,9 @@ jobs:
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           bash tools/check_s1_research.sh
+          python -m pip install numpy soundfile
+          python -m py_compile tools/s1_s2_acoustic_isolation.py tools/kaggle_s1_s2_acoustic_isolation.py
+          python tools/s1_s2_acoustic_isolation.py --selftest
       - name: Prepare private Kaggle job
         if: needs.request.outputs.submit == 'true'
         id: prepare
@@ -79,7 +82,7 @@ jobs:
           kernel="pymood1/gpt-sovits-s1-next-"+os.environ["GITHUB_RUN_ID"]
           folder=Path(os.environ["RUNNER_TEMP"])/"s1-next-pilot"
           folder.mkdir()
-          launcher={"public-fleurs-ko-transfer-audit-v8":"tools/kaggle_s1_next_transfer_audit.py","public-fleurs-ko-progressive-ffn-v9":"tools/kaggle_s1_progressive_ffn.py","public-fleurs-ko-progressive-stack-v10":"tools/kaggle_s1_progressive_stack.py","public-fleurs-ko-joint-ffn-v11":"tools/kaggle_s1_joint_ffn.py","public-fleurs-ko-fullwidth-ffn-v12":"tools/kaggle_s1_fullwidth_ffn.py","public-fleurs-ko-stack-kv-v13":"tools/kaggle_s1_stack_kv.py","public-fleurs-ko-affine-rms-v14":"tools/kaggle_s1_affine_rms.py","public-fleurs-ko-rms-polish-v15":"tools/kaggle_s1_rms_polish.py","public-fleurs-ko-rms-listen-v15":"tools/kaggle_s1_rms_listen.py"}.get(req["profile"],"tools/kaggle_s1_next_convergence.py")
+          launcher={"public-fleurs-ko-transfer-audit-v8":"tools/kaggle_s1_next_transfer_audit.py","public-fleurs-ko-progressive-ffn-v9":"tools/kaggle_s1_progressive_ffn.py","public-fleurs-ko-progressive-stack-v10":"tools/kaggle_s1_progressive_stack.py","public-fleurs-ko-joint-ffn-v11":"tools/kaggle_s1_joint_ffn.py","public-fleurs-ko-fullwidth-ffn-v12":"tools/kaggle_s1_fullwidth_ffn.py","public-fleurs-ko-stack-kv-v13":"tools/kaggle_s1_stack_kv.py","public-fleurs-ko-affine-rms-v14":"tools/kaggle_s1_affine_rms.py","public-fleurs-ko-rms-polish-v15":"tools/kaggle_s1_rms_polish.py","public-fleurs-ko-rms-listen-v15":"tools/kaggle_s1_rms_listen.py","public-fleurs-ko-acoustic-isolation-v1":"tools/kaggle_s1_s2_acoustic_isolation.py"}.get(req["profile"],"tools/kaggle_s1_next_convergence.py")
           script="REQUEST = "+repr(req)+"\n"+Path(launcher).read_text()
           compile(script,"pilot.py","exec")
           (folder/"pilot.py").write_text(script)
@@ -103,7 +106,7 @@ jobs:
             "dataset_sources":[],"competition_sources":[],"kernel_sources":sources,"model_sources":[]}))
           with open(os.environ["GITHUB_OUTPUT"],"a") as f:
               f.write("kernel="+kernel+"\n")
-              f.write("timeout="+({"public-fleurs-ko-progressive-ffn-v9":"1500","public-fleurs-ko-progressive-stack-v10":"2700","public-fleurs-ko-joint-ffn-v11":"2400","public-fleurs-ko-fullwidth-ffn-v12":"2700","public-fleurs-ko-stack-kv-v13":"2100","public-fleurs-ko-affine-rms-v14":"2700","public-fleurs-ko-rms-polish-v15":"2700","public-fleurs-ko-rms-listen-v15":"1800"}.get(req["profile"],"9000"))+"\n")
+              f.write("timeout="+({"public-fleurs-ko-progressive-ffn-v9":"1500","public-fleurs-ko-progressive-stack-v10":"2700","public-fleurs-ko-joint-ffn-v11":"2400","public-fleurs-ko-fullwidth-ffn-v12":"2700","public-fleurs-ko-stack-kv-v13":"2100","public-fleurs-ko-affine-rms-v14":"2700","public-fleurs-ko-rms-polish-v15":"2700","public-fleurs-ko-rms-listen-v15":"1800","public-fleurs-ko-acoustic-isolation-v1":"1800"}.get(req["profile"],"9000"))+"\n")
           PY
       - name: Install and verify Kaggle CLI dependencies
         if: needs.request.outputs.submit == 'true'
