@@ -19,17 +19,19 @@ def style_weights(similarities, mode, temperature=.08):
     return [w / total for w in weights]
 
 
-def reference_groups(choose, folder):
-    """Preserve previous generalization prompts; allocate two disjoint extra groups."""
-    previous = {r[0] for r in choose(folder, count=3)}
-    prompts = choose(folder, count=3, exclude=previous)
-    used = previous | {r[0] for r in prompts}
-    auxiliary = choose(folder, count=3, exclude=used)
-    used |= {r[0] for r in auxiliary}
-    scoring = choose(folder, count=3, exclude=used)
-    if len({r[0] for r in prompts + auxiliary + scoring}) != 9:
-        raise ValueError("Reference groups must be disjoint")
-    return prompts, auxiliary, scoring
+def reference_groups(choose, folder, *, replication=False):
+    """Allocate disjoint groups; optionally exclude all first-round references."""
+    used = {r[0] for r in choose(folder, count=3)}
+    for _ in range(2 if replication else 1):
+        groups = []
+        for _ in range(3):
+            group = choose(folder, count=3, exclude=used)
+            paths = {r[0] for r in group}
+            if len(group) != 3 or len(paths) != 3 or paths & used:
+                raise ValueError("Reference groups must be disjoint")
+            groups.append(group)
+            used |= paths
+    return tuple(groups)
 
 
 def speaker_weights(prompts, auxiliary):
