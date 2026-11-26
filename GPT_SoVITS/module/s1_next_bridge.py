@@ -22,7 +22,7 @@ class FrozenV5Bridge(nn.Module):
         self.s2.eval()
         return self
 
-    def features(self,codes,hidden,text,refer,*,enabled=True):
+    def features(self,codes,hidden,text,refer,*,enabled=True,residual_scale=1.):
         if codes.ndim!=3 or codes.shape[:2]!=(1,1) or hidden.shape[:2]!=(1,codes.size(-1)):
             raise ValueError("Use one aligned utterance with [1,1,T] codes and [1,T,D] states")
         if text.ndim!=2 or text.size(0)!=1 or text.size(1)==0 or refer.ndim!=3 or refer.size(0)!=1 or refer.size(1)<704:
@@ -34,8 +34,12 @@ class FrozenV5Bridge(nn.Module):
             e=self.s2.quantizer.decode(codes).detach()
             mask=refer.new_ones(1,1,refer.size(-1))
             ge=self.s2.ref_enc(refer[:,:704]*mask,mask).detach()
-        if enabled:
-            e=self.adapter(e.transpose(1,2),hidden.detach()).transpose(1,2)
+        if not 0<=residual_scale<=1:
+            raise ValueError('Residual scale must be in [0,1]')
+        if enabled and residual_scale:
+            original=e.transpose(1,2)
+            adapted=self.adapter(original,hidden.detach())
+            e=(adapted if residual_scale==1 else original+residual_scale*(adapted-original)).transpose(1,2)
         q=F.interpolate(e,scale_factor=2,mode="nearest")
         def length(n):
             return torch.tensor([n],dtype=torch.long,device=q.device)
