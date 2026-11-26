@@ -1,4 +1,5 @@
 {
-  "code_sha": "604b036706e94559aca68b893fcdbe1340ae28f6",
-  "profile": "public-fleurs-ko-ablation-v2"
+  "code_sha": "bac60841fa7a560b8518bf2c4e18c654e70b36f8",
+  "profile": "public-fleurs-ko-trajectory-v3",
+  "source_kernel": "pymood1/gpt-sovits-s1-next-45739171412"
 }
