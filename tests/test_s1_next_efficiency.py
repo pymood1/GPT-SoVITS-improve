@@ -69,6 +69,17 @@ class EfficiencyTests(unittest.TestCase):
             self.assertEqual(call.call_count,3)
             self.assertEqual((cache.hits,cache.misses),(1,2))
 
+    def test_zero_projection_initialization(self):
+        torch.manual_seed(17)
+        m=SemanticResidualBridge(4,8,4,initialization="zero_projection")
+        h=torch.randn(1,5,4)
+        e=torch.randn(1,5,8)
+        torch.testing.assert_close(m(e,h),e,atol=0,rtol=0)
+        m(e,h).square().mean().backward()
+        self.assertFalse(m.gate.requires_grad)
+        self.assertGreater(float(m.proj[-1].weight.grad.norm()),0)
+        self.assertIsNone(m.gate.grad)
+
     def test_frozen_gradient_and_paired_zero_parity(self):
         torch.manual_seed(13)
         s2=MockV5()
