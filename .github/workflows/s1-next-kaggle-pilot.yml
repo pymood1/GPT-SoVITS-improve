@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       submit: ${{ steps.request.outputs.submit }}
+      diagnostic: ${{ steps.request.outputs.diagnostic }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,12 +38,16 @@ jobs:
               f.write("submit="+str(submit).lower()+"\n")
           if submit:
               cfg=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
-              assert cfg=={"code_sha":commit["parents"][0]["sha"],"profile":"public-fleurs-ko-repair-v5","source_kernel":"pymood1/gpt-sovits-s1-next-45741706616"}
+              assert cfg["code_sha"]==commit["parents"][0]["sha"]
               assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
+              diagnostic=cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-diagnostic-v5","source_kernel":"pymood1/gpt-sovits-s1-next-45747069668"}
+              assert diagnostic or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-repair-v5","source_kernel":"pymood1/gpt-sovits-s1-next-45741706616"}
+              with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+                  f.write("diagnostic="+str(diagnostic).lower()+"\n")
           PY
   pilot:
     needs: request
-    if: needs.request.outputs.submit == 'true'
+    if: needs.request.outputs.submit == 'true' && needs.request.outputs.diagnostic != 'true'
     concurrency:
       group: kaggle-real-model-research-v2
       cancel-in-progress: false
@@ -152,4 +157,41 @@ jobs:
           print(json.dumps(r,indent=2))
           print("S1_NEXT_RESULT_END")
           assert r["status"]=="completed"
+          PY
+
+  diagnose:
+    needs: request
+    if: needs.request.outputs.submit == 'true' && needs.request.outputs.diagnostic == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recover bounded public-corpus failure diagnostics
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check kaggle==2.2.5 kagglesdk==0.1.38 six==1.17.0
+          mkdir -p "$RUNNER_TEMP/diagnostic"
+          kaggle kernels output pymood1/gpt-sovits-s1-next-45747069668 -p "$RUNNER_TEMP/diagnostic" --file-pattern '(worker0[.]log|private-errors[.]log)$'
+          python - "$RUNNER_TEMP/diagnostic" <<'PY'
+          import json,re,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          files=[p for p in root.rglob("*") if p.is_file() and p.name in {"worker0.log","private-errors.log"}]
+          assert files,"No requested diagnostic files recovered"
+          for p in files:
+              raw=re.sub(r"\x1b\[[0-9;]*m","",p.read_text(errors="replace"))
+              traces=[]
+              for part in raw.split("Traceback (most recent call last):")[1:]:
+                  frames=re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',part)
+                  classes=re.findall(r"^([A-Za-z_][\w.]*Error):",part,re.M)
+                  resources=re.findall(r"Resource\s+([A-Za-z0-9_/-]+)\s+not found",part)
+                  traces.append({"frames":[[Path(f).name,int(n),fn] for f,n,fn in frames[-12:]],
+                                 "exceptions":classes[:5],"nltk_resources":resources[:5]})
+              print(json.dumps({"file":p.name,"trace_count":len(traces),"traces":traces[-4:]},ensure_ascii=True))
           PY
