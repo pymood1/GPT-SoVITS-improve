@@ -1,0 +1,27 @@
+name: S1 Next research CPU checks
+on:
+  pull_request:
+    branches: [research/grokking-gpt-sovits-20261121]
+    paths:
+      - 'GPT_SoVITS/AR/models/s1_next.py'
+      - 'tools/train_s1_next.py'
+      - 'tests/test_s1_next.py'
+      - '.github/workflows/s1-next-research.yml'
+permissions:
+  contents: read
+jobs:
+  cpu-architecture:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/s1-next-distillation-20261126'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tests/test_s1_next.py
+      - run: python tests/test_s1_next.py -v
