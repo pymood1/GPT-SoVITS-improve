@@ -100,9 +100,9 @@ class TeacherCache:
             return teacher_logits(teacher,x,b,y)
         h=hashlib.sha256(("s1-next-kd-v1:"+self.identity).encode())
         for v in (x,b,y):
-            c=v.detach().contiguous().cpu()
+            c=v.detach().cpu().contiguous().clone()
             h.update(str((tuple(c.shape),str(c.dtype))).encode())
-            h.update(c.numpy().tobytes())
+            h.update(bytes(c.untyped_storage()))
         p=self.path/(h.hexdigest()+".pt")
         expected=F.pad(y,(0,1),value=teacher.EOS)
         if p.exists():
