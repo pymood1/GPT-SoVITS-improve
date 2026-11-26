@@ -197,3 +197,31 @@ setting NLTK_DATA. Stream bounded numerical worker progress and return
 sanitized exception signatures in aggregate output. No model or data
 selection change, no production integration, no GPU submission by
 diagnostic profile.
+
+## Round 6: S1 Next scale-up, two GPU synchronous training
+Round 5 retry (45754943705) completed 36/36 waveforms; 95/96 teacher
+training trajectories, 12/12 validation. Prompt training reduced initial
+EOS probability from .80694 to .01523 at epoch 4 (selected score); student
+CER 93.18%, teacher 23.64%, student duration 7.42s, teacher 6.08s.
+The checkpoint is undertrained; architecture potential is not established.
+
+Round 6 starts from that selected checkpoint, not from scratch. Generate
+1024 prompt/target trajectories and 24 validation trajectories, split
+deterministically across two T4 GPUs. Preserve earlier 384/32 source split
+and first 34 test selections; reserve six fresh test cases, expand train by
+up to 256 eligible nonoverlapping source utterances. Pair count is not the
+number of unique source recordings. Cached teacher decoding must agree
+with full-forward logits during an eight-token parity preflight; fall back
+to full-forward on mismatch. Save teacher cache shards for reuse.
+
+Train one shared student using NCCL DDP, FP32, eight epochs, AdamW 5e-5,
+four microexamples per rank per sync (global eight). Normalize gradients
+by global target-token count, account for the DDP averaging factor, drop
+at most one shuffled indivisible example per epoch. CPU Gloo gradient
+parity gate compares the same actual S1 Next update with full-batch
+single-model gradient. Rank-zero best checkpoint selected by independent
+prompt validation KD/length score, with metrics and optimizer steps.
+No bridge training. Compare old/new student and teacher on fresh matched
+2-reference x 4-text waveform evaluation (24 attempts). Same S2/vocoder.
+Two GPUs replicate weights rather than pooling memory. Actual speedup,
+capacity and generalization are to be measured, not assumed.
