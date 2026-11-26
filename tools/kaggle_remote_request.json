@@ -1,9 +1,10 @@
 {
-  "code_sha": "e595e01e4d6561fd00277ff6f80d241a7c9aa8a7",
+  "code_sha": "e879e048c0a2423854d22a8d8839cb65e8b3a9ac",
   "profile": "quality_style",
   "epochs": 0,
-  "max_training_seconds": 10800,
+  "max_training_seconds": 3600,
   "source_kernel": "pymood1/gpt-sovits-research-45596470910",
   "recover_kernel": "",
-  "previous_kernel": ""
+  "previous_kernel": "",
+  "deploy": true
 }
