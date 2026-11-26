@@ -4,8 +4,10 @@ on:
     branches: [research/grokking-gpt-sovits-20261121]
     paths:
       - 'GPT_SoVITS/AR/models/s1_next.py'
-      - 'tools/train_s1_next.py'
-      - 'tests/test_s1_next.py'
+      - 'tools/train_s1_next*.py'
+      - 'tools/prepare_s1_next_fleurs.py'
+      - 'GPT_SoVITS/module/s1_next_bridge.py'
+      - 'tests/test_s1_next*.py'
       - '.github/workflows/s1-next-research.yml'
 permissions:
   contents: read
@@ -23,5 +25,6 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tests/test_s1_next.py
+      - run: python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tests/test_s1_next.py tests/test_s1_next_efficiency.py
       - run: python tests/test_s1_next.py -v
+      - run: python tests/test_s1_next_efficiency.py -v
