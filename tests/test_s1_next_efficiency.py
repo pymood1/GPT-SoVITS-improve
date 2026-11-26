@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from AR.models.s1_next import SemanticResidualBridge,NextConfig,S1Next,sample_ne
 from module.s1_next_bridge import FrozenV5Bridge,paired_losses
 from tools.train_s1_next import TeacherCache,trajectory_kd
 from tools.train_s1_next_bridge_pilot import condition
+from tools.kaggle_s1_next_pilot import mounted_checkpoint
 
 
 class Encoder(nn.Module):
@@ -52,6 +54,22 @@ class MockV5(nn.Module):
 
 
 class EfficiencyTests(unittest.TestCase):
+    def test_prior_checkpoint_mount(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            slug="gpt-sovits-s1-next-45739171412"
+            base=root/"notebooks"/"pymood1"/slug
+            p=base/"s1-next-pilot"/"kd"/"s1-next-best.pt"
+            p.parent.mkdir(parents=True)
+            with p.open("wb") as f:
+                f.truncate(1000000)
+            report=base/"s1-next-result.json"
+            report.write_text(json.dumps({"code_sha":"604b036706e94559aca68b893fcdbe1340ae28f6","status":"completed"}))
+            self.assertEqual(mounted_checkpoint("pymood1/"+slug,root),p)
+            report.write_text(json.dumps({"code_sha":"wrong","status":"completed"}))
+            with self.assertRaises(ValueError):
+                mounted_checkpoint("pymood1/"+slug,root)
+
     def test_sampling_penalty_and_eos(self):
         logits=torch.tensor([[2.,1.8,-1.,9.]])
         prior=torch.tensor([[0,0]])
