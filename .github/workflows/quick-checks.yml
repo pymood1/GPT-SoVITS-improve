@@ -75,6 +75,7 @@ jobs:
           python -m unittest discover -s tests -p test_kaggle_live_status.py -v
           python -m unittest discover -s tests -p test_kaggle_quality_score.py -v
           python -m unittest discover -s tests -p test_kaggle_reference_style.py -v
+          python -m unittest discover -s tests -p test_practical_v5.py -v
 
       - name: Validate notebooks as JSON
         run: |
