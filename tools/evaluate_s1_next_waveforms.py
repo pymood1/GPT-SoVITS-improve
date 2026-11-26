@@ -78,7 +78,7 @@ def token_stats(ids,cap):
 
 
 @torch.inference_mode()
-def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache=None):
+def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache=None,prior_student=None):
     import numpy as np
     px,pb=features(engine,ref["text"])
     tx,tb=features(engine,target)
@@ -87,8 +87,8 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache
     engine.prompt_cache["phones"]=px[0].tolist()
     prompt=engine.prompt_cache["prompt_semantic"].reshape(1,-1).long()
     started=time.monotonic()
-    teacher_arm=arm!="student"
-    key=(seed,teacher_arm)
+    teacher_arm=arm not in ("student","prior_student")
+    key=(seed,"teacher" if teacher_arm else arm)
     if cache is not None and key in cache:
         ids,hidden,generate_seconds=cache[key]
     else:
@@ -97,7 +97,8 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache
             hidden=None
         else:
             g=torch.Generator(device=x.device).manual_seed(seed)
-            ids,hidden=student.generate(x,b,prompt,max_new=cap,min_new=10,top_k=15,
+            active_student=prior_student if arm=="prior_student" else student
+            ids,hidden=active_student.generate(x,b,prompt,max_new=cap,min_new=10,top_k=15,
                                        repetition_penalty=1.35,generator=g)
         generate_seconds=time.monotonic()-started
         if cache is not None:
@@ -108,7 +109,7 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache
         raise ValueError("Empty or invalid generated semantic tokens")
     # Equal acoustic sampling seed, identical frozen S2 and vocoder settings.
     torch.manual_seed(seed+100000)
-    if arm in ("teacher","student"):
+    if arm in ("teacher","student","prior_student"):
         wave=engine.using_vocoder_synthesis(ids[:,None,:],tx,sample_steps=32,cfg_rate=1.30)
     else:
         from TTS_infer_pack.TTS import norm_spec,denorm_spec,mel_fn_v4,resample
@@ -171,6 +172,7 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument("--teacher",type=Path,required=True)
     p.add_argument("--student",type=Path,required=True)
+    p.add_argument("--prior-student",type=Path)
     p.add_argument("--s2",type=Path,required=True)
     p.add_argument("--manifest",type=Path,required=True)
     p.add_argument("--output",type=Path,required=True)
@@ -200,6 +202,15 @@ def main():
     student.load_state_dict(payload["state_dict"],strict=True)
     del payload
     student=student.cuda().eval()
+    prior_student=None
+    if args.prior_student:
+        previous=torch.load(args.prior_student,map_location="cpu",weights_only=False)
+        if previous["format"]!="s1-next-v1" or previous["teacher_config"]!=teacher_cfg or previous["config"]!=asdict(student.cfg):
+            raise ValueError("Prior student checkpoint mismatch")
+        prior_student=S1Next(student.cfg)
+        prior_student.load_state_dict(previous["state_dict"],strict=True)
+        del previous
+        prior_student=prior_student.cuda().eval()
     rows=[]
     with tempfile.TemporaryDirectory(prefix="s1-next-waveform-") as tmp:
         cfg=TTS_Config({"custom":dict(TTS_Config.default_configs["v5dev"],
@@ -217,8 +228,8 @@ def main():
                 adapter=SemanticResidualBridge(student.cfg.dim,768,128,initialization="zero_projection")
                 adapter.load_state_dict(saved["adapter"],strict=True)
                 bridges[mode]=(FrozenV5Bridge(engine.vits_model,adapter.cuda()).eval(),saved["global_mean"])
-        arms=args.arms or ["teacher","student",*bridges]
-        if len(set(arms))!=len(arms) or any(a not in ("teacher","student") and a.split("@")[0] not in bridges for a in arms):
+        arms=args.arms or ["teacher","student",*(["prior_student"] if prior_student else []),*bridges]
+        if len(set(arms))!=len(arms) or any(a not in ("teacher","student") and not (a=="prior_student" and prior_student is not None) and a.split("@")[0] not in bridges for a in arms):
             raise ValueError("Invalid arm selection")
         for ri,ref in enumerate(m["references"]):
             if ri%args.worker_count!=args.worker_index:
@@ -230,7 +241,7 @@ def main():
                 for arm in arms:
                     row={"arm":arm,"reference_index":ri+1,"text_index":ti+1,"seed":seed}
                     try:
-                        sr,wave,stats=synthesize(engine,student,teacher,ref,target,seed,args.max_tokens,arm,bridges,cache)
+                        sr,wave,stats=synthesize(engine,student,teacher,ref,target,seed,args.max_tokens,arm,bridges,cache,prior_student)
                         name=f"{arm.replace(chr(64),chr(45))}-{ri+1:02}-{ti+1:02}.wav"
                         sf.write(args.output/name,wave,sr,subtype="PCM_16")
                         row.update(status="ok",file=name,**stats)
