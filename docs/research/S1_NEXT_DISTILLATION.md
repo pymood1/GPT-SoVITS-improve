@@ -91,3 +91,25 @@ KV preallocation, length-bucket batching, DDP, resume, on-policy KD, and
 full waveform evaluation are deferred until the first real pilot passes.
 Both workers keep independent private logs and only aggregate results are
 recovered in Actions. The request workflow runs CPU gates before submission.
+
+## Round 2: matched ablations (2026-11-26)
+Round 1 actual T4x2 result: 40,040 training tokens; validation CE 8.76747
+to 5.23491 (teacher 3.72837); bridge held-out CFM 0.33241538 to
+0.33241297, too small to establish improved quality. The next round uses
+256/32 Korean FLEURS utterances, a fresh initialization and identical
+seed/order/token budget for KD (alpha .5) versus CE-only (alpha 0).
+Each arm has up to 8 epochs, 400 optimizer steps and 400k tokens; the
+first stopping condition wins. Cache is shared between sequential arms.
+Best-checkpoint greedy rollout on four held-out examples reports cap
+rate, repetition and length ratio; it uses a same-utterance semantic
+prefix and full text, not an independent-reference waveform evaluation.
+
+The bridge compares the original zero-gate initialization to a zero final
+projection with unit fixed scale. Both begin at exact hard-token identity,
+but the latter immediately updates the final projection. Both use 24/8
+examples, four epochs, identical training noise and evaluation seeds.
+Reversed temporal hidden states serve as a negative control, not a
+different-speaker or independent-reference control. Paired win rate
+and CFM loss are reported. Checkpoints are saved only on held-out gain.
+Neither CE nor CFM loss establishes naturalness; full synthesis and an
+independent test set remain necessary. Production model remains unchanged.
