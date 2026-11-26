@@ -175,13 +175,23 @@ def kd_loss(logits, teacher_logits, target, *, temperature=2., alpha=.5):
 
 class SemanticResidualBridge(nn.Module):
     """Research-only post-token state adapter. Does not alter hard-token baseline."""
-    def __init__(self, source_dim=512, target_dim=768, rank=128):
+    def __init__(self, source_dim=512, target_dim=768, rank=128, *, initialization='zero_gate'):
         super().__init__()
         self.proj=nn.Sequential(RMSNorm(source_dim),nn.Linear(source_dim,rank),nn.SiLU(),
                                 nn.Linear(rank,target_dim,bias=False))
+        if initialization not in ('zero_gate','zero_projection'):
+            raise ValueError("Unknown residual initialization")
         self.gate=nn.Parameter(torch.zeros(()))
+        if initialization=='zero_projection':
+            # Identity at step zero, but the final projection receives gradient
+            # immediately. A fixed unit multiplier avoids two near-zero factors.
+            nn.init.zeros_(self.proj[-1].weight)
+            self.gate.data.fill_(1.)
+            self.gate.requires_grad_(False)
+        self.initialization=initialization
 
     def forward(self, hard_embedding, post_token_hidden):
         if hard_embedding.ndim!=3 or post_token_hidden.ndim!=3 or hard_embedding.shape[:2]!=post_token_hidden.shape[:2]:
             raise ValueError("Semantic frame alignment mismatch")
-        return hard_embedding + self.gate.tanh()*self.proj(post_token_hidden)
+        scale=1. if self.initialization=='zero_projection' else self.gate.tanh()
+        return hard_embedding + scale*self.proj(post_token_hidden)
