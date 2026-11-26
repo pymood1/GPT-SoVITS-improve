@@ -102,7 +102,12 @@ class TeacherCache:
         for v in (x,b,y):
             c=v.detach().cpu().contiguous().clone()
             h.update(str((tuple(c.shape),str(c.dtype))).encode())
-            h.update(bytes(c.untyped_storage()))
+            try:
+                h.update(c.numpy().tobytes())  # bulk conversion when NumPy is installed
+            except RuntimeError as exc:
+                if "Numpy is not available" not in str(exc):
+                    raise
+                h.update(bytes(c.untyped_storage()))
         p=self.path/(h.hexdigest()+".pt")
         expected=F.pad(y,(0,1),value=teacher.EOS)
         if p.exists():
