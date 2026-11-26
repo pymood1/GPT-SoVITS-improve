@@ -113,16 +113,18 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache
     else:
         from TTS_infer_pack.TTS import norm_spec,denorm_spec,mel_fn_v4,resample
         from module.models_v5 import synthesize_v5_mel
-        model,global_mean=bridges[arm]
+        model,global_mean=bridges[arm.split("@")[0]]
+        mode=arm.split("@")[0]
+        scale=float(arm.split("@")[1]) if "@" in arm else 1.
         raw=engine.prompt_cache["refer_spec"][0]
         refer=(raw[0] if isinstance(raw,tuple) else raw).float()
-        if arm=="aligned":
+        if mode=="aligned":
             y=torch.cat((prompt,ids),dim=1)
             xy,mask,_=teacher.make_input_data(x,torch.tensor([x.size(1)],device=x.device),
                                             y,torch.tensor([y.size(1)],device=x.device),b)
             h,_=teacher.h((xy,None),mask=mask)
             hidden=h[:,-ids.size(1):]
-        elif arm=="global_mean":
+        elif mode=="global_mean":
             hidden=global_mean.to(x.device).expand(1,ids.size(1),-1)
         else:
             raise ValueError("Unknown arm")
@@ -130,7 +132,7 @@ def synthesize(engine,student,teacher,ref,target,seed,cap,arm,bridges=None,cache
         original,_=engine.vits_model.decode_encp(ids[:,None,:],tx,refer,ge,1.)
         hard,_=model.features(ids[:,None,:],hidden,tx,refer,enabled=False)
         torch.testing.assert_close(hard,original,rtol=1e-5,atol=1e-5)
-        fea,_=model.features(ids[:,None,:],hidden,tx,refer)
+        fea,_=model.features(ids[:,None,:],hidden,tx,refer,residual_scale=scale)
         ref_audio=engine.prompt_cache["raw_audio"].to(x.device).float()
         if ref_audio.shape[0]==2:
             ref_audio=ref_audio.mean(0,keepdim=True)
@@ -175,6 +177,7 @@ def main():
     p.add_argument("--max-tokens",type=int,default=512)
     p.add_argument("--aligned",type=Path)
     p.add_argument("--global-mean",type=Path)
+    p.add_argument("--arms",nargs="+")
     p.add_argument("--worker-index",type=int,default=0)
     p.add_argument("--worker-count",type=int,default=1)
     args=p.parse_args()
@@ -214,6 +217,9 @@ def main():
                 adapter=SemanticResidualBridge(student.cfg.dim,768,128,initialization="zero_projection")
                 adapter.load_state_dict(saved["adapter"],strict=True)
                 bridges[mode]=(FrozenV5Bridge(engine.vits_model,adapter.cuda()).eval(),saved["global_mean"])
+        arms=args.arms or ["teacher","student",*bridges]
+        if len(set(arms))!=len(arms) or any(a not in ("teacher","student") and a.split("@")[0] not in bridges for a in arms):
+            raise ValueError("Invalid arm selection")
         for ri,ref in enumerate(m["references"]):
             if ri%args.worker_count!=args.worker_index:
                 continue
@@ -221,11 +227,11 @@ def main():
             cache={}
             for ti,target in enumerate(m["targets"]):
                 seed=2027+ri*1009+ti
-                for arm in ("teacher","student",*bridges):
+                for arm in arms:
                     row={"arm":arm,"reference_index":ri+1,"text_index":ti+1,"seed":seed}
                     try:
                         sr,wave,stats=synthesize(engine,student,teacher,ref,target,seed,args.max_tokens,arm,bridges,cache)
-                        name=f"{arm}-{ri+1:02}-{ti+1:02}.wav"
+                        name=f"{arm.replace(chr(64),chr(45))}-{ri+1:02}-{ti+1:02}.wav"
                         sf.write(args.output/name,wave,sr,subtype="PCM_16")
                         row.update(status="ok",file=name,**stats)
                     except Exception as exc:
