@@ -143,3 +143,27 @@ Reversed hidden states remain a diagnostic for the aligned arm. A global
 mean gain suggests a static correction rather than transferred temporal
 information. All reconstruction uses true acoustic codes; no waveform
 naturalness or voice clone claim is made. Production remains untouched.
+
+## Round 4: waveform gate (2026-11-26)
+Round 3 completed: trajectory KD test CE 4.56138, continued KD 4.58072,
+teacher 3.65175. Six sampled rollouts for each student finished below cap;
+maximum repeat 3 versus 7. Matched teacher sampled repeat 3, greedy cap
+6/6. These tiny diagnostics do not establish TTS quality.
+Independent bridge test CFM: hard .300291, aligned .261579, prompt mean
+.263640, global mean .262926, reversed aligned .264890.
+Static correction accounts for most of the observed improvement.
+
+Round 4 pins the completed round-3 kernel and evaluates 24 attempts,
+two previously unused Korean FLEURS references x three distinct target
+transcripts x four arms: teacher, trajectory student, teacher+aligned bridge,
+teacher+global mean bridge. The first 384 training, 32 validation and 24
+previously tested examples are excluded using the same pinned selection.
+Both GPUs process one reference. Teacher-derived tokens are reused exactly
+between teacher and both bridge arms; aligned states are recomputed from
+the same teacher and generated prefix. S2 and vocoder frozen, 32 steps,
+CFG 1.30, common acoustic seed, matched top-k 15, recent-token penalty 1.35.
+An encoder parity gate compares bridge-disabled features with decode_encp.
+Report synthesis failures, cap rates, duration, repetitions, CER, SV cosine
+and private listening samples. Timings are diagnostics only: teacher uses
+full forward, student cached generation, bridge arms reuse semantic tokens.
+No training, production integration or deployment in this round.
