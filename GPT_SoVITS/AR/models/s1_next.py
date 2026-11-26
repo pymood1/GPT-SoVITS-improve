@@ -36,13 +36,16 @@ class RMSNorm(nn.Module):
         return (z * torch.rsqrt(z.square().mean(-1, keepdim=True)+1e-6)).to(x.dtype) * self.weight.to(x.dtype)
 
 
-def rotary(x, pos, theta):
-    # x: [B,H,T,D], pos: [B,T]. Rotate pairs in float32.
-    d = x.shape[-1]
-    freq = theta ** (-torch.arange(0, d, 2, device=x.device, dtype=torch.float32)/d)
-    a = pos.float()[:, None, :, None] * freq
-    even, odd = x.float()[..., 0::2], x.float()[..., 1::2]
-    return torch.stack((even*a.cos()-odd*a.sin(), even*a.sin()+odd*a.cos()), -1).flatten(-2).to(x.dtype)
+def rope_terms(pos, d, theta):
+    freq = theta ** (-torch.arange(0,d,2,device=pos.device,dtype=torch.float32)/d)
+    a = pos.float()[:,None,:,None]*freq
+    return a.cos(), a.sin()
+
+
+def rotary(x, terms):
+    cos,sin=terms
+    even,odd=x.float()[...,0::2],x.float()[...,1::2]
+    return torch.stack((even*cos-odd*sin,even*sin+odd*cos),-1).flatten(-2).to(x.dtype)
 
 
 def prefix_mask(text_len, audio_len, device):
@@ -64,10 +67,10 @@ class Block(nn.Module):
         self.up = nn.Linear(c.dim, c.ff_dim, bias=False)
         self.down = nn.Linear(c.ff_dim, c.dim, bias=False)
 
-    def forward(self, x, pos, mask, cache=None):
+    def forward(self, x, terms, mask, cache=None):
         b, n, d = x.shape
         q,k,v = self.qkv(self.n1(x)).view(b,n,3,self.heads,d//self.heads).permute(2,0,3,1,4).unbind(0)
-        q,k = rotary(q,pos,self.theta), rotary(k,pos,self.theta)
+        q,k = rotary(q,terms), rotary(k,terms)
         if cache is not None:
             k = torch.cat((cache[0], k), dim=2)
             v = torch.cat((cache[1], v), dim=2)
@@ -94,9 +97,10 @@ class S1Next(nn.Module):
 
     def _run(self, x, start, mask, caches=None):
         pos = torch.arange(start,start+x.shape[1],device=x.device).expand(x.shape[0],-1)
+        terms = rope_terms(pos,self.cfg.dim//self.cfg.heads,self.cfg.rope_theta)
         out = []
         for i, block in enumerate(self.blocks):
-            x, kv = block(x,pos,mask,None if caches is None else caches[i])
+            x, kv = block(x,terms,mask,None if caches is None else caches[i])
             out.append(kv)
         return self.final(x), out
 
@@ -159,6 +163,8 @@ class S1Next(nn.Module):
 
 
 def kd_loss(logits, teacher_logits, target, *, temperature=2., alpha=.5):
+    if temperature<=0 or not 0<=alpha<=1:
+        raise ValueError("Invalid KD parameters")
     if logits.shape!=teacher_logits.shape or logits.shape[:-1]!=target.shape:
         raise ValueError("KD alignment mismatch")
     ce=F.cross_entropy(logits.float().flatten(0,1),target.flatten())
@@ -176,6 +182,6 @@ class SemanticResidualBridge(nn.Module):
         self.gate=nn.Parameter(torch.zeros(()))
 
     def forward(self, hard_embedding, post_token_hidden):
-        if hard_embedding.shape[:2]!=post_token_hidden.shape[:2]:
+        if hard_embedding.ndim!=3 or post_token_hidden.ndim!=3 or hard_embedding.shape[:2]!=post_token_hidden.shape[:2]:
             raise ValueError("Semantic frame alignment mismatch")
         return hard_embedding + self.gate.tanh()*self.proj(post_token_hidden)
