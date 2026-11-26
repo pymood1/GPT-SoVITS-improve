@@ -37,7 +37,7 @@ jobs:
               f.write("submit="+str(submit).lower()+"\n")
           if submit:
               cfg=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
-              assert cfg=={"code_sha":commit["parents"][0]["sha"],"profile":"public-fleurs-ko-trajectory-v3","source_kernel":"pymood1/gpt-sovits-s1-next-45739171412"}
+              assert cfg=={"code_sha":commit["parents"][0]["sha"],"profile":"public-fleurs-ko-waveform-v4","source_kernel":"pymood1/gpt-sovits-s1-next-45741706616"}
               assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
           PY
   pilot:
@@ -61,9 +61,10 @@ jobs:
         if: needs.request.outputs.submit == 'true'
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tools/kaggle_s1_next_pilot.py
+          python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tools/kaggle_s1_next_pilot.py tools/kaggle_s1_next_waveforms.py tools/evaluate_s1_next_waveforms.py
           python tests/test_s1_next.py -v
           python tests/test_s1_next_efficiency.py -v
+          python tests/test_s1_next_waveforms.py -v
       - name: Prepare private Kaggle job
         if: needs.request.outputs.submit == 'true'
         id: prepare
@@ -75,7 +76,7 @@ jobs:
           kernel="pymood1/gpt-sovits-s1-next-"+os.environ["GITHUB_RUN_ID"]
           folder=Path(os.environ["RUNNER_TEMP"])/"s1-next-pilot"
           folder.mkdir()
-          script="REQUEST = "+repr(req)+"\n"+Path("tools/kaggle_s1_next_pilot.py").read_text()
+          script="REQUEST = "+repr(req)+"\n"+Path("tools/kaggle_s1_next_waveforms.py").read_text()
           compile(script,"pilot.py","exec")
           (folder/"pilot.py").write_text(script)
           (folder/"kernel-metadata.json").write_text(json.dumps({
