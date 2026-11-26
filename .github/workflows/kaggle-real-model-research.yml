@@ -44,6 +44,19 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Validate deployment path before GPU submission
+        if: steps.request.outputs.submit == 'true'
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          req = json.loads(Path("tools/kaggle_remote_request.json").read_text())
+          if req.get("deploy", False):
+              subprocess.run([sys.executable, "-m", "py_compile", "tools/practical_v5.py",
+                              "tools/kaggle_remote_job.py", "tools/kaggle_grokking_bootstrap.py"], check=True)
+              subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                              "-p", "test_practical_v5.py", "-v"], check=True)
+          PY
       - name: Prepare private pinned Kaggle job
         if: steps.request.outputs.submit == 'true'
         id: prepare
