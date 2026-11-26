@@ -21,7 +21,7 @@ os.environ.setdefault("hz","25hz")
 
 import torch
 from torch.nn import functional as F
-from AR.models.s1_next import NextConfig,S1Next,kd_loss
+from AR.models.s1_next import NextConfig,S1Next,kd_loss,sample_next
 
 
 def teacher_logits(teacher,text,bert,audio):
@@ -139,6 +139,78 @@ def sample_loss(student,teacher,sample,device,args,cache=None):
     return loss,{"ce":float(ce),"kd":float(kl),"teacher_ce":float(teacher_ce),
                  "correct":int(correct),"teacher_correct":int(teacher_correct),"tokens":target.numel()}
 
+def trajectory_kd(student,teacher,x,b,y,*,temperature,seed):
+    """Distill the teacher conditional distribution on short student rollouts.
+    No ground-truth CE on off-policy tokens; preserve aligned teacher/student states.
+    """
+    generator=torch.Generator(device=x.device).manual_seed(seed)
+    prefix=max(1,min(y.size(1)-1,y.size(1)//3))
+    with torch.no_grad():
+        mode=student.training
+        student.eval()
+        try:
+            new,_=student.generate(x,b,y[:,:prefix],max_new=4,min_new=4,
+                                   top_k=15,repetition_penalty=1.,generator=generator)
+        finally:
+            student.train(mode)
+        context=torch.cat((y[:,:prefix],new),dim=1)
+        t,_=teacher_logits(teacher,x,b,context)
+    logits,_=student(x,b,context)
+    # Positions prefix..prefix+len(new) predict the rollout and next token.
+    a=logits[:,prefix:].float()/temperature
+    z=t[:,prefix:].detach().float()/temperature
+    return F.kl_div(F.log_softmax(a,-1),F.softmax(z,-1),reduction="none").sum(-1).mean()*temperature**2
+
+
+@torch.no_grad()
+def teacher_generate(teacher,x,b,prompt,*,cap,top_k,penalty,seed):
+    # Match the student's stop rule and sampler. Full teacher forward is used
+    # deliberately as the reference, rather than the legacy argmax-EOS shortcut.
+    g=torch.Generator(device=x.device).manual_seed(seed)
+    y=prompt
+    for i in range(cap):
+        logits,_=teacher_logits(teacher,x,b,y)
+        token=sample_next(logits[:,-1],y,eos=teacher.EOS,allow_eos=i>=10,
+                          top_k=top_k,repetition_penalty=penalty,generator=g)
+        if token.item()==teacher.EOS:
+            break
+        y=torch.cat((y,token),dim=1)
+    return y[:,prompt.size(1):]
+
+
+@torch.no_grad()
+def rollout_report(student,teacher,data,indices,device,args):
+    results={}
+    for policy,k,penalty in (("greedy",1,1.),("sampled",15,1.35)):
+        for model in ("student","teacher"):
+            if model=="teacher" and not args.teacher_rollout:
+                continue
+            trials=[]
+            for j,i in enumerate(indices[:args.rollout_count]):
+                x,b,y=prepare(data[i],student.cfg,device,args.allow_missing_bert)
+                prefix=min(25,max(1,y.size(1)//4))
+                cap=min(512,max(64,2*(y.size(1)-prefix)))
+                prompt=y[:,:prefix]
+                seed=args.seed+13000+j
+                if model=="student":
+                    g=torch.Generator(device=x.device).manual_seed(seed)
+                    ids,_=student.generate(x,b,prompt,max_new=cap,min_new=10,top_k=k,
+                                           repetition_penalty=penalty,generator=g)
+                else:
+                    ids=teacher_generate(teacher,x,b,prompt,cap=cap,top_k=k,penalty=penalty,seed=seed)
+                longest=run=0
+                prev=None
+                for v in ids[0].tolist():
+                    run=run+1 if v==prev else 1
+                    prev=v
+                    longest=max(longest,run)
+                n=ids.size(1)
+                trials.append((n==cap,n/(y.size(1)-prefix),longest))
+            results[model+"_"+policy]={"count":len(trials),"cap_rate":sum(t[0] for t in trials)/len(trials),
+                    "mean_length_ratio":sum(t[1] for t in trials)/len(trials),
+                    "max_repeat":max(t[2] for t in trials)}
+    return results
+
 
 @torch.no_grad()
 def evaluate(student,teacher,data,indices,device,args,cache=None):
@@ -177,8 +249,13 @@ def main():
     p.add_argument("--max-tokens",type=int,default=1000000)
     p.add_argument("--warmup-steps",type=int,default=50)
     p.add_argument("--rollout-count",type=int,default=0)
+    p.add_argument("--teacher-rollout",action="store_true")
+    p.add_argument("--test",type=Path)
+    p.add_argument("--init-checkpoint",type=Path)
+    p.add_argument("--trajectory-weight",type=float,default=0.)
+    p.add_argument("--trajectory-every",type=int,default=4)
     args=p.parse_args()
-    if min(args.epochs,args.max_steps,args.tokens_per_update,args.max_tokens)<1 or args.warmup_steps<0 or args.lr<=0 or not 0<=args.alpha<=1 or args.temperature<=0:
+    if min(args.epochs,args.max_steps,args.tokens_per_update,args.max_tokens)<1 or args.warmup_steps<0 or args.lr<=0 or not 0<=args.alpha<=1 or args.temperature<=0 or args.trajectory_weight<0 or args.trajectory_every<1:
         p.error("Invalid training settings")
     if args.train.resolve()==args.validation.resolve():
         p.error("Use separate preprocessed training and validation corpora")
@@ -192,7 +269,13 @@ def main():
     if train_ids.keys() & valid_ids.keys():
         raise ValueError("Training/validation IDs overlap")
     student=S1Next(cfg).to(device)
-    if not args.random_init:
+    if args.init_checkpoint:
+        payload=torch.load(args.init_checkpoint,map_location="cpu",weights_only=False)
+        if payload["format"]!="s1-next-v1" or payload["config"]!=asdict(cfg) or payload["teacher_config"]!=teacher_config:
+            raise ValueError("Prior checkpoint contract mismatch")
+        student.load_state_dict(payload["state_dict"],strict=True)
+        del payload
+    elif not args.random_init:
         copied=student.initialize_from_teacher(teacher)
         print("Copied compatible tensors:",copied,flush=True)
     optimizer=torch.optim.AdamW(student.parameters(),lr=args.lr,weight_decay=.01,fused=(device.type=='cuda'))
@@ -207,6 +290,9 @@ def main():
     best=initial["ce"]
     step=0
     total_tokens=0
+    trajectory_count=0
+    trajectory_sum=0.
+    sample_count=0
     # Baseline is saved for reproducibility; a later checkpoint replaces it only on held-out improvement.
     def save(epoch,metrics):
         tmp=checkpoint.with_suffix(".tmp")
@@ -239,7 +325,16 @@ def main():
         for i in indices:
             if step>=args.max_steps or total_tokens>=args.max_tokens:
                 break
-            loss,m=sample_loss(student,teacher,train[i],device,args,cache)
+            sample=train[i]
+            loss,m=sample_loss(student,teacher,sample,device,args,cache)
+            sample_count+=1
+            if args.trajectory_weight and sample_count%args.trajectory_every==0:
+                x,b,y=prepare(sample,cfg,device,args.allow_missing_bert)
+                if y.size(1)>=2:
+                    extra=trajectory_kd(student,teacher,x,b,y,temperature=args.temperature,seed=args.seed+sample_count)
+                    loss=loss+args.trajectory_weight*extra
+                    trajectory_count+=1
+                    trajectory_sum+=float(extra.detach())
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite loss")
             (loss*m["tokens"]).backward()
@@ -258,39 +353,32 @@ def main():
                           "seconds":time.monotonic()-started}),flush=True)
         history.append({"epoch":epoch,"step":step,"tokens":total_tokens,"validation":metrics})
         (args.output/"metrics.json").write_text(json.dumps({"status":"completed_epoch","history":history,
-                    "cache_hits":cache.hits,"cache_misses":cache.misses,"seconds":time.monotonic()-started},allow_nan=False,indent=2))
+                    "cache_hits":cache.hits,"cache_misses":cache.misses,"seconds":time.monotonic()-started,"trajectory_count":trajectory_count,
+                    "trajectory_mean":trajectory_sum/max(1,trajectory_count)},allow_nan=False,indent=2))
         if metrics["ce"]<best:
             best=metrics["ce"]
             save(epoch,metrics)
         if step>=args.max_steps or total_tokens>=args.max_tokens:
             break
 
-    # Free-running diagnostic, not a waveform quality metric. Use best held-out CE checkpoint.
-    if args.rollout_count>0:
-        saved=torch.load(checkpoint,map_location="cpu",weights_only=False)
-        student.load_state_dict(saved["state_dict"],strict=True)
-        student.eval()
-        trials=[]
-        for i in val_indices[:args.rollout_count]:
-            x,b,y=prepare(valid[i],cfg,device,args.allow_missing_bert)
-            prefix=min(25,max(1,y.size(1)//4))
-            cap=min(512,max(64,2*(y.size(1)-prefix)))
-            ids,_=student.generate(x,b,y[:,:prefix],max_new=cap,min_new=1,top_k=1)
-            n=ids.size(1)
-            longest=run=0
-            prev=None
-            for v in ids[0].tolist():
-                run=run+1 if v==prev else 1
-                prev=v
-                longest=max(longest,run)
-            trials.append({"generated":n,"target":y.size(1)-prefix,
-                           "hit_cap":n==cap,"longest_repeat":longest})
-        path=args.output/"metrics.json"
-        report=json.loads(path.read_text())
-        report["rollout"]={"count":len(trials),"cap_rate":sum(t["hit_cap"] for t in trials)/len(trials),
-                           "mean_length_ratio":sum(t["generated"]/t["target"] for t in trials)/len(trials),
-                           "max_repeat":max(t["longest_repeat"] for t in trials)}
-        path.write_text(json.dumps(report,allow_nan=False,indent=2))
+    # Test split never influences checkpoint selection.
+    saved=torch.load(checkpoint,map_location="cpu",weights_only=False)
+    student.load_state_dict(saved["state_dict"],strict=True)
+    student.eval()
+    path=args.output/"metrics.json"
+    report=json.loads(path.read_text())
+    report["selected_validation"]=saved["validation"]
+    if args.test:
+        test,test_ids=dataset(args.test,cfg,teacher_config)
+        if test_ids.keys() & (train_ids.keys() | valid_ids.keys()):
+            raise ValueError("Test IDs overlap")
+        report["test"]=evaluate(student,teacher,test,list(test_ids.values()),device,args,cache)
+        rollout_data,rollout_indices=test,list(test_ids.values())
+    else:
+        rollout_data,rollout_indices=valid,val_indices
+    if args.rollout_count:
+        report["rollout"]=rollout_report(student,teacher,rollout_data,rollout_indices,device,args)
+    path.write_text(json.dumps(report,allow_nan=False,indent=2))
 
 
 
