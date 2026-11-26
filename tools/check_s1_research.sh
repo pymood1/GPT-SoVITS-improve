@@ -23,3 +23,5 @@ python -m py_compile tools/train_s1_rms_polish.py tools/evaluate_s1_rms_waveform
 PYTHONPATH=.:GPT_SoVITS python tools/train_s1_rms_polish.py --selftest
 python -m py_compile tools/kaggle_s1_rms_listen.py tools/evaluate_s1_rms_listen.py
 PYTHONPATH=.:GPT_SoVITS python tools/kaggle_s1_live_status.py --selftest
+python -m py_compile tools/s1_waveform_frontend.py
+python tools/s1_waveform_frontend.py
