@@ -47,45 +47,60 @@ def main():
         corpus=Path("/kaggle/tmp/s1-next-fleurs")
         report["stage"]="public_corpus"
         subprocess.run([sys.executable,"-u",str(ROOT/"tools/prepare_s1_next_fleurs.py"),
-                        "--root",str(corpus),"--teacher",str(teacher),"--train-count","64",
-                        "--val-count","16"],cwd=ROOT,env=env,check=True)
+                        "--root",str(corpus),"--teacher",str(teacher),"--train-count","256",
+                        "--val-count","32"],cwd=ROOT,env=env,check=True)
         # Shared public corpus; two independent GPU workers. No personal dataset mount.
         report["stage"]="parallel_pilots"
         common=["--teacher",str(teacher),"--train",str(corpus/"train"),
                 "--validation",str(corpus/"validation")]
         train_env=dict(env,CUDA_VISIBLE_DEVICES="0")
         bridge_env=dict(env,CUDA_VISIBLE_DEVICES="1")
-        train=[sys.executable,"-u",str(ROOT/"tools/train_s1_next.py"),*common,
-               "--output",str(OUT/"s1"),"--epochs","3","--max-steps","40",
-               "--max-tokens","40000","--tokens-per-update","1024","--warmup-steps","5",
-               "--teacher-cache","/kaggle/tmp/s1-next-teacher-cache"]
         provenance=json.loads((corpus/"train/provenance.json").read_text())
+        train=[sys.executable,"-u",str(ROOT/"tools/train_s1_next.py"),*common,
+               "--epochs","8","--max-steps","400","--max-tokens","400000",
+               "--tokens-per-update","1024","--warmup-steps","20",
+               "--rollout-count","4","--teacher-cache","/kaggle/tmp/s1-next-teacher-cache"]
         if not provenance["multilingual_bert"]:
             train.append("--allow-missing-bert")
         bridge=[sys.executable,"-u",str(ROOT/"tools/train_s1_next_bridge_pilot.py"),*common,
-                "--s2",str(s2),"--output",str(OUT/"bridge")]
-        with (OUT/"s1.log").open("w") as l1,(OUT/"bridge.log").open("w") as l2:
-            p1=subprocess.Popen(train,cwd=ROOT,env=train_env,stdout=l1,stderr=subprocess.STDOUT)
-            p2=subprocess.Popen(bridge,cwd=ROOT,env=bridge_env,stdout=l2,stderr=subprocess.STDOUT)
+                "--s2",str(s2),"--output",str(OUT/"bridge"),"--train-count","24",
+                "--val-count","8","--epochs","4","--compare-initializations"]
+        report["s1"]={}
+        report["s1_exit"]={}
+        with (OUT/"bridge.log").open("w") as log:
+            p2=subprocess.Popen(bridge,cwd=ROOT,env=bridge_env,stdout=log,stderr=subprocess.STDOUT)
             try:
-                while p1.poll() is None or p2.poll() is None:
-                    print("[pilot] S1",p1.poll(),"bridge",p2.poll(),flush=True)
+                for name,alpha in (("kd","0.5"),("ce","0.0")):
+                    with (OUT/(name+".log")).open("w") as l1:
+                        p1=subprocess.Popen(train+["--output",str(OUT/name),"--alpha",alpha],
+                                            cwd=ROOT,env=train_env,stdout=l1,stderr=subprocess.STDOUT)
+                        try:
+                            while p1.poll() is None:
+                                print("[pilot] S1",name,"bridge",p2.poll(),flush=True)
+                                time.sleep(15)
+                        finally:
+                            if p1.poll() is None:
+                                p1.terminate()
+                                p1.wait()
+                    report["s1_exit"][name]=p1.returncode
+                    f=OUT/name/"metrics.json"
+                    if f.is_file():
+                        report["s1"][name]=json.loads(f.read_text())
+                while p2.poll() is None:
+                    print("[pilot] S1 arms finished; bridge running",flush=True)
                     time.sleep(15)
             finally:
-                for p in (p1,p2):
-                    if p.poll() is None:
-                        p.terminate()
-                        p.wait()
-        report["s1_exit"]=p1.returncode
+                if p2.poll() is None:
+                    p2.terminate()
+                    p2.wait()
         report["bridge_exit"]=p2.returncode
-        for name in ("s1","bridge"):
-            f=OUT/name/"metrics.json"
-            if f.is_file():
-                report[name]=json.loads(f.read_text())
-        if p1.returncode==p2.returncode==0 and "s1" in report and "bridge" in report:
+        f=OUT/"bridge/metrics.json"
+        if f.is_file():
+            report["bridge"]=json.loads(f.read_text())
+        if all(report["s1_exit"].get(n)==0 and n in report["s1"] for n in ("kd","ce")) and p2.returncode==0 and "bridge" in report:
             report.update(status="completed",stage="finished")
         else:
-            report["status"]="partial" if "s1" in report or "bridge" in report else "failed"
+            report["status"]="partial" if report["s1"] or "bridge" in report else "failed"
     except Exception as exc:
         report["error_type"]=type(exc).__name__
         import traceback
