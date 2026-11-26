@@ -387,3 +387,28 @@ choosing candidates. Nine arms x two references, matched gain-only
 listening copies, normalized reference WAVs for speaker comparison.
 No new synthesis, training, or model modification. A lower mel-outlier
 fraction is not itself evidence of lower audible noise.
+
+## Fixed-mel tail factorial (2026-11-27 KST)
+Scoring run 45910192924 completed all 18 samples with CT2 CUDA float32
+and CUDA FP32 speaker scoring. Aggregate CER / speaker cosine:
+raw CFG1.30 .37037/.82373; hard clamp .31481/.82655;
+raw CFG.50 .35185/.50339; raw CFG.80 .29630/.74066;
+gain CFG.80 .29630/.75127; mel-only gain CFG.80 .37037/.74489;
+encoder-only gain CFG.80 .37037/.76241; CFG0 .48148/.30504;
+prior CFG1.30 full reference gain .31481/.83617.
+These are two references and a single target, not a held-out generalization
+claim. Noise reduction is not established by CER, SV or mel outlier count.
+Reject CFG lowering as the primary solution; retain CFG1.30 for this test.
+
+Next: reuse the exact saved CFG1.30 raw and full-reference-gain mels
+from isolation run 45849884407. Cross raw/gain with identity, hard
+clamp [-12,2], and soft tail compression (identity within bounds,
+tanh compression of excursions with scale 2). 12 paired waveforms;
+no new CFM draw, S1 inference or training. Require identity PCM replay
+within one 16-bit LSB. Score all 12 with strict FP32 CER/SV and
+gain-invariant quiet-frame and high-frequency descriptive proxies.
+No perceptual noise claim from those proxies. Preserve level-matched
+audio for blind listening. Compare effects within each reference;
+only candidates that preserve intelligibility and speaker identity
+are eligible for fresh multi-reference, multi-text held-out trials.
+Do not modify production main or checkpoints.
