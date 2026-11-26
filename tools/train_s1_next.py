@@ -4,6 +4,9 @@ Run only with trusted local teacher checkpoints and private data.
 Not a replacement for the production trainer. No S2 or dataset changes.
 """
 import argparse
+import hashlib
+import math
+import time
 import json
 import os
 import random
@@ -74,9 +77,54 @@ def prepare(sample,cfg,device,allow_missing_bert=False):
     return x,b,y
 
 
-def sample_loss(student,teacher,sample,device,args):
+def checkpoint_digest(path):
+    h=hashlib.sha256()
+    with open(path,"rb") as f:
+        for block in iter(lambda:f.read(1024*1024),b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+class TeacherCache:
+    """Exact FP32 CPU logits, content-addressed by teacher and actual input tensors."""
+    def __init__(self,path,teacher_digest):
+        self.path=Path(path) if path else None
+        self.identity=teacher_digest
+        self.hits=self.misses=0
+        if self.path:
+            self.path.mkdir(parents=True,exist_ok=True)
+
+    def get(self,teacher,x,b,y):
+        if self.path is None:
+            self.misses+=1
+            return teacher_logits(teacher,x,b,y)
+        h=hashlib.sha256(("s1-next-kd-v1:"+self.identity).encode())
+        for v in (x,b,y):
+            c=v.detach().contiguous().cpu()
+            h.update(str((tuple(c.shape),str(c.dtype))).encode())
+            h.update(c.numpy().tobytes())
+        p=self.path/(h.hexdigest()+".pt")
+        expected=F.pad(y,(0,1),value=teacher.EOS)
+        if p.exists():
+            cached=torch.load(p,map_location="cpu",weights_only=True)
+            if cached.shape != (*expected.shape,teacher.EOS+1) or cached.dtype!=torch.float32 or not torch.isfinite(cached).all():
+                raise ValueError("Invalid teacher cache entry")
+            self.hits+=1
+            return cached.to(x.device),expected
+        logits,target=teacher_logits(teacher,x,b,y)
+        self.misses+=1
+        tmp=p.with_suffix(".%s.tmp"%os.getpid())
+        try:
+            torch.save(logits.detach().float().cpu(),tmp)
+            os.replace(tmp,p)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return logits,target
+
+
+def sample_loss(student,teacher,sample,device,args,cache=None):
     x,b,y=prepare(sample,student.cfg,device,args.allow_missing_bert)
-    t,target=teacher_logits(teacher,x,b,y)
+    t,target=cache.get(teacher,x,b,y) if cache else teacher_logits(teacher,x,b,y)
     logits,_=student(x,b,y)
     loss,ce,kl=kd_loss(logits,t,target,temperature=args.temperature,alpha=args.alpha)
     with torch.no_grad():
@@ -87,11 +135,11 @@ def sample_loss(student,teacher,sample,device,args):
 
 
 @torch.no_grad()
-def evaluate(student,teacher,data,indices,device,args):
+def evaluate(student,teacher,data,indices,device,args,cache=None):
     student.eval()
     result={"ce":0.,"kd":0.,"teacher_ce":0.,"correct":0,"tokens":0}
     for i in indices:
-        _,m=sample_loss(student,teacher,data[i],device,args)
+        _,m=sample_loss(student,teacher,data[i],device,args,cache)
         for key in ("ce","kd","teacher_ce"):
             result[key]+=m[key]*m["tokens"]
         for key in ("correct","tokens"):
@@ -117,8 +165,12 @@ def main():
     p.add_argument("--seed",type=int,default=2027)
     p.add_argument("--allow-missing-bert",action="store_true")
     p.add_argument("--random-init",action="store_true")
+    p.add_argument("--teacher-cache",type=Path)
+    p.add_argument("--tokens-per-update",type=int,default=2048)
+    p.add_argument("--max-tokens",type=int,default=1000000)
+    p.add_argument("--warmup-steps",type=int,default=50)
     args=p.parse_args()
-    if min(args.epochs,args.max_steps)<1 or args.lr<=0 or not 0<=args.alpha<=1 or args.temperature<=0:
+    if min(args.epochs,args.max_steps,args.tokens_per_update,args.max_tokens)<1 or args.warmup_steps<0 or args.lr<=0 or not 0<=args.alpha<=1 or args.temperature<=0:
         p.error("Invalid training settings")
     if args.train.resolve()==args.validation.resolve():
         p.error("Use separate preprocessed training and validation corpora")
@@ -126,6 +178,7 @@ def main():
     torch.manual_seed(args.seed)
     device=torch.device(args.device)
     teacher,cfg,teacher_config=load_teacher(args.teacher,device)
+    cache=TeacherCache(args.teacher_cache,checkpoint_digest(args.teacher) if args.teacher_cache else '')
     train,train_ids=dataset(args.train,cfg,teacher_config)
     valid,valid_ids=dataset(args.validation,cfg,teacher_config)
     if train_ids.keys() & valid_ids.keys():
@@ -134,48 +187,72 @@ def main():
     if not args.random_init:
         copied=student.initialize_from_teacher(teacher)
         print("Copied compatible tensors:",copied,flush=True)
-    optimizer=torch.optim.AdamW(student.parameters(),lr=args.lr,weight_decay=.01)
+    optimizer=torch.optim.AdamW(student.parameters(),lr=args.lr,weight_decay=.01,fused=(device.type=='cuda'))
     args.output.mkdir(parents=True,exist_ok=True)
     checkpoint=args.output/"s1-next-best.pt"
     if checkpoint.exists():
         raise FileExistsError("Use a fresh output directory; no silent overwrite")
     val_indices=list(valid_ids.values())
-    initial=evaluate(student,teacher,valid,val_indices,device,args)
+    started=time.monotonic()
+    initial=evaluate(student,teacher,valid,val_indices,device,args,cache)
     print(json.dumps({"event":"initial","validation":initial}),flush=True)
     best=initial["ce"]
     step=0
+    total_tokens=0
     # Baseline is saved for reproducibility; a later checkpoint replaces it only on held-out improvement.
     def save(epoch,metrics):
         tmp=checkpoint.with_suffix(".tmp")
         torch.save({"format":"s1-next-v1","config":asdict(cfg),"state_dict":student.state_dict(),
-                    "step":step,"epoch":epoch,"validation":metrics,
+                    "step":step,"epoch":epoch,"tokens":total_tokens,"validation":metrics,
                     "teacher_config":teacher_config},tmp)
         os.replace(tmp,checkpoint)
     save(0,initial)
+    def update(tokens):
+        nonlocal step
+        # Each microbatch loss was multiplied by its token count; normalize once.
+        for p in student.parameters():
+            if p.grad is not None:
+                p.grad.div_(tokens)
+        torch.nn.utils.clip_grad_norm_(student.parameters(),1.,error_if_nonfinite=True)
+        progress=min(1.,step/max(1,args.max_steps))
+        warm=min(1.,(step+1)/max(1,args.warmup_steps))
+        optimizer.param_groups[0]["lr"]=args.lr*warm*(.1+.9*.5*(1+math.cos(math.pi*progress)))
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        step+=1
+
     for epoch in range(1,args.epochs+1):
         student.train()
         indices=list(train_ids.values())
         random.Random(args.seed+epoch).shuffle(indices)
+        pending=0
+        optimizer.zero_grad(set_to_none=True)
         for i in indices:
-            if step>=args.max_steps:
+            if step>=args.max_steps or total_tokens>=args.max_tokens:
                 break
-            optimizer.zero_grad(set_to_none=True)
-            loss,m=sample_loss(student,teacher,train[i],device,args)
+            loss,m=sample_loss(student,teacher,train[i],device,args,cache)
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite loss")
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(student.parameters(),1.,error_if_nonfinite=True)
-            optimizer.step()
-            step+=1
-            if step%25==0:
-                print(json.dumps({"step":step,"ce":m["ce"],"kd":m["kd"]}),flush=True)
-        metrics=evaluate(student,teacher,valid,val_indices,device,args)
-        print(json.dumps({"epoch":epoch,"step":step,"validation":metrics}),flush=True)
+            (loss*m["tokens"]).backward()
+            pending+=m["tokens"]
+            total_tokens+=m["tokens"]
+            if pending>=args.tokens_per_update or total_tokens>=args.max_tokens:
+                update(pending)
+                pending=0
+                if step%25==0:
+                    print(json.dumps({"step":step,"tokens":total_tokens,"ce":m["ce"],"kd":m["kd"]}),flush=True)
+        if pending and step<args.max_steps:
+            update(pending)
+        metrics=evaluate(student,teacher,valid,val_indices,device,args,cache)
+        print(json.dumps({"epoch":epoch,"step":step,"tokens":total_tokens,"validation":metrics,
+                          "cache_hits":cache.hits,"cache_misses":cache.misses,
+                          "seconds":time.monotonic()-started}),flush=True)
         if metrics["ce"]<best:
             best=metrics["ce"]
             save(epoch,metrics)
-        if step>=args.max_steps:
+        if step>=args.max_steps or total_tokens>=args.max_tokens:
             break
+
 
 
 if __name__=="__main__":
