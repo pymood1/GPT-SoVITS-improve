@@ -6571,6 +6571,12 @@ def sync(text):
     return {"__type__": "update", "value": text}
 
 
+# Reuse canonical preprocessing callbacks without starting a Gradio server.
+if __name__ == "__main__" and os.environ.get("GPT_SOVITS_KAGGLE_GROKKING") == "1":
+    from tools.kaggle_grokking_runner import run as run_kaggle_grokking
+    raise SystemExit(run_kaggle_grokking(sys.modules[__name__]))
+
+
 with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css, fill_width=True) as app:
     gr.HTML(
         top_html.format(

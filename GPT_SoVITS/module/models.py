@@ -1356,7 +1356,7 @@ class SynthesizerTrnV3(nn.Module):
         return cfm_loss
 
     @torch.no_grad()
-    def decode_encp(self, codes, text, refer, ge=None, speed=1):
+    def decode_encp(self, codes, text, refer, ge=None, speed=1, soft_probabilities=None, soft_mix=0.0):
         # print(2333333,refer.shape)
         # ge=None
         if ge == None:
@@ -1371,7 +1371,12 @@ class SynthesizerTrnV3(nn.Module):
         y_lengths1 = torch.LongTensor([sizee]).to(codes.device)
         text_lengths = torch.LongTensor([text.size(-1)]).to(text.device)
 
-        quantized = self.quantizer.decode(codes)
+        if soft_probabilities is not None:
+            if self.version not in ("v5dev", "v5turbo"):
+                raise ValueError("Soft semantic decode is restricted to V5")
+            quantized = self.quantizer.decode_soft(codes, soft_probabilities, soft_mix)
+        else:
+            quantized = self.quantizer.decode(codes)
         if self.semantic_frame_rate == "25hz":
             quantized = F.interpolate(quantized, scale_factor=2, mode="nearest")  ##BCT
         x, m_p, logs_p, y_mask, _, _ = self.enc_p(quantized, y_lengths, text, text_lengths, ge, speed)

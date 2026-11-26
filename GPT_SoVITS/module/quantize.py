@@ -104,6 +104,11 @@ class ResidualVectorQuantizer(nn.Module):
         codes = self.vq.encode(x, n_q=n_q, st=st)
         return codes
 
+    def decode_soft(self, codes: torch.Tensor, probabilities: torch.Tensor, mix: float = 1.0) -> torch.Tensor:
+        """Opt-in single-layer soft decode; caller aligns GPT vocabulary and time."""
+        from module.soft_semantics import decode_soft_single_layer
+        return decode_soft_single_layer(self, codes, probabilities, mix)
+
     def decode(self, codes: torch.Tensor, st: int = 0) -> torch.Tensor:
         """Decode the given codes to the quantized representation.
         Args:

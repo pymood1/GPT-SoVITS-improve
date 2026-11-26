@@ -2,6 +2,11 @@ name: Python compatibility check
 
 on:
   pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "tools/kaggle_remote_request.json"
   push:
     branches:
       - main
@@ -72,6 +77,11 @@ jobs:
           uv pip install --system \
             "torch>=2.10" \
             "transformers>=4.51,<5"
+      - name: Check grokking experiment utilities
+        run: |
+          python tests/test_grokking_utils.py
+          python tests/test_grokking_cfm_probe.py
+
       - name: Check multilingual BERT feature helpers
         env:
           PYTHONPATH: GPT_SoVITS

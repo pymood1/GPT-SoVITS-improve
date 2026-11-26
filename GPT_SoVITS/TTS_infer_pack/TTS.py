@@ -1375,6 +1375,18 @@ class TTS:
         cfg_rate = inputs.get("cfg_rate")
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
         cfg_rate = (1.30 if self.configs.version == "v5dev" else 0.0) if cfg_rate is None else float(cfg_rate)
+        soft_probe = "soft_semantic_mix" in inputs
+        soft_mix = float(inputs.get("soft_semantic_mix", 0.0))
+        if soft_probe:
+            if not math.isfinite(soft_mix) or not 0.0 <= soft_mix <= 1.0:
+                raise ValueError("soft_semantic_mix must be finite and in [0, 1]")
+            if (self.configs.version not in V5_VERSIONS or parallel_infer or batch_size != 1
+                    or inputs.get("streaming_mode", False) or return_fragment or emotion_enabled or not prompt_text.strip()):
+                raise ValueError("Soft semantic research requires prompted V5 serial non-streaming inference, batch size 1, no emotion steering")
+        research_style_ge = inputs.get("research_style_ge")
+        if research_style_ge is not None and (self.configs.version not in V5_VERSIONS or parallel_infer or batch_size != 1
+                or inputs.get("streaming_mode", False) or return_fragment or emotion_enabled or not prompt_text.strip()):
+            raise ValueError("Research style override requires prompted V5 serial non-streaming inference")
         self.apply_cache_dit(inputs, sample_steps)
         super_sampling = inputs.get("super_sampling", False)
         streaming_mode = inputs.get("streaming_mode", False)
@@ -1591,7 +1603,7 @@ class TTS:
                     if self.t2s_accel is not None and self.t2s_accel.max_batch_size != accel_batch_size:
                         self.t2s_accel.close()
                         self.t2s_accel = None
-                    if self.t2s_accel is None and not emotion_enabled:
+                    if self.t2s_accel is None and not emotion_enabled and not soft_probe:
                         self.t2s_accel = create_acceleration(
                             self.configs.t2s_weights_path,
                             device=torch.device(self.configs.device),
@@ -1604,10 +1616,11 @@ class TTS:
                     # would bypass the S1 emotion tilt. Only emotion-enabled
                     # requests fall back to the ordinary infer_panel path.
                     use_accel = (
-                        not emotion_enabled
+                        not emotion_enabled and not soft_probe
                         and self.t2s_accel is not None
                         and self.t2s_accel.prepare(use_cuda_graph, use_flash_attention)
                     )
+                    soft_traces = [] if soft_probe else None
                     if use_accel:
                         pred_semantic_list, idx_list = [], []
                         for start in range(0, len(all_phoneme_ids), accel_batch_size):
@@ -1642,7 +1655,10 @@ class TTS:
                             repetition_penalty=repetition_penalty,
                             emotion_id=emotion_id if emotion_enabled else None,
                             emotion_strength=emotion_strength,
+                            **({"soft_probability_traces": soft_traces} if soft_probe else {}),
                         )
+                    if soft_probe and len(soft_traces) != len(idx_list):
+                        raise RuntimeError("Soft semantic probability trace count mismatch")
                     t4 = time.perf_counter()
                     t_34 += t4 - t3
 
@@ -1714,7 +1730,9 @@ class TTS:
                                 )  # .unsqueeze(0)#mq要多unsqueeze一次
                                 audio_fragment = self.using_vocoder_synthesis(
                                     _pred_semantic, phones, speed=speed_factor,
-                                    sample_steps=sample_steps, cfg_rate=cfg_rate
+                                    sample_steps=sample_steps, cfg_rate=cfg_rate,
+                                    **({"soft_probabilities": soft_traces[i], "soft_mix": soft_mix} if soft_probe else {}),
+                                    research_style_ge=research_style_ge,
                                 )
                                 batch_audio_fragment.append(audio_fragment)
 
@@ -1919,7 +1937,7 @@ class TTS:
     ) -> Tuple[int, np.ndarray]:
         if fragment_interval>0:
             zero_wav = torch.zeros(
-                int(self.configs.sampling_rate * fragment_interval), dtype=self.precision, device=self.configs.device
+                int(sr * fragment_interval), dtype=self.precision, device=self.configs.device
             )
 
         for i, batch in enumerate(audio):
@@ -1937,6 +1955,15 @@ class TTS:
             audio = sum(audio, [])
 
         audio = torch.cat(audio, dim=0)
+        # Check floating-point output before integer quantization can hide NaN/Inf.
+        if not bool(torch.isfinite(audio).all()):
+            raise RuntimeError("Nonfinite synthesized waveform")
+
+        def pcm16(samples):
+            samples = np.asarray(samples, dtype=np.float32)
+            if not np.isfinite(samples).all():
+                raise RuntimeError("Nonfinite waveform before PCM conversion")
+            return np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
 
         if super_sampling:
             print(f"############ {i18n('音频超采样')} ############")
@@ -1947,15 +1974,15 @@ class TTS:
                 max_audio = np.abs(audio).max()
                 if max_audio > 1:
                     audio /= max_audio
-                audio = (audio * 32768).astype(np.int16)
+                audio = pcm16(audio)
             else:
                 audio = audio.cpu().numpy()
-                audio = (audio * 32768).astype(np.int16)
+                audio = pcm16(audio)
             t2 = time.perf_counter()
             print(f"超采样用时：{t2 - t1:.3f}s")
         else:
             audio = audio.cpu().numpy()
-            audio = (audio * 32768).astype(np.int16)
+            audio = pcm16(audio)
 
 
         # try:
@@ -1968,7 +1995,8 @@ class TTS:
 
     def using_vocoder_synthesis(
         self, semantic_tokens: torch.Tensor, phones: torch.Tensor, speed: float = 1.0,
-        sample_steps: int = None, cfg_rate: float = None
+        sample_steps: int = None, cfg_rate: float = None,
+        soft_probabilities=None, soft_mix: float = 0.0, research_style_ge=None,
     ):
         sample_steps = (4 if self.configs.version == "v5turbo" else 32) if sample_steps is None else int(sample_steps)
         cfg_rate = (1.30 if self.configs.version == "v5dev" else 0.0) if cfg_rate is None else float(cfg_rate)
@@ -1994,7 +2022,15 @@ class TTS:
         mel2 = mel_fn(ref_audio) if self.configs.version == "v3" else mel_fn_v4(ref_audio)
         mel2 = norm_spec(mel2)
         if self.configs.version in V5_VERSIONS:
-            fea_todo, _ = self.vits_model.decode_encp(semantic_tokens, phones, refer_audio_spec, ge, speed)
+            target_ge = ge
+            if research_style_ge is not None:
+                if not isinstance(research_style_ge, torch.Tensor) or research_style_ge.shape != ge.shape or not torch.isfinite(research_style_ge).all():
+                    raise ValueError("Invalid research style override")
+                target_ge = research_style_ge.to(device=ge.device, dtype=ge.dtype)
+            fea_todo, _ = self.vits_model.decode_encp(
+                semantic_tokens, phones, refer_audio_spec, target_ge, speed,
+                **({"soft_probabilities": soft_probabilities, "soft_mix": soft_mix} if soft_probabilities is not None else {}),
+            )
             mel = synthesize_v5_mel(
                 self.vits_model, fea_ref, fea_todo, mel2.to(self.precision), sample_steps, cfg_rate,
             )

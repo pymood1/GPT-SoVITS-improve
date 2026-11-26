@@ -3,6 +3,10 @@ import warnings
 warnings.filterwarnings("ignore")
 import os
 import sys
+import copy
+import json
+import math
+import time
 from pathlib import Path
 
 import utils
@@ -12,6 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.runtime_status import clear_activity, publish_activity
+from tools.grokking import (
+    deterministic_holdout_indices,
+    repeat_indices_to_minimum,
+    gradfilter_ema,
+    parameter_l2_norm,
+    resolve_grokking_config,
+)
 
 hps = utils.get_hparams(stage=2)
 os.environ["version"] = hps.model.version
@@ -110,6 +121,71 @@ def run(rank, n_gpus, hps):
             dist.destroy_process_group()
 
 
+def _split_cfm_dataset(dataset, cfg):
+    # V3/V4/V5 loaders expose names and bucket lengths in parallel arrays.
+    train_ids, val_ids = deterministic_holdout_indices(
+        [row[0] for row in dataset.audiopaths_sid_text],
+        fraction=float(cfg["validation_fraction"]),
+        min_validation_samples=int(cfg["min_validation_samples"]),
+        seed=int(cfg["seed"]),
+    )
+    def view(indices):
+        result = copy.copy(dataset)
+        result.audiopaths_sid_text = [dataset.audiopaths_sid_text[i] for i in indices]
+        result.lengths = [dataset.lengths[i] for i in indices]
+        return result
+    return view(repeat_indices_to_minimum(train_ids, 100)), view(val_ids)
+
+
+@torch.no_grad()
+def _validate_cfm(model, loader, rank, cfg, sample_losses=None):
+    # CFM samples both prompt length and noise/time. Compare exactly the
+    # same held-out utterances and two deterministic draws at every epoch.
+    dev = torch.device("cuda", rank) if torch.cuda.is_available() else torch.device("cpu")
+    was_training = model.training
+    model.eval()
+    values = []
+    try:
+        devices = [rank] if dev.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            for index, batch in enumerate(loader):
+                if index >= int(cfg["max_validation_batches"]):
+                    break
+                batch = [tensor.to(dev) for tensor in batch]
+                for draw in range(2):
+                    seed = int(cfg["seed"]) + 1009 * index + 37 * draw
+                    torch.random.default_generator.manual_seed(seed)
+                    if dev.type == "cuda":
+                        torch.cuda.manual_seed(seed)
+                    with autocast(enabled=False):
+                        value = float(model(*batch, use_grad_ckpt=False).detach().float().item())
+                    if not math.isfinite(value):
+                        raise RuntimeError("Non-finite held-out CFM loss")
+                    values.append(value)
+                if sample_losses is not None:
+                    sample_losses.append(sum(values[-2:]) / 2)
+    finally:
+        model.train(was_training)
+    if not values:
+        raise RuntimeError("Empty CFM validation set")
+    return sum(values) / len(values)
+
+
+def _save_cfm_best(model, hps, epoch):
+    weights = od(
+        (key, value.detach().half().cpu())
+        for key, value in model.state_dict().items()
+        if key not in no_grad_names
+    )
+    Path(hps.save_weight_dir).mkdir(parents=True, exist_ok=True)
+    result = savee(
+        weights, hps.name + "_grok_cfm_best", epoch, global_step, hps,
+        model_version=hps.model.version, lora_rank=lora_rank,
+    )
+    if result != "Success.":
+        raise RuntimeError("CFM best export failed: " + str(result))
+
+
 def _run(rank, n_gpus, hps, use_ddp):
     global global_step, no_grad_names, save_root, lora_rank
     if rank == 0:
@@ -126,6 +202,26 @@ def _run(rank, n_gpus, hps, use_ddp):
     TextAudioSpeakerLoader = TextAudioSpeakerLoaderV3 if hps.model.version == "v3" else TextAudioSpeakerLoaderV4
     TextAudioSpeakerCollate = TextAudioSpeakerCollateV3 if hps.model.version == "v3" else TextAudioSpeakerCollateV4
     train_dataset = TextAudioSpeakerLoader(hps.data)  ########
+    grokking = resolve_grokking_config(hps.train, "s2")
+    base_epochs = int(hps.train.epochs)
+    eval_dataset = None
+    if grokking["enabled"]:
+        if int(grokking["max_validation_batches"]) < 1:
+            raise ValueError("CFM probe requires at least one validation batch")
+        train_dataset, eval_dataset = _split_cfm_dataset(train_dataset, grokking)
+        metrics_path = Path(hps.data.exp_dir) / "grokking_s2_cfm_metrics.jsonl"
+        best_path = Path(hps.save_weight_dir) / (hps.name + "_grok_cfm_best.pth")
+        if metrics_path.exists() or best_path.exists():
+            raise RuntimeError("CFM grokking requires a fresh experiment name/output directory")
+        if not hps.train.pretrained_s2G or not os.path.isfile(hps.train.pretrained_s2G):
+            raise RuntimeError("CFM grokking requires an upstream pretrained S2 checkpoint")
+        fixed_epochs = int(os.environ.get("GPT_SOVITS_GROKKING_S2_FIXED_EPOCHS", "0"))
+        if fixed_epochs < 0:
+            raise ValueError("fixed S2 epoch budget must be nonnegative")
+        hps.train.epochs = fixed_epochs or (base_epochs + 4 * int(grokking["s2_post_fit_epochs"]))
+        if rank == 0:
+            logger.info("[grokking:CFM] version=%s train=%s heldout=%s hard_max=%s",
+                        hps.model.version, len(train_dataset), len(eval_dataset), hps.train.epochs)
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size,
@@ -169,7 +265,30 @@ def _run(rank, n_gpus, hps, use_ddp):
         train_dataset,
         **loader_kwargs,
     )
+    eval_loader = None
+    train_probe_loader = None
+    if eval_dataset is not None and rank == 0:
+        eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False,
+                                 num_workers=0, collate_fn=collate_fn)
+        # Use the same deterministic evaluation mode and draw count for
+        # train and held-out probes. Select unique names, never repeated
+        # padding entries from small datasets.
+        seen = set()
+        indices = []
+        limit = min(len(eval_dataset), int(grokking["max_validation_batches"]))
+        for i, row in enumerate(train_dataset.audiopaths_sid_text):
+            if row[0] not in seen:
+                seen.add(row[0])
+                indices.append(i)
+                if len(indices) >= limit:
+                    break
+        train_probe_loader = DataLoader(
+            torch.utils.data.Subset(train_dataset, indices),
+            batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_fn,
+        )
     save_root = "%s/logs_s2_%s_lora_%s" % (hps.data.exp_dir, hps.model.version, hps.train.lora_rank)
+    if grokking["enabled"]:
+        save_root += "_grok_cfm"
     os.makedirs(save_root, exist_ok=True)
     lora_rank = int(hps.train.lora_rank)
     lora_config = LoraConfig(
@@ -193,6 +312,7 @@ def _run(rank, n_gpus, hps, use_ddp):
             hps.train.learning_rate,
             betas=hps.train.betas,
             eps=hps.train.eps,
+            weight_decay=float(grokking["s2_weight_decay"]) if grokking["enabled"] else 0.01,
         )
 
     def model2cuda(net_g, rank):
@@ -205,6 +325,9 @@ def _run(rank, n_gpus, hps, use_ddp):
         return net_g
 
     try:  # 如果能加载自动resume
+        if grokking["enabled"]:
+            # Start from generic pretrained weights only, never a prior fit.
+            raise FileNotFoundError("fresh CFM research run")
         net_g = get_model(hps)
         net_g.cfm = get_peft_model(net_g.cfm, lora_config)
         net_g = model2cuda(net_g, rank)
@@ -248,9 +371,12 @@ def _run(rank, n_gpus, hps, use_ddp):
     # print(no_grad_names)
     # os._exit(233333)
 
-    scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=-1)
-    for _ in range(epoch_str):
-        scheduler_g.step()
+    if grokking["enabled"]:
+        scheduler_g = torch.optim.lr_scheduler.LambdaLR(optim_g, lr_lambda=lambda _: 1.0)
+    else:
+        scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=-1)
+        for _ in range(epoch_str):
+            scheduler_g.step()
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
@@ -269,39 +395,98 @@ def _run(rank, n_gpus, hps, use_ddp):
             epoch=epoch_str,
             total_epochs=int(hps.train.epochs),
         )
+    grokfast_state = {}
+    best_train = float("inf")
+    best_val = float("inf")
+    last_improvement = epoch_str - 1
+    fit_epoch = None
+    fit_val = None
+    pre_fit_best = None
+    if grokking["enabled"] and rank == 0:
+        model = net_g.module if hasattr(net_g, "module") else net_g
+        val_samples = []
+        train_samples = []
+        baseline = _validate_cfm(model, eval_loader, rank, grokking, val_samples)
+        train_baseline = _validate_cfm(model, train_probe_loader, rank, grokking, train_samples)
+        (Path(hps.data.exp_dir) / "grokking_s2_baseline.json").write_text(
+            json.dumps({"epoch": 0, "val_cfm": baseline,
+                        "train_eval_cfm": train_baseline,
+                        "val_sample_losses": val_samples,
+                        "train_eval_sample_losses": train_samples}, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("[grokking:CFM] pretrained baseline %.8f", baseline)
+    if grokking["enabled"] and use_ddp:
+        dist.barrier()
     for epoch in range(epoch_str, hps.train.epochs + 1):
-        if rank == 0:
-            train_and_evaluate(
-                rank,
-                epoch,
-                hps,
-                [net_g, net_d],
-                [optim_g, optim_d],
-                [scheduler_g, scheduler_d],
-                scaler,
-                # [train_loader, eval_loader], logger, [writer, writer_eval])
-                [train_loader, None],
-                logger,
-                [writer, writer_eval],
-            )
-        else:
-            train_and_evaluate(
-                rank,
-                epoch,
-                hps,
-                [net_g, net_d],
-                [optim_g, optim_d],
-                [scheduler_g, scheduler_d],
-                scaler,
-                [train_loader, None],
-                None,
-                None,
-            )
+        epoch_start = time.monotonic()
+        train_cfm = train_and_evaluate(
+            rank, epoch, hps, [net_g, net_d], [optim_g, optim_d],
+            [scheduler_g, scheduler_d], scaler, [train_loader, None],
+            logger if rank == 0 else None,
+            [writer, writer_eval] if rank == 0 else None,
+            grokking=grokking, grokfast_state=grokfast_state,
+        )
         scheduler_g.step()
+        if grokking["enabled"]:
+            stop = False
+            if rank == 0:
+                model = net_g.module if hasattr(net_g, "module") else net_g
+                publish_activity(task="SoVITS LoRA 학습", stage="validation", epoch=epoch,
+                                 total_epochs=int(hps.train.epochs))
+                val_samples = []
+                train_samples = []
+                val_cfm = _validate_cfm(model, eval_loader, rank, grokking, val_samples)
+                train_eval_cfm = _validate_cfm(model, train_probe_loader, rank, grokking, train_samples)
+                # Online training losses use random draws and evolving weights.
+                # Detect a plateau on the fixed, eval-mode train probe instead.
+                if train_eval_cfm < best_train * (1 - float(grokking["s2_plateau_relative_delta"])):
+                    best_train = train_eval_cfm
+                    last_improvement = epoch
+                    fit_epoch = fit_val = pre_fit_best = None
+                if fit_epoch is None and epoch - last_improvement >= int(grokking["s2_plateau_patience"]):
+                    fit_epoch = epoch
+                    fit_val = val_cfm
+                    pre_fit_best = best_val
+                age = None if fit_epoch is None else epoch - fit_epoch
+                candidate = bool(
+                    age is not None and age >= 2 and fit_val > 0
+                    and val_cfm <= 0.95 * fit_val and val_cfm < pre_fit_best
+                    and train_eval_cfm <= best_train * 1.05
+                )
+                if val_cfm < best_val:
+                    _save_cfm_best(model, hps, epoch)
+                    best_val = val_cfm
+                record = {
+                    "epoch": epoch, "train_cfm": train_cfm, "val_cfm": val_cfm,
+                    "train_eval_cfm": train_eval_cfm,
+                    "val_sample_losses": val_samples,
+                    "train_eval_sample_losses": train_samples,
+                    "fit_metric": "train_eval_cfm",
+                    "epoch_seconds": time.monotonic() - epoch_start,
+                    "best_val_cfm": best_val, "fit_epoch": fit_epoch,
+                    "fit_val_cfm": fit_val, "post_fit_age": age,
+                    "delayed_improvement_candidate": candidate,
+                    "trainable_parameter_l2": parameter_l2_norm(model),
+                    "grokfast": bool(grokking["grokfast_enabled"]),
+                    "weight_decay": float(grokking["s2_weight_decay"]),
+                }
+                with metrics_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record, allow_nan=False) + "\n")
+                logger.info("[grokking:CFM] %s", record)
+                stop = bool(not fixed_epochs and age is not None and age >= int(grokking["s2_post_fit_epochs"])
+                            and epoch >= base_epochs)
+            if use_ddp:
+                flag = torch.tensor(int(stop), device=torch.device("cuda", rank))
+                dist.broadcast(flag, src=0)
+                stop = bool(flag.item())
+            if stop:
+                break
     print("training done")
 
 
-def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
+def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers,
+                       grokking=None, grokfast_state=None):
     net_g, net_d = nets
     optim_g, optim_d = optims
     # scheduler_g, scheduler_d = schedulers
@@ -313,6 +498,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     global global_step
 
     net_g.train()
+    probe = bool(grokking and grokking["enabled"])
+    if probe:
+        stats = torch.zeros(2, dtype=torch.float64, device=next(net_g.parameters()).device)
     for batch_idx, (ssl, spec, mel, ssl_lengths, spec_lengths, text, text_lengths, mel_lengths) in enumerate(
         tqdm(train_loader)
     ):
@@ -363,9 +551,19 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
+        if probe and grokking["grokfast_enabled"]:
+            gradfilter_ema(
+                net_g.module if hasattr(net_g, "module") else net_g,
+                grokfast_state,
+                alpha=float(grokking["grokfast_alpha"]),
+                lamb=float(grokking["grokfast_lambda"]),
+            )
         grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
         scaler.step(optim_g)
         scaler.update()
+        if probe:
+            stats[0] += loss_gen_all.detach().double() * ssl.shape[0]
+            stats[1] += ssl.shape[0]
 
         if rank == 0:
             status_interval = max(1, len(train_loader) // 100)
@@ -387,6 +585,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     total_epochs=int(hps.train.epochs),
                     loss=float(loss_gen_all.detach().float().item()),
                     metric=f"LoRA rank {lora_rank}",
+                    extra={"batch": batch_idx + 1, "total_batches": len(train_loader)},
                 )
 
             if global_step % hps.train.log_interval == 0:
@@ -403,6 +602,15 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 )
 
         global_step += 1
+    if probe:
+        # The research path exports only its best held-out compact weights.
+        # Avoid polluting the regular training checkpoint namespace.
+        if dist.is_initialized():
+            dist.all_reduce(stats)
+        total, count = stats.tolist()
+        if count <= 0 or not math.isfinite(total):
+            raise RuntimeError("Invalid CFM training statistics")
+        return total / count
     if epoch % hps.train.save_every_epoch == 0 and rank == 0:
         low_disk_save = os.environ.get("GPT_SOVITS_LOW_DISK_SAVE") == "1"
 

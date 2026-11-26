@@ -15,6 +15,11 @@ from AR.models.t2s_model import Text2SemanticDecoder
 from AR.modules.activation import MultiheadAttention
 from AR.modules.lr_schedulers import WarmupCosineLRSchedule
 from AR.modules.optim import ScaledAdam
+from tools.grokking import (
+    gradfilter_ema,
+    parameter_l2_norm,
+    resolve_grokking_config,
+)
 
 
 class Text2SemanticLightningModule(LightningModule):
@@ -23,6 +28,8 @@ class Text2SemanticLightningModule(LightningModule):
         self.config = config
         self.top_k = 3
         self.model = Text2SemanticDecoder(config=config, top_k=self.top_k)
+        self.grokking_config = resolve_grokking_config(config["train"], "s1")
+        self._grokfast_grads = {}
         pretrained_s1 = config.get("pretrained_s1")
         if pretrained_s1 and is_train:
             # print(self.load_state_dict(torch.load(pretrained_s1,map_location="cpu")["state_dict"]))
@@ -177,7 +184,12 @@ class Text2SemanticLightningModule(LightningModule):
     def training_step(self, batch: Dict, batch_idx: int):
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
-        forward = self.model.forward if self.config["train"].get("if_dpo", False) == True else self.model.forward_old
+        use_dpo = self.config["train"].get("if_dpo", False) is True
+        if self.grokking_config["enabled"]:
+            use_dpo = use_dpo and bool(
+                self.grokking_config["s1_keep_dpo"]
+            )
+        forward = self.model.forward if use_dpo else self.model.forward_old
         loss, acc = forward(
             batch["phoneme_ids"],
             batch["phoneme_ids_len"],
@@ -205,6 +217,13 @@ class Text2SemanticLightningModule(LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+        # The decoder reports micro top-k over non-EOS semantic tokens.
+        # Weight epoch aggregation by those tokens, not by utterance count.
+        metric_kwargs = {}
+        if self.grokking_config["enabled"]:
+            metric_kwargs["batch_size"] = int(
+                batch["semantic_ids_len"].sum().item()
+            )
         self.log(
             f"top_{self.top_k}_acc",
             acc,
@@ -212,9 +231,20 @@ class Text2SemanticLightningModule(LightningModule):
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
+            **metric_kwargs,
         )
 
     def _step_accumulated_gradients(self, opt, scheduler):
+        if (
+            self.grokking_config["enabled"]
+            and self.grokking_config["grokfast_enabled"]
+        ):
+            self._grokfast_grads = gradfilter_ema(
+                self.model,
+                self._grokfast_grads,
+                alpha=float(self.grokking_config["grokfast_alpha"]),
+                lamb=float(self.grokking_config["grokfast_lambda"]),
+            )
         opt.step()
         opt.zero_grad()
         scheduler.step()
@@ -232,41 +262,62 @@ class Text2SemanticLightningModule(LightningModule):
         )
 
     def validation_step(self, batch: Dict, batch_idx: int):
-        return
+        if not self.grokking_config["enabled"]:
+            return None
+        # Use the deterministic token-prediction objective for the probe even
+        # when DPO is enabled in training. DPO constructs a random rejected
+        # sequence, which would inject validation noise and obscure a delayed
+        # generalization transition.
+        loss, acc = self.model.forward_old(
+            batch["phoneme_ids"],
+            batch["phoneme_ids_len"],
+            batch["semantic_ids"],
+            batch["semantic_ids_len"],
+            batch["bert_feature"],
+        )
+        # forward_old sums CE over semantic tokens plus EOS, including
+        # padding EOS for batches of unequal lengths. The probe deliberately
+        # uses one utterance per batch, so there is exactly one real EOS.
+        lengths = batch["semantic_ids_len"]
+        if lengths.numel() != 1:
+            raise ValueError("S1 grokking validation requires batch_size=1")
+        semantic_count = int(lengths.sum().item())
+        if semantic_count <= 0:
+            raise ValueError("S1 grokking validation requires nonempty audio")
+        ce_count = semantic_count + 1
+        token_loss = loss / ce_count
+        self.log(
+            "val_total_loss",
+            token_loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=ce_count,
+        )
+        self.log(
+            f"val_top_{self.top_k}_acc",
+            acc,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=semantic_count,
+        )
+        return {"val_loss": token_loss.detach(), "val_acc": acc}
 
-    # # get loss
-    # loss, acc = self.model.forward(
-    #     batch['phoneme_ids'], batch['phoneme_ids_len'],
-    #     batch['semantic_ids'], batch['semantic_ids_len'],
-    #     batch['bert_feature']
-    # )
-    #
-    # self.log(
-    #     "val_total_loss",
-    #     loss,
-    #     on_step=True,
-    #     on_epoch=True,
-    #     prog_bar=True,
-    #     sync_dist=True)
-    # self.log(
-    #     f"val_top_{self.top_k}_acc",
-    #     acc,
-    #     on_step=True,
-    #     on_epoch=True,
-    #     prog_bar=True,
-    #     sync_dist=True)
-    #
-    # # get infer output
-    # semantic_len = batch['semantic_ids'].size(1)
-    # prompt_len = min(int(semantic_len * 0.5), 150)
-    # prompt = batch['semantic_ids'][:, :prompt_len]
-    # pred_semantic = self.model.infer(batch['phoneme_ids'],
-    #                                  batch['phoneme_ids_len'], prompt,
-    #                                  batch['bert_feature']
-    #                                  )
-    # save_name = f'semantic_toks_{batch_idx}.pt'
-    # save_path = os.path.join(self.eval_dir, save_name)
-    # torch.save(pred_semantic.detach().cpu(), save_path)
+    def on_validation_epoch_end(self):
+        if not self.grokking_config["enabled"]:
+            return
+        norm = parameter_l2_norm(self.model)
+        self.log(
+            "grokking_param_l2",
+            norm,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            sync_dist=True,
+        )
 
     def configure_optimizers(self):
         named_parameters = [
@@ -285,26 +336,54 @@ class Text2SemanticLightningModule(LightningModule):
         parameters_names = [
             [name for name, _ in named_parameters]
         ]
-        lm_opt = ScaledAdam(
-            model_parameters,
-            lr=0.01,
-            betas=(0.9, 0.95),
-            clipping_scale=2.0,
-            parameters_names=parameters_names,
-            show_dominant_parameters=False,
-            clipping_update_period=1000,
+        use_adamw = (
+            self.grokking_config["enabled"]
+            and self.grokking_config["s1_optimizer"] == "adamw"
         )
+        if use_adamw:
+            lr = float(self.grokking_config["s1_lr"])
+            lm_opt = torch.optim.AdamW(
+                model_parameters,
+                lr=lr,
+                betas=(0.9, 0.95),
+                weight_decay=float(self.grokking_config["s1_weight_decay"]),
+            )
+            # This fork's WarmupCosineLRSchedule hard-locks the LR to
+            # 0.002 internally. That is intentional legacy behaviour for the
+            # baseline, but it would silently override the controlled
+            # grokking eta. Keep eta fixed here so weight-decay/LR experiments
+            # mean what their config says.
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                lm_opt,
+                lr_lambda=lambda _step: 1.0,
+            )
+            print(
+                "[grokking:S1] optimizer=AdamW "
+                f"lr={lr:g} "
+                f"weight_decay={float(self.grokking_config['s1_weight_decay']):g}"
+            )
+        else:
+            lm_opt = ScaledAdam(
+                model_parameters,
+                lr=0.01,
+                betas=(0.9, 0.95),
+                clipping_scale=2.0,
+                parameters_names=parameters_names,
+                show_dominant_parameters=False,
+                clipping_update_period=1000,
+            )
+            scheduler = WarmupCosineLRSchedule(
+                lm_opt,
+                init_lr=self.config["optimizer"]["lr_init"],
+                peak_lr=self.config["optimizer"]["lr"],
+                end_lr=self.config["optimizer"]["lr_end"],
+                warmup_steps=self.config["optimizer"]["warmup_steps"],
+                total_steps=self.config["optimizer"]["decay_steps"],
+            )
 
         return {
             "optimizer": lm_opt,
             "lr_scheduler": {
-                "scheduler": WarmupCosineLRSchedule(
-                    lm_opt,
-                    init_lr=self.config["optimizer"]["lr_init"],
-                    peak_lr=self.config["optimizer"]["lr"],
-                    end_lr=self.config["optimizer"]["lr_end"],
-                    warmup_steps=self.config["optimizer"]["warmup_steps"],
-                    total_steps=self.config["optimizer"]["decay_steps"],
-                )
+                "scheduler": scheduler,
             },
         }

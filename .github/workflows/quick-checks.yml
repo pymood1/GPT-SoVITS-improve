@@ -3,14 +3,22 @@ name: Quick checks
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "tools/kaggle_remote_request.json"
   push:
     branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  syntex:
+  syntax:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,8 +34,11 @@ jobs:
           python -m py_compile \
             webui.py \
             GPT_SoVITS/AR/modules/activation.py \
+            GPT_SoVITS/AR/data/data_module.py \
             GPT_SoVITS/AR/models/t2s_lightning_module.py \
             GPT_SoVITS/s1_train.py \
+            GPT_SoVITS/s2_train.py \
+            tools/grokking.py \
             GPT_SoVITS/TTS_infer_pack/TTS.py \
             GPT_SoVITS/f5_tts/model/backbones/dit.py \
             GPT_SoVITS/module/cache_dit.py \
@@ -43,12 +54,28 @@ jobs:
             tools/evaluate_emotion_review.py \
             tools/kaggle_training_preflight.py \
             tools/kaggle_dataset.py \
+            tools/kaggle_grokking_runner.py \
+            tools/kaggle_grokking_bootstrap.py \
+            tools/kaggle_remote_job.py \
+            tools/kaggle_live_status.py \
+            tools/kaggle_quality_listening.py \
+            tools/kaggle_quality_score.py \
+            tools/quality_reference_style.py \
+            tools/practical_v5.py \
             tools/kaggle_launch_webui.py \
             tools/my_utils.py
 
       - name: Kaggle dataset discovery smoke
         run: |
           python tests/test_kaggle_dataset.py
+
+      - name: Kaggle research runner diagnostics smoke
+        run: |
+          python -m unittest discover -s tests -p test_kaggle_grokking_runner.py -v
+          python -m unittest discover -s tests -p test_kaggle_live_status.py -v
+          python -m unittest discover -s tests -p test_kaggle_quality_score.py -v
+          python -m unittest discover -s tests -p test_kaggle_reference_style.py -v
+          python -m unittest discover -s tests -p test_practical_v5.py -v
 
       - name: Validate notebooks as JSON
         run: |
