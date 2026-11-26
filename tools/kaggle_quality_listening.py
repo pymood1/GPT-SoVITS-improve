@@ -427,7 +427,7 @@ def main():
         sv_weights = None
         if profile == "quality_style":
             from tools.quality_reference_style import reference_groups, speaker_weights, extract_style, blend_style
-            references, auxiliary, heldout = reference_groups(choose_references, reference_folder)
+            references, auxiliary, heldout = reference_groups(choose_references, reference_folder, replication=True)
             sv_weights = speaker_weights(references, auxiliary)
         if profile in ("quality_general", "quality_style"):
             if profile == "quality_general":
@@ -435,6 +435,9 @@ def main():
                 references = choose_references(reference_folder, report["reference_counts"], 3, exclude=previous)
             texts = ("오늘은 평소보다 조금 일찍 출발하려고 합니다.", "정말 그렇게 생각했어요? 저는 전혀 예상하지 못했는데요.", "여러 가지 방법을 비교해 보고 가장 적절한 것을 선택했습니다.")
             seeds = (2027, 3141)
+            if profile == "quality_style":
+                texts = ("오늘 오후에는 잠시 시간을 내서 산책을 하려고 합니다.", "잠깐만요, 정말 그런 일이 있었다는 말인가요?", "지금까지 확인한 내용을 바탕으로 다음 계획을 세워 보겠습니다.")
+                seeds = (4099, 7919)
         cases = [(i, text, seed) for seed in seeds for i, text in enumerate(texts, 1)]
         # Keep exact prompts privately; no transcript enters the public report.
         for ref_index, (ref, prompt, prompt_lang) in enumerate(references, 1):
