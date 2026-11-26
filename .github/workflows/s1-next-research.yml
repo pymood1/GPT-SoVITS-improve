@@ -12,14 +12,13 @@ on:
       - '.github/workflows/s1-next-*.yml'
 permissions:
   contents: read
-concurrency:
-  group: s1-research-cpu-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 jobs:
-  cpu-architecture:
+  changes:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/s1-next-distillation-20261126'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.changed.outputs.run }}
     steps:
       - name: Check latest commit for actual research code changes
         id: changed
@@ -40,18 +39,23 @@ jobs:
               f.write("run="+str(run).lower()+"\n")
           print("Research code changed:",run)
           PY
+  cpu-architecture:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: s1-research-cpu-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
       - uses: actions/checkout@v4
-        if: steps.changed.outputs.run == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v5
-        if: steps.changed.outputs.run == 'true'
         with:
           python-version: '3.12'
       - name: Install CPU test dependencies
-        if: steps.changed.outputs.run == 'true'
         run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Run shared regression suite
-        if: steps.changed.outputs.run == 'true'
         run: bash tools/check_s1_research.sh
