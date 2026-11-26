@@ -207,6 +207,7 @@ def main():
                     "teacher_config":teacher_config},tmp)
         os.replace(tmp,checkpoint)
     save(0,initial)
+    history=[{"epoch":0,"step":0,"tokens":0,"validation":initial}]
     def update(tokens):
         nonlocal step
         # Each microbatch loss was multiplied by its token count; normalize once.
@@ -247,6 +248,9 @@ def main():
         print(json.dumps({"epoch":epoch,"step":step,"tokens":total_tokens,"validation":metrics,
                           "cache_hits":cache.hits,"cache_misses":cache.misses,
                           "seconds":time.monotonic()-started}),flush=True)
+        history.append({"epoch":epoch,"step":step,"tokens":total_tokens,"validation":metrics})
+        (args.output/"metrics.json").write_text(json.dumps({"status":"completed_epoch","history":history,
+                    "cache_hits":cache.hits,"cache_misses":cache.misses,"seconds":time.monotonic()-started},allow_nan=False,indent=2))
         if metrics["ce"]<best:
             best=metrics["ce"]
             save(epoch,metrics)
