@@ -113,3 +113,33 @@ different-speaker or independent-reference control. Paired win rate
 and CFM loss are reported. Checkpoints are saved only on held-out gain.
 Neither CE nor CFM loss establishes naturalness; full synthesis and an
 independent test set remain necessary. Production model remains unchanged.
+
+## Round 3: exposure-bias and conditioning controls
+Round 2 (Kaggle 45739171412): matched 400,120-token KD versus CE-only
+validation CE 4.4872 versus 4.6696 (teacher 3.5772); greedy cap rates
+75% versus 100%; maximum runs 338 versus 320. Zero-projection bridge
+CFM 0.274237 versus hard baseline 0.304380; reversal 0.274175, so
+the reduction does not establish time-aligned hidden information.
+
+Round 3 mounts only the exact completed private round-2 kernel and checks
+the result provenance and checkpoint format/config. Both S1 arms start from
+the same KD checkpoint (optimizer restarted), same 384 training examples,
+32 validation, and 24 untouched official test examples. Each has up to
+600k supervised tokens, 600 updates, 8 epochs. The trajectory arm adds
+teacher KL on four sampled student tokens after a ground-truth prefix
+every fourth eligible example (weight .5); the baseline continues standard
+KD. The supervised token budget is matched, not the compute budget.
+No CE target is imposed on off-reference student trajectories.
+The selected validation-CE checkpoint is evaluated on the official test
+split; six greedy and sampled rollout trials (recent-token penalty 1.35)
+use the same stop rule. The baseline arm also evaluates the actual teacher
+using its full forward with the shared sampler, not legacy EOS shortcuts.
+
+Bridge arms all use zero projection and matched training noise, compare
+aligned teacher hidden states, prompt-only mean (first 25 tokens), and a
+constant training-set prompt mean. 32/8/12 train/val/test examples, four
+epochs, selection by validation CFM then untouched test evaluation.
+Reversed hidden states remain a diagnostic for the aligned arm. A global
+mean gain suggests a static correction rather than transferred temporal
+information. All reconstruction uses true acoustic codes; no waveform
+naturalness or voice clone claim is made. Production remains untouched.
