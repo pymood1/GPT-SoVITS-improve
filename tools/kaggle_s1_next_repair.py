@@ -52,6 +52,70 @@ def prepare_manifest(folder):
     return path
 
 
+def ensure_frontend_resources(env):
+    """Preflight the exact missing NLTK resource before launching any GPU workers."""
+    resource_dir=ROOT/"runtime/nltk_data"
+    resource_dir.mkdir(parents=True,exist_ok=True)
+    env["NLTK_DATA"]=os.pathsep.join(filter(None,(str(resource_dir),env.get("NLTK_DATA",""))))
+    os.environ["NLTK_DATA"]=env["NLTK_DATA"]
+    code="""
+import os,nltk
+from pathlib import Path
+root=os.environ["NLTK_DATA"].split(os.pathsep)[0]
+if root not in nltk.data.path:
+    nltk.data.path.insert(0,root)
+name="averaged_perceptron_tagger_eng"
+try:
+    nltk.data.find("taggers/"+name+"/")
+except LookupError:
+    if not nltk.download(name,download_dir=root,quiet=True,raise_on_error=True):
+        raise RuntimeError("NLTK tagger download failed")
+nltk.data.find("taggers/"+name+"/")
+tags=nltk.pos_tag(["Korean","English","test"])
+assert len(tags)==3
+print("[preflight] English POS tagger verified",flush=True)
+"""
+    subprocess.run([sys.executable,"-u","-c",code],cwd=ROOT,env=env,check=True,timeout=180)
+
+
+def error_signature(path):
+    """Only exception class, stack locations and NLTK resource names, no raw corpus text."""
+    import re
+    if not path.is_file():
+        return []
+    raw=re.sub(r"\x1b\[[0-9;]*m","",path.read_text(errors="replace"))
+    result=[]
+    for part in raw.split("Traceback (most recent call last):")[1:]:
+        frames=re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',part)
+        classes=re.findall(r"^([A-Za-z_][\w.]*Error):",part,re.M)
+        resources=re.findall(r"Resource\s+([A-Za-z0-9_/-]+)\s+not found",part)
+        result.append({"frames":[[Path(f).name,int(n),fn] for f,n,fn in frames[-8:]],
+                       "exceptions":classes[:3],"nltk_resources":resources[:3]})
+    return result[-3:]
+
+
+def latest_progress(path):
+    if not path.is_file():
+        return None
+    with path.open("rb") as f:
+        f.seek(max(0,path.stat().st_size-16384))
+        lines=f.read().decode(errors="replace").splitlines()
+    for line in reversed(lines):
+        try:
+            row=json.loads(line)
+            if not isinstance(row,dict):
+                continue
+            if row.get("event")=="pseudo_pair":
+                return {k:row[k] for k in ("event","accepted","attempts")}
+            if "epoch" in row and "validation" in row:
+                return {"epoch":row["epoch"],"tokens":row.get("tokens",0)}
+            if "arm" in row and "status" in row:
+                return {k:row[k] for k in ("arm","reference_index","text_index","status")}
+        except (ValueError,KeyError):
+            continue
+    return None
+
+
 def main():
     report={"code_sha":REQUEST["code_sha"],"status":"failed","stage":"mount"}
     start=time.monotonic()
@@ -76,6 +140,9 @@ def main():
         finally:
             setup.write_bytes(original)
         shutil.rmtree("/kaggle/tmp/gpt_sovits_downloads",ignore_errors=True)
+        report["stage"]="frontend_preflight"
+        ensure_frontend_resources(env)
+        report["nltk_pos_tagger"]="verified"
         gpus=subprocess.check_output(["nvidia-smi","--query-gpu=name","--format=csv,noheader"],text=True).splitlines()
         if len(gpus)!=2 or any("T4" not in g for g in gpus):
             raise RuntimeError("Expected two T4 GPUs")
@@ -104,7 +171,8 @@ def main():
                 logs.append(log)
                 workers.append(subprocess.Popen(args,cwd=ROOT,env=dict(env,CUDA_VISIBLE_DEVICES=str(i)),stdout=log,stderr=subprocess.STDOUT))
             while any(p.poll() is None for p in workers):
-                print("[repair] prompt training / bridge sweep",[p.poll() for p in workers],flush=True)
+                print("[repair]",json.dumps({"exit":[p.poll() for p in workers],
+                    "prompt":latest_progress(OUT/"worker0.log"),"bridge":latest_progress(OUT/"worker1.log")}),flush=True)
                 time.sleep(15)
         finally:
             for p in workers:
@@ -114,6 +182,7 @@ def main():
             for log in logs:
                 log.close()
         report["worker_exit"]=[p.returncode for p in workers]
+        report["diagnostics"]={str(p.relative_to(OUT)):error_signature(p) for p in (OUT/"worker0.log",OUT/"worker1.log",OUT/"gpu1/private-errors.log") if p.is_file()}
         metrics=OUT/"prompt/metrics.json"
         if metrics.is_file():
             report["prompt"]=json.loads(metrics.read_text())
@@ -124,6 +193,9 @@ def main():
                          "--output",str(OUT/"gpu0"),"--arms","student"],cwd=ROOT,
                          env=dict(env,CUDA_VISIBLE_DEVICES="0"),stdout=log,stderr=subprocess.STDOUT,timeout=900)
             report["student_exit"]=p.returncode
+            for file in (OUT/"student.log",OUT/"gpu0/private-errors.log"):
+                if file.is_file():
+                    report["diagnostics"][str(file.relative_to(OUT))]=error_signature(file)
         else:
             report["student_exit"]=-1
         from tools.evaluate_s1_next_waveforms import summarize
