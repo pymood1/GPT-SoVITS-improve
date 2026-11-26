@@ -12,9 +12,10 @@ def main():
     p.add_argument("--source",type=Path,required=True)
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--backend",choices=("ct2","transformers"),required=True)
+    p.add_argument("--expected-count",type=int,default=12)
     a=p.parse_args()
     request=json.loads(a.source.read_text())
-    assert len(request["samples"])==12
+    assert len(request["samples"])==a.expected_count and a.expected_count>0
     torch.backends.cuda.matmul.allow_tf32=False
     torch.backends.cudnn.allow_tf32=False
     torch.set_float32_matmul_precision("highest")
