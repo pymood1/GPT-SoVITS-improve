@@ -72,7 +72,7 @@ jobs:
           python -m py_compile tools/s1_s2_acoustic_isolation.py tools/kaggle_s1_s2_acoustic_isolation.py
           python tools/s1_s2_acoustic_isolation.py --selftest
           python -m py_compile tools/s1_s2_acoustic_cfg.py tools/kaggle_s1_s2_acoustic_cfg.py
-          python tools/s1_s2_acoustic_cfg.py --selftest
+          PYTHONPATH=.:GPT_SoVITS python tools/s1_s2_acoustic_cfg.py --selftest
       - name: Prepare private Kaggle job
         if: needs.request.outputs.submit == 'true'
         id: prepare
