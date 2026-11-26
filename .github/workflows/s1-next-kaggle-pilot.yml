@@ -37,7 +37,7 @@ jobs:
               f.write("submit="+str(submit).lower()+"\n")
           if submit:
               cfg=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
-              assert cfg=={"code_sha":commit["parents"][0]["sha"],"profile":"public-fleurs-ko-pilot"}
+              assert cfg=={"code_sha":commit["parents"][0]["sha"],"profile":"public-fleurs-ko-ablation-v2"}
               assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
           PY
   pilot:
