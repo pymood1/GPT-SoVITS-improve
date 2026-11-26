@@ -366,3 +366,24 @@ conditioning. Use matched seed. These are research-only controls,
 not a proposed production clamp without evidence. 14 cases, 1500s
 session cap, no automatic retry. Prior CFG0/1.3 and real recordings
 available as comparison files. No GPU precision reduction.
+
+## Acoustic CFG v2: completed (2026-11-27 KST)
+Initial request 45855318993 failed at CPU import preflight; no GPU submission.
+Retry 45858321277 completed 14/14 in 414.373s. No training. Re-vocoding
+saved baseline mel reproduced previous PCM exactly on both references.
+Ref1 fraction of mel below -12: baseline CFG1.3 1.8766%, CFG.8 .7208%,
+CFG.5 .1461%, full gain CFG.8 .0260%, mel-only gain .00487%,
+encoder-only gain .01623%. Ref2 baseline .00161%, gain variants
+.00323%/.01290%/.00323%; no universal improvement in this statistic.
+Clamping fixed mel to [-12,2] removed excursions by definition, changed
+ref1 RMS only +.161dB and ref2 negligibly; does not establish noise gain.
+RMS (ref1/ref2) at CFG.8: raw -36.446/-45.316 dBFS, full gain
+-25.090/-29.677, mel-only -28.644/-30.847, encoder-only
+-32.791/-42.038. Mel-only normalization is an interesting candidate
+because it retains original semantic/reference encoder conditioning.
+However ref1/2 are only two references, one target; no fresh test.
+Use existing level-matched audio for strict FP32 ASR and SV before
+choosing candidates. Nine arms x two references, matched gain-only
+listening copies, normalized reference WAVs for speaker comparison.
+No new synthesis, training, or model modification. A lower mel-outlier
+fraction is not itself evidence of lower audible noise.
