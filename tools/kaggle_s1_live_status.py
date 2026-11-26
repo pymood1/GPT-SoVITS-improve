@@ -47,6 +47,8 @@ def parse(raw):
             row=json.loads(m[1])
         except ValueError:
             continue
+        if not isinstance(row,dict):
+            continue
         for key,v in row.items():
             if not WORKER.fullmatch(key) or not isinstance(v,dict):
                 continue
@@ -65,6 +67,9 @@ def selftest():
     raw='387.8s | 161 | [scale] {"ddp":{"exit":null,"latest":{"event":"layer_epoch","epoch":1,"validation":{"ce":2.84,"private":"secret"}}},"private":{"latest":{"epoch":99}}}'
     assert parse(raw)=={"ddp":{"exit":None,"latest":{"epoch":1,"event":"layer_epoch","validation":{"ce":2.84}}}}
     assert parse("private [scale] "+raw)=={}
+    assert parse('[scale] {"ddp":{"exit":null,"latest":{"validation":{"ce":NaN}}}}')=={"ddp":{"exit":None,"latest":{"validation":{}}}}
+    assert parse("[scale] []\n[scale] 0")=={}
+    assert parse('[scale] {"ddp":null,"other":{"exit":0}}')=={}
     assert safe_latest({"arm":"secret","status":"secret","tokens":"secret"}) is None
     assert safe_latest({"models":{"student":{"parity":True,"private":"secret"}}})=={"models":{"student":{"parity":True}}}
     assert parse('[scale] {"eval0":{"exit":1,"latest":{"arm":"teacher","status":"failed"}}}')["eval0"]["exit"]==1
