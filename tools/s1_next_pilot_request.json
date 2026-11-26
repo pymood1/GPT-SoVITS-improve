@@ -1,5 +1,5 @@
 {
-  "code_sha": "d8f0882f4a28cd70b682c2f152e5e400864cba3a",
-  "profile": "public-fleurs-ko-acoustic-cfg-v2",
-  "source_kernel": "pymood1/gpt-sovits-s1-next-45849884407"
+  "code_sha": "8646e149d4da52e119ed10ba78cb655f089cf73e",
+  "profile": "public-fleurs-ko-acoustic-score-v3",
+  "source_kernel": "pymood1/gpt-sovits-s1-next-45858321277"
 }
