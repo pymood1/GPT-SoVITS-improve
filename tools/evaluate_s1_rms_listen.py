@@ -43,6 +43,8 @@ def main():
                        vits_weights_path=str(a.s2.resolve()))})
         cfg.configs_path=str(Path(tmp)/"tts.yaml")
         engine=TTS(cfg)
+        from tools.s1_waveform_frontend import ensure_worker_nltk
+        ensure_worker_nltk()
         teacher=engine.t2s_model.model.eval()
         gs={k:FullGenerator(v) for k,v in generators(teacher,a.stack,a.resume,a.refined,next(teacher.parameters()).device).items()}
         teacher.requires_grad_(False)
@@ -67,9 +69,9 @@ def main():
                         row.update(status="failed",error_type=type(exc).__name__)
                     rows.append(row)
                     print(json.dumps({k:v for k,v in row.items() if k!="file"},allow_nan=False),flush=True)
-                    if ri % a.worker_count == a.worker_index and ti == 0 and arm == "student" and not any(r["status"]=="ok" for r in rows):
-                        raise RuntimeError("All four smoke samples failed; see private-errors.log")
                     (a.output/"waveform-metrics.json").write_text(json.dumps({"rows":rows,"summary":summarize(rows)},allow_nan=False))
+                    if ti == 0 and arm == "student" and not any(r["status"]=="ok" for r in rows):
+                        raise RuntimeError("All four smoke samples failed; see private-errors.log")
     scoring={"texts":m["targets"],"references":[r["path"] for r in m["references"]],
              "samples":[{"label":r["arm"],"path":str((a.output/r["file"]).resolve()),
                          "reference_index":r["reference_index"],"text_index":r["text_index"]}
