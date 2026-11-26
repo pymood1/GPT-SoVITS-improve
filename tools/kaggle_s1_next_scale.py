@@ -104,7 +104,9 @@ def latest_progress(path):
             if not isinstance(row,dict):
                 continue
             if row.get("event")=="pseudo_pair":
-                return {k:row[k] for k in ("event","accepted","attempts")}
+                return {k:row[k] for k in ("event","split","accepted","attempts") if k in row}
+            if row.get("event")=="train_step":
+                return {k:row[k] for k in ("event","epoch","step","tokens")}
             if "epoch" in row and "validation" in row:
                 return {"epoch":row["epoch"],"tokens":row.get("tokens",0)}
             if "arm" in row and "status" in row:
