@@ -146,6 +146,21 @@ def main():
                 launcher = module_from_spec(spec)
                 spec.loader.exec_module(launcher)
                 launcher.apply_nvidia_library_path(env)
+                if req.get("deploy", False):
+                    report.update(status="failed", stage="deployment")
+                    proc = subprocess.run(
+                        [sys.executable, "-u", str(ROOT / "tools/practical_v5.py"),
+                         "--repo", str(ROOT), "--export-work", str(Path("/kaggle/tmp/grokking_runs") / run_id),
+                         "--output", str(WORKING)], cwd=ROOT, env=env, timeout=1800)
+                    report["deployment_exit"] = proc.returncode
+                    raw = json.loads((WORKING / "deploy-status.json").read_text())
+                    report["deployment"] = {
+                        "status": raw.get("status") if raw.get("status") in ("completed", "failed") else "unknown",
+                        **{k: number(raw.get(k)) for k in ("smoke_count", "file_count", "archive_bytes")},
+                    }
+                    if proc.returncode == 0 and raw.get("status") == "completed" and raw.get("smoke_count") == 3:
+                        report.update(status="completed", stage="finished")
+                    return
                 # Only safe aggregate metrics are exported by this launcher.
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
