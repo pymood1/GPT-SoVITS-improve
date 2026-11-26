@@ -12,11 +12,10 @@ OUT=Path("/kaggle/working/s1-next-pilot")
 REPO="https://github.com/pymood1/GPT-SoVITS-improve.git"
 
 
-def mounted_checkpoint(kernel):
+def mounted_checkpoint(kernel,root=Path('/kaggle/input')):
     slug=kernel.split("/")[-1]
     if kernel!="pymood1/gpt-sovits-s1-next-45739171412":
         raise ValueError("Unexpected source kernel")
-    root=Path("/kaggle/input")
     matches=[p for p in root.rglob("s1-next-best.pt") if slug in p.parts and p.parent.name=="kd"]
     if len(matches)!=1:
         raise FileNotFoundError("Expected one pinned prior KD checkpoint")
