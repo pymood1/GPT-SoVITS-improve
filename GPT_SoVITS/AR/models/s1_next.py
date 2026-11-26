@@ -81,6 +81,28 @@ class Block(nn.Module):
         return x, (k,v)
 
 
+def sample_next(logits, previous, *, eos, allow_eos, temperature=1., top_k=15,
+                repetition_penalty=1., generator=None):
+    """Shared sampling policy for student and teacher. Preserve EOS, penalize recent tokens."""
+    if temperature<=0 or repetition_penalty<1:
+        raise ValueError("Invalid sampling policy")
+    z=logits.float().clone()
+    if repetition_penalty>1 and previous.numel():
+        seen=previous[:,-64:].unique()
+        seen=seen[seen!=eos]
+        values=z[:,seen]
+        z[:,seen]=torch.where(values<0,values*repetition_penalty,values/repetition_penalty)
+    z=z/temperature
+    if not allow_eos:
+        z[:,eos]=-torch.inf
+    if top_k==1:
+        return z.argmax(-1,keepdim=True)
+    if top_k>0:
+        v,ind=z.topk(min(top_k,z.size(-1)))
+        z=torch.full_like(z,-torch.inf).scatter(-1,ind,v)
+    return torch.multinomial(z.softmax(-1),1,generator=generator)
+
+
 class S1Next(nn.Module):
     """Unpadded, equal-length batches only. Train on per-example slices initially."""
     def __init__(self, cfg=NextConfig()):
@@ -114,7 +136,7 @@ class S1Next(nn.Module):
         return self.head(hidden[:,text.size(1)-1:]), hidden[:,text.size(1):]
 
     @torch.no_grad()
-    def generate(self, text, bert, prompt, *, max_new=512, min_new=1, temperature=1., top_k=15, generator=None):
+    def generate(self, text, bert, prompt, *, max_new=512, min_new=1, temperature=1., top_k=15, repetition_penalty=1., generator=None):
         """Single utterance. Return only new IDs and their post-token states, never EOS."""
         if self.training or text.size(0)!=1 or prompt.size(0)!=1 or text.size(1)==0 or temperature<=0 or not 0<=min_new<=max_new:
             raise ValueError("eval mode, single unpadded utterance, valid sampling budget required")
@@ -124,14 +146,10 @@ class S1Next(nn.Module):
         eos = self.cfg.codes
         position = x.size(1)
         for i in range(max_new):
-            logits = self.head(h[:,-1]).float()/temperature
-            if i<min_new:
-                logits[:,eos] = -torch.inf
-            if top_k>0:
-                k = min(top_k,logits.size(-1))
-                v,ind = logits.topk(k)
-                logits = torch.full_like(logits,-torch.inf).scatter(-1,ind,v)
-            token = torch.multinomial(logits.softmax(-1),1,generator=generator)
+            previous=torch.cat((prompt,*ids),dim=1) if ids else prompt
+            token=sample_next(self.head(h[:,-1]),previous,eos=eos,allow_eos=i>=min_new,
+                              temperature=temperature,top_k=top_k,repetition_penalty=repetition_penalty,
+                              generator=generator)
             if token.item()==eos:
                 break
             h,caches = self._run(self.audio(token),position,None,caches)
