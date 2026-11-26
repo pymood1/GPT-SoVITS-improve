@@ -97,7 +97,7 @@ def audit(args):
     fresh.initialize_from_teacher(teacher)
     checkpoint=torch.load(args.student,map_location="cpu",weights_only=True)
     trained=S1Next(cfg).to(device).eval()
-    trained.load_state_dict(checkpoint["model"],strict=True)
+    trained.load_state_dict(checkpoint["state_dict"],strict=True)
     rows=[]
     for r in range(2):
         rows.extend(torch.load(args.data/f"pseudo{r}/validation.pt",map_location="cpu",weights_only=True))
