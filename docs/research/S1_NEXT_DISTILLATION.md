@@ -263,3 +263,68 @@ if attained, otherwise validation-best. Cached original trajectories
 remain in round-6 output, new trajectories in round-7 output. CE is on
 teacher-generated labels, not ground-truth audio; fresh matched waveform
 evaluation remains essential. A budget stop is not convergence.
+
+## Rounds 8–15: measured architecture-preserving transfer (2026-11-26)
+
+This section supersedes the earlier proposed architecture and convergence
+policy where they conflict. All reported measurements are from the completed
+or partially completed Kaggle runs, not from theoretical estimates.
+The 24 repeated development trajectories are for model selection, not a
+fresh generalization test. Teacher-forced top-1 agreement is not speech CER.
+
+| Round | Actions run | Actual result |
+|---|---|---|
+| 7 | 45772036033 | Cancelled to conserve GPU quota; large architecture replacement remained far below teacher. |
+| 8 | 45785591042 | Transfer audit: identity exact; direct RoPE 6.52%, direct post-RMS 24.91%, pre-LN 1.61% top-1 agreement. Abrupt surgery is destructive. |
+| 9 | 45794687129 | First reduced-width SwiGLU block 97.99% agreement after warm-start distillation. |
+| 10 | 45806410140 | Six reduced-width replacements; 90.23% agreement. |
+| 11 | 45812067222 | Seven reduced-width replacements, 90.45%; further simultaneous compression did not pass. |
+| 12 | 45815400064 | All 24 full-width SwiGLU FFNs; 97.81% agreement, CE 2.844995, KL .0003843. |
+| 13 | 45825615128 | Static KV cache parity 24/24, sampled equality 4/4; original 115.58 vs round 12 103.71 tokens/s. |
+| 14 | 45828829274 | All 48 block norms fully affine RMS; 95.52% agreement, CE 2.847964, KL .0014566. |
+| 15 | 45834021558 | Frozen attention/position/readout; 512 replay pairs, 8 epochs, 623912 tokens; selected epoch 6, 97.47% agreement, CE 2.845899, KL .00077238. |
+
+Round 12 waveform evaluation produced 12/12 samples (3 arms, 2 refs,
+2 texts). Round 14 recovered strict FP32 GPU large-v3 ASR on those same
+saved samples, no INT8/fp16 fallback: original and round 12 both 2/108
+characters erroneous (1.85% CER), round 11 7/108 (6.48%).
+Speaker cosine .8024/.8095 for original/12, .8067 for 11.
+These are tiny matched samples; do not claim equivalence beyond them.
+Round 12 increased parameters from 77,606,402 to 102,821,378 (+32.49%).
+
+Round 15 measured all four decoders on the same 24 cached development
+trajectories (2842 target tokens), T4 FP32. Sum of per-example times,
+not end-to-end concurrent throughput:
+
+| Decoder | Full seconds | Cached seconds | Cached tokens/s | Cache parity |
+|---|---:|---:|---:|---|
+| Original | 92.470 | 22.308 | 127.40 | 24/24 |
+| Round 12 | 119.971 | 25.972 | 109.43 | 24/24 |
+| Round 14 | 122.253 | 38.085 | 74.62 | 24/24 |
+| Round 15 | 122.115 | 37.497 | 75.79 | 24/24 |
+
+All four also passed 4/4 matched full/cached sampling trials.
+Round 15 is 40.51% lower throughput than original on this test;
+the RMS implementation likely introduces extra kernel launches, but
+profiling is required. Its 98% development agreement target was not met.
+The lowest KL epoch was not selected because the predeclared criterion
+prioritized teacher top-1 agreement. No evidence of grokking is established.
+
+Round 15 stopped at waveform evaluation (1196.734s total).
+The CPU-only observer run 45842230720 recovered 20 per-sample exceptions
+(16 + 4) from English G2P's NLTK POS tagger lookup, not evidence of failed
+learned weights or cache arithmetic. Earlier isolated NLTK preflight had
+passed. Worker-side repair now re-prioritizes resource paths and exercises
+actual English G2P after TTS initialization; per-process fallback downloads
+avoid concurrent writes. CPU path tests passed on 45842553746.
+Real GPU validation of the repair is pending.
+The immutable listening-only run 45840975381 was submitted before the
+repair and remains pinned to its original code; it may repeat that failure.
+No automatic resubmission, no new training, no deployment.
+
+Checkpoint: private Kaggle kernel pymood1/gpt-sovits-s1-next-45834021558,
+s1-rms-polish/student/norm-best.pt; round 12 folded stack and round 14
+norm checkpoint are separately mounted. This path is required by recovery;
+actual file mounting is checked in the listening job. Never overwrite it.
+The general read-only observer can inspect numbered S1 kernels without
+allocating GPU; request-only commits skip redundant CPU tests.
