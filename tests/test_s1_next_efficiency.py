@@ -9,9 +9,10 @@ from torch import nn
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/"GPT_SoVITS")]
-from AR.models.s1_next import SemanticResidualBridge
+from AR.models.s1_next import SemanticResidualBridge,NextConfig,S1Next,sample_next
 from module.s1_next_bridge import FrozenV5Bridge,paired_losses
-from tools.train_s1_next import TeacherCache
+from tools.train_s1_next import TeacherCache,trajectory_kd
+from tools.train_s1_next_bridge_pilot import condition
 
 
 class Encoder(nn.Module):
@@ -51,6 +52,40 @@ class MockV5(nn.Module):
 
 
 class EfficiencyTests(unittest.TestCase):
+    def test_sampling_penalty_and_eos(self):
+        logits=torch.tensor([[2.,1.8,-1.,9.]])
+        prior=torch.tensor([[0,0]])
+        self.assertEqual(int(sample_next(logits,prior,eos=3,allow_eos=False,top_k=1)),0)
+        self.assertEqual(int(sample_next(logits,prior,eos=3,allow_eos=False,top_k=1,repetition_penalty=1.35)),1)
+        self.assertEqual(int(sample_next(logits,prior,eos=3,allow_eos=True,top_k=1)),3)
+        self.assertEqual(float(logits[0,3]),9.)
+
+    def test_trajectory_kd_gradients_and_mode(self):
+        cfg=NextConfig(dim=16,depth=1,heads=2,ff_dim=32,phonemes=12,codes=8,bert_dim=4)
+        student=S1Next(cfg).train()
+        x=torch.tensor([[1,2,3]])
+        b=torch.randn(1,4,3)
+        y=torch.tensor([[1,2,3,4,5,6]])
+        def fake(teacher,text,bert,context):
+            self.assertEqual(context.shape[1],6)
+            return torch.zeros(1,context.shape[1]+1,9),None
+        with patch("tools.train_s1_next.teacher_logits",side_effect=fake):
+            loss=trajectory_kd(student,None,x,b,y,temperature=2.,seed=11)
+        self.assertTrue(student.training)
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+        self.assertGreater(float(student.head.weight.grad.norm()),0)
+
+    def test_bridge_conditions_do_not_use_future(self):
+        h=torch.arange(30*4,dtype=torch.float32).reshape(1,30,4)
+        example={"hidden":h}
+        m=condition(example,"prompt_mean",None)["hidden"]
+        torch.testing.assert_close(m[:,0],h[:,:25].mean(1))
+        torch.testing.assert_close(m[:,0],m[:,-1])
+        g=condition(example,"global_mean",torch.ones(1,1,4))["hidden"]
+        self.assertTrue((g==1).all())
+        self.assertIs(condition(example,"aligned",None),example)
+
     def test_cache_content_and_teacher_identity(self):
         x=torch.ones(1,2,dtype=torch.long)
         b=torch.zeros(1,4,2)
