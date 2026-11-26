@@ -61,6 +61,7 @@ jobs:
             tools/kaggle_quality_listening.py \
             tools/kaggle_quality_score.py \
             tools/quality_reference_style.py \
+            tools/practical_v5.py \
             tools/kaggle_launch_webui.py \
             tools/my_utils.py
 
