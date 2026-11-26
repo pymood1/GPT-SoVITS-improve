@@ -412,3 +412,47 @@ audio for blind listening. Compare effects within each reference;
 only candidates that preserve intelligibility and speaker identity
 are eligible for fresh multi-reference, multi-text held-out trials.
 Do not modify production main or checkpoints.
+
+## Literature-first research policy and cross-model pilot (2026-11-27 KST)
+
+Stage 1: evidence assessment before implementation.
+- Kim et al., VITS, ICML 2021, https://proceedings.mlr.press/v139/kim21f.html : Mel reconstruction is useful supervision for the paired real waveform, not proof that an arbitrary teacher output is an optimal target.
+- Mehta et al., Matcha-TTS, ICASSP 2024, https://arxiv.org/abs/2309.03199 : OT-CFM is a viable acoustic generative objective; this does not validate clipping in GPT-SoVITS.
+- Yamamoto et al., Parallel WaveGAN, ICASSP 2020, https://arxiv.org/abs/1910.11480 : multi-resolution spectral objectives can supervise waveform generators, not direct cross-architecture latent alignment.
+- Ren et al., FastSpeech 2, ICLR 2021, https://arxiv.org/abs/2006.04558 : teacher Mel targets can lose information; prefer real paired targets where available.
+- Le et al., Voicebox, NeurIPS 2023, https://arxiv.org/abs/2306.15687 : preserve intelligibility and speaker similarity alongside acoustic criteria.
+- Synthetic speech evaluation review, https://www.jstage.jst.go.jp/article/ast/advpub/0/advpub_e24.12/_article : retain blinded listening; objective proxies alone do not establish naturalness.
+Stage 2: architecture and experimental logic.
+V2ProPlus and V5 variants have different S2 synthesis routes but repo defaults
+share S1 s1v3.ckpt. Compare native WAVs in a common 24 kHz / 80-bin
+log-Mel frontend, with RMS matching, boundary-only silence trim,
+constrained DTW and unaligned mean-band distance. Report duration ratio
+and warping stretch. These are descriptive inter-model distances, not MCD,
+ground-truth fidelity, perceptual noise, or MOS. No same-speaker ground-truth
+target has been verified in the current FLEURS selection; do not claim it.
+A separate verified same-speaker/different-utterance corpus is required for
+paired real-target fidelity and future CFM training. No teacher-only
+distillation, production change or new model training yet.
+
+Prior fixed-mel factorial 45912359274 completed 12/12, 390.386s;
+raw identity CER .37037/SV .82373; raw hard .31481/.82655;
+raw soft .31481/.82602; gain identity .31481/.83617;
+gain hard .31481/.84564; gain soft .31481/.84107.
+Identity PCM replay was exact. Ref1 quiet HF ratio .18467 -> .13981
+with gain-hard; ref2 quiet HF ratio .01764 -> .02713, thus not universal.
+Reject a blanket noise reduction conclusion; compare per-pair effects.
+
+New pilot: same saved public FLEURS references and target texts 02/03,
+not used in tail tuning (but not globally unseen). Four native arms:
+pretrained V2ProPlus, V5dev 32 steps/CFG1.3, V5turbo 4 steps/CFG0,
+and V5dev reference gain plus denormalized Mel clamp [-12,2].
+Same input, sampler settings, seed, full FP32 and S1 checkpoint; native
+prompt encoding may differ, and gain can affect S1, so this is end-to-end,
+not a fixed-token S2 isolation. Record checkpoint hashes and control asset
+revision. 16 audio cases, strict FP32 CER/SV, noise proxies and spectral
+distances to each native baseline. Private audio and text, aggregate logs.
+One bounded two-T4 job, 2700s cap, mandatory CPU checks, no auto retry.
+A candidate must preserve CER and speaker identity and pass blind listening;
+similarity to V2ProPlus alone cannot establish superiority. Fresh
+same-speaker paired corpus and further validation are prerequisites for
+training decisions. 
