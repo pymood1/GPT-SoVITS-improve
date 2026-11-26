@@ -18,7 +18,10 @@ sys.path[:0]=[str(ROOT),str(ROOT/"GPT_SoVITS")]
 REV="3dfbbb3b3cfb7d48550c24defda9876bbb73f8ac"
 
 
-def prepare_rows(split,count,root,seen_audio,seen_text,cache):
+def prepare_rows(split,count,root,seen_audio,seen_text,cache,*,min_count=None):
+    required=count if min_count is None else min_count
+    if not 0<=required<=count or count<1:
+        raise ValueError('Invalid corpus count')
     from huggingface_hub import hf_hub_download
     import pyarrow.parquet as pq
     import soundfile as sf
@@ -53,7 +56,7 @@ def prepare_rows(split,count,root,seen_audio,seen_text,cache):
                 break
         if len(rows)==count:
             break
-    if len(rows)!=count:
+    if len(rows)<required:
         raise RuntimeError("Insufficient eligible FLEURS utterances")
     lst=root/"input.list"
     lst.write_text("".join(f"{wav/name}|fleurs-{split}|ko|{text}\n" for name,text,_ in rows),encoding="utf-8")
