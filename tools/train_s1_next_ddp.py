@@ -98,11 +98,16 @@ def prepare_worker(args):
         conf.configs_path=str(Path(tmp)/"tts.yaml")
         engine=TTS(conf)
         teacher=engine.t2s_model.model.eval()
-        for label,rows,count,seed,pair_seed in (("train",train_rows,args.train_pairs,33000,2027),
-                                                ("validation",val_rows,args.val_pairs,40100,2028)):
+        splits=[("train",train_rows,args.train_pairs,33000,2027)]
+        if not args.train_only:
+            splits.append(("validation",val_rows,args.val_pairs,40100,2028))
+        for label,rows,count,seed,pair_seed in splits:
             examples=[]
             attempts=0
-            for i,(ref,target) in enumerate(make_pairs(rows,count,pair_seed)):
+            for pair_index,(ref,target) in enumerate(make_pairs(rows,count,pair_seed)):
+                if args.reverse_pairs and label=="train":
+                    ref,target=target,ref
+                i=pair_index+(args.index_offset if label=="train" else 0)
                 if i%args.world!=args.rank:
                     continue
                 attempts+=1
@@ -223,6 +228,11 @@ def train_worker(args):
         opt=torch.optim.AdamW(student.parameters(),lr=args.lr,weight_decay=.01,fused=True)
         train=read_shards(args.data,world,"train")
         valid=read_shards(args.data,world,"validation")
+        if args.extra_data:
+            train.extend(read_shards(args.extra_data,world,"train"))
+        if len({e["index"] for e in train})!=len(train):
+            raise ValueError("Duplicate training indices across caches")
+        scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(opt,mode="min",factor=.5,patience=2,threshold=.002,threshold_mode="abs",min_lr=args.min_lr)
         if rank==0:
             args.output.mkdir(parents=True,exist_ok=False)
         dist.barrier()
@@ -239,11 +249,13 @@ def train_worker(args):
             gate_streak=gate_streak+1 if passed else 0
             row={"epoch":epoch,"validation":metrics,"tokens":count,"steps":steps,
                  "seconds":seconds,"tokens_per_second":count/max(.001,time.monotonic()-started),
-                 "teacher_gate_passed":passed,"gate_streak":gate_streak}
+                 "teacher_gate_passed":passed,"gate_streak":gate_streak,"lr":opt.param_groups[0]["lr"]}
             if loss is not None:
                 row["train_loss"]=loss
             history.append(row)
-            score=metrics["kd"]+2*metrics["short_rate"]+2*metrics["cap_rate"]+abs(metrics["mean_length_ratio"]-1)
+            score=metrics["ce"]+metrics["kd"]+2*metrics["short_rate"]+2*metrics["cap_rate"]+abs(metrics["mean_length_ratio"]-1)
+            if epoch>0:
+                scheduler.step(metrics["ce"]+metrics["kd"])
             if rank==0:
                 if args.until_teacher and passed:
                     save_atomic({"format":"s1-next-v1","config":asdict(cfg),"state_dict":student.state_dict(),
@@ -299,6 +311,11 @@ def train_worker(args):
             dist.all_reduce(packed)
             metrics=evaluate_distributed(student,valid,device,rank,world)
             record(epoch,metrics,time.monotonic()-t,float(packed[0]/packed[1]))
+            if rank==0 and args.until_teacher:
+                save_atomic({"format":"s1-next-v1","config":asdict(cfg),"state_dict":student.state_dict(),
+                             "teacher_config":teacher_cfg,"epoch":epoch,"tokens":count,"validation":metrics},
+                            args.output/"s1-next-last.pt")
+            dist.barrier()
             if args.until_teacher:
                 # Identical validation metrics on every rank; synchronize wall-clock decision.
                 stop=torch.tensor([int(gate_streak>=args.gate_checks),int(time.monotonic()-started>=args.max_train_seconds)],device=device)
@@ -332,6 +349,10 @@ def main():
     p.add_argument("mode",choices=["prepare","train"])
     for name in ("teacher","student","s2","train","validation","data","output"):
         p.add_argument("--"+name,type=Path)
+    p.add_argument("--extra-data",type=Path)
+    p.add_argument("--train-only",action="store_true")
+    p.add_argument("--reverse-pairs",action="store_true")
+    p.add_argument("--index-offset",type=int,default=0)
     p.add_argument("--rank",type=int,default=0)
     p.add_argument("--world",type=int,default=2)
     p.add_argument("--train-pairs",type=int,default=1024)
@@ -339,12 +360,13 @@ def main():
     p.add_argument("--epochs",type=int,default=8)
     p.add_argument("--micro",type=int,default=4)
     p.add_argument("--lr",type=float,default=5e-5)
+    p.add_argument("--min-lr",type=float,default=1e-6)
     p.add_argument("--until-teacher",action="store_true")
     p.add_argument("--ce-tolerance",type=float,default=.05)
     p.add_argument("--gate-checks",type=int,default=3)
     p.add_argument("--max-train-seconds",type=int,default=5400)
     a=p.parse_args()
-    if a.epochs<1 or not 0<=a.ce_tolerance<=.1 or a.gate_checks<2 or a.max_train_seconds<1:
+    if a.epochs<1 or not 0<=a.ce_tolerance<=.1 or a.gate_checks<2 or a.max_train_seconds<1 or not 0<a.min_lr<=a.lr or a.index_offset<0:
         p.error("Invalid convergence limits")
     (prepare_worker if a.mode=="prepare" else train_worker)(a)
 
