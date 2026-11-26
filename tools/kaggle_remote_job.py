@@ -110,6 +110,43 @@ def main():
                    GPT_SOVITS_RESEARCH_MAX_SECONDS=str(budget),
                    GPT_SOVITS_RESEARCH_SOURCE_KERNEL=req.get("source_kernel", ""),
                    PYTHONUNBUFFERED="1")
+        if req.get("deploy", False):
+            # Check inputs before spending time installing inference dependencies.
+            report["stage"] = "deployment_mount"
+            sys.path.insert(0, str(ROOT))
+            from tools.practical_v5 import mounted_sources
+            mounted_sources("/kaggle/input", req["source_kernel"], req["reference_kernel"])
+            env["GPT_SOVITS_DEPLOY_SETUP_ONLY"] = "1"
+            report["stage"] = "deployment_setup"
+            proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_grokking_bootstrap.py")],
+                                  cwd=ROOT, env=env)
+            report["bootstrap_exit"] = proc.returncode
+            if proc.returncode != 0:
+                return
+            env.update(PYTHONPATH=os.pathsep.join([str(ROOT), str(ROOT / "GPT_SoVITS")]),
+                       HF_HOME="/kaggle/tmp/huggingface", CUDA_VISIBLE_DEVICES="0",
+                       version="v5dev", language="ko_KR", TMPDIR="/kaggle/tmp")
+            from importlib.util import spec_from_file_location, module_from_spec
+            spec = spec_from_file_location("kaggle_launcher", ROOT / "tools/kaggle_launch_webui.py")
+            launcher = module_from_spec(spec)
+            spec.loader.exec_module(launcher)
+            launcher.apply_nvidia_library_path(env)
+            report["stage"] = "deployment"
+            proc = subprocess.run(
+                [sys.executable, "-u", str(ROOT / "tools/practical_v5.py"),
+                 "--repo", str(ROOT), "--export-work", "/kaggle/tmp",
+                 "--output", str(WORKING), "--candidate-kernel", req["source_kernel"],
+                 "--reference-kernel", req["reference_kernel"]],
+                cwd=ROOT, env=env, timeout=1800)
+            report["deployment_exit"] = proc.returncode
+            raw = json.loads((WORKING / "deploy-status.json").read_text())
+            report["deployment"] = {
+                "status": raw.get("status") if raw.get("status") in ("completed", "failed") else "unknown",
+                **{k: number(raw.get(k)) for k in ("smoke_count", "file_count", "archive_bytes", "baseline_cer", "mean_cer")},
+            }
+            if proc.returncode == 0 and raw.get("status") == "completed" and raw.get("smoke_count") == 6:
+                report.update(status="completed", stage="finished")
+            return
         # No GitHub credential is injected into this kernel.
         proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_grokking_bootstrap.py")],
                               cwd=ROOT, env=env)
@@ -146,21 +183,6 @@ def main():
                 launcher = module_from_spec(spec)
                 spec.loader.exec_module(launcher)
                 launcher.apply_nvidia_library_path(env)
-                if req.get("deploy", False):
-                    report.update(status="failed", stage="deployment")
-                    proc = subprocess.run(
-                        [sys.executable, "-u", str(ROOT / "tools/practical_v5.py"),
-                         "--repo", str(ROOT), "--export-work", str(Path("/kaggle/tmp/grokking_runs") / run_id),
-                         "--output", str(WORKING)], cwd=ROOT, env=env, timeout=1800)
-                    report["deployment_exit"] = proc.returncode
-                    raw = json.loads((WORKING / "deploy-status.json").read_text())
-                    report["deployment"] = {
-                        "status": raw.get("status") if raw.get("status") in ("completed", "failed") else "unknown",
-                        **{k: number(raw.get(k)) for k in ("smoke_count", "file_count", "archive_bytes")},
-                    }
-                    if proc.returncode == 0 and raw.get("status") == "completed" and raw.get("smoke_count") == 3:
-                        report.update(status="completed", stage="finished")
-                    return
                 # Only safe aggregate metrics are exported by this launcher.
                 try:
                     proc = subprocess.run([sys.executable, "-u", str(ROOT / "tools/kaggle_quality_listening.py"),
