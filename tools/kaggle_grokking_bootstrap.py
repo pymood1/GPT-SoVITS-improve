@@ -132,6 +132,10 @@ def _run():
             shutil.rmtree("/kaggle/tmp/gpt_sovits_downloads", ignore_errors=True)
         print("[disk after setup]", _disk_state(), flush=True)
         print("[gsv-progress] parent bootstrap all 1/2", flush=True)
+        if os.environ.get("GPT_SOVITS_DEPLOY_SETUP_ONLY") == "1":
+            manifest.update(status="completed", stage="setup_only")
+            print("[gsv-progress] parent bootstrap all 2/2", flush=True)
+            return 0
         manifest["stage"] = "launcher"
         _write_json(report / "run.json", manifest)
         _bundle(report, archive)
