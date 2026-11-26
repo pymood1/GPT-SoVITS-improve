@@ -225,3 +225,18 @@ No bridge training. Compare old/new student and teacher on fresh matched
 2-reference x 4-text waveform evaluation (24 attempts). Same S2/vocoder.
 Two GPUs replicate weights rather than pooling memory. Actual speedup,
 capacity and generalization are to be measured, not assumed.
+
+### Subsequent training convergence policy
+Keep the already submitted round-6 commit immutable. Subsequent DDP runs
+should pass --until-teacher, a generous epoch ceiling and bounded session
+time. Compute both teacher and student token-weighted CE on the exact
+same independent-reference validation pseudo-targets, including EOS.
+Candidate gate: student CE <= 1.05 * teacher CE, no short or capped
+rollouts, mean length ratio 0.9–1.1, three consecutive validation checks.
+Save a teacher-gate candidate and a separate latest weights checkpoint.
+If time or epoch ceiling is reached, report that convergence was not
+achieved; carry the checkpoint and reuse cached data next session.
+This gate is necessary but not sufficient for production replacement:
+compare CER, speaker similarity and listening on a fresh test corpus,
+not the repeatedly consulted validation data. The current code supports
+the stop policy; the next Kaggle request must explicitly enable it.
