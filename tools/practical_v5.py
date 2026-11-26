@@ -177,6 +177,12 @@ def export(repo, work, output, *, candidate_kernel, reference_kernel, input_root
                 "Optional Mean pools the other two saved references; it is not the original three-auxiliary experiment.\n"
                 "Do not publish this archive: it contains private reference recordings and transcripts.\n",
                 encoding="utf-8")
+            # No training ASR ran in this path, so explicitly provision the scorer.
+            from tools.asr.fasterwhisper_asr import download_model
+            download_model("large-v3")
+            estimate = sum(p.stat().st_size for p in bundle.iterdir() if p.is_file())
+            if shutil.disk_usage(output).free < estimate + 100 * 1024**2:
+                raise RuntimeError("Insufficient free output space for private archive")
             engine = PracticalV5(repo, bundle)
             texts = ("오늘은 새로운 목소리 모델을 확인하는 날입니다.",
                      "정말 그렇게 생각했나요? 다시 한번 확인해 보겠습니다.",
