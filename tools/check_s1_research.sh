@@ -27,3 +27,5 @@ python -m py_compile tools/s1_waveform_frontend.py
 python tools/s1_waveform_frontend.py
 python -m py_compile tools/s1_inference_export.py
 PYTHONPATH=.:GPT_SoVITS python tools/s1_inference_export.py
+python -m py_compile tools/s1_rank_adaptive_ffn.py
+PYTHONPATH=.:GPT_SoVITS python tools/s1_rank_adaptive_ffn.py
