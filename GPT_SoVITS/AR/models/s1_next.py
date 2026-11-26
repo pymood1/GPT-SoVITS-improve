@@ -1,5 +1,5 @@
 """Experimental S1 Next. No changes to the existing inference/training path."""
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -10,7 +10,7 @@ class NextConfig:
     dim: int = 512
     depth: int = 24
     heads: int = 16
-    ff_dim: int = 1408
+    ff_dim: int = 1344
     phonemes: int = 732
     codes: int = 1024
     bert_dim: int = 1024
