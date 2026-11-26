@@ -9,9 +9,23 @@ sys.path[:0]=[str(ROOT),str(ROOT/"GPT_SoVITS")]
 from tools.evaluate_s1_next_waveforms import read_manifest,token_stats,summarize
 from tools.kaggle_s1_next_waveforms import prior_assets,SOURCE,SOURCE_SHA
 from tools.train_s1_next_prompt import make_pairs,target_slice
+from tools.kaggle_s1_next_repair import latest_progress,error_signature
 
 
 class WaveformContractTests(unittest.TestCase):
+    def test_safe_diagnostics_and_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/"worker.log"
+            p.write_text('{"event":"pseudo_pair","accepted":3,"attempts":4}\nprivate text\n')
+            self.assertEqual(latest_progress(p),{"event":"pseudo_pair","accepted":3,"attempts":4})
+            p.write_text('Traceback (most recent call last):\n  File "/private/path/data.py", line 579, in find\nLookupError:\nResource averaged_perceptron_tagger_eng not found\nprivate text\n')
+            rows=error_signature(p)
+            self.assertEqual(rows[0]["exceptions"],["LookupError"])
+            self.assertEqual(rows[0]["nltk_resources"],["averaged_perceptron_tagger_eng"])
+            self.assertEqual(rows[0]["frames"],[["data.py",579,"find"]])
+            self.assertNotIn("private text",str(rows))
+
+
     def test_prompt_target_boundary(self):
         logits=torch.arange(18).reshape(1,6,3)
         targets=torch.arange(6).reshape(1,6)
