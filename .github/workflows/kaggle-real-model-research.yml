@@ -7,14 +7,13 @@ on:
 permissions:
   contents: read
   pull-requests: write
-concurrency:
-  group: kaggle-real-model-research-v2
-  cancel-in-progress: false
 jobs:
-  research:
+  request:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/grokking-gpt-sovits-20261121'
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 5
+    outputs:
+      submit: ${{ steps.request.outputs.submit }}
     steps:
       - name: Verify explicit request commit
         id: request
@@ -38,14 +37,23 @@ jobs:
               f.write("submit=" + str(requested).lower() + "\n")
           print("Explicit research request:", requested)
           PY
+  research:
+    needs: request
+    if: needs.request.outputs.submit == 'true'
+    concurrency:
+      group: kaggle-real-model-research-v2
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
       - name: Checkout request
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Validate deployment path before GPU submission
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         run: |
           python - <<'PY'
           import json, subprocess, sys
@@ -58,7 +66,7 @@ jobs:
                               "-p", "test_practical_v5.py", "-v"], check=True)
           PY
       - name: Prepare private pinned Kaggle job
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         id: prepare
         run: |
           python - <<'PY'
@@ -110,10 +118,10 @@ jobs:
           print("Private job:", kernel, "commit:", req["code_sha"], "profile:", req["profile"], "epochs:", req["epochs"], "runtime_limit_seconds:", req["max_training_seconds"] + 2400)
           PY
       - name: Install Kaggle CLI
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         run: python -m pip install --disable-pip-version-check kaggle==2.2.5
       - name: Submit actual model experiment
-        if: steps.request.outputs.submit == 'true' && steps.prepare.outputs.recover == 'false'
+        if: needs.request.outputs.submit == 'true' && steps.prepare.outputs.recover == 'false'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
@@ -132,7 +140,7 @@ jobs:
           fi
           kaggle kernels push -p "$RUNNER_TEMP/kaggle-research" --accelerator NvidiaTeslaT4 --timeout "${{ steps.prepare.outputs.runtime_limit }}"
       - name: Poll and recover numeric metrics only
-        if: steps.request.outputs.submit == 'true'
+        if: needs.request.outputs.submit == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
