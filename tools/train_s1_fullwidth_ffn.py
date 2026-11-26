@@ -248,7 +248,8 @@ def train(args):
             path=args.output/"metrics.json"
             report=json.loads(path.read_text())
             report["exported"]=exported
-            report["all_ffn_replaced"]=gate_met
+            report["export_gate_met"]=passed(exported)
+            report["all_ffn_replaced"]=gate_met and passed(exported)
             path.write_text(json.dumps(report,indent=2,allow_nan=False))
         dist.barrier()
     finally:
