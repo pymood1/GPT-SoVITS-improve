@@ -142,9 +142,9 @@ def main():
             raw = json.loads((WORKING / "deploy-status.json").read_text())
             report["deployment"] = {
                 "status": raw.get("status") if raw.get("status") in ("completed", "failed") else "unknown",
-                **{k: number(raw.get(k)) for k in ("smoke_count", "file_count", "archive_bytes", "baseline_cer", "mean_cer")},
+                **{k: number(raw.get(k)) for k in ("smoke_count", "baseline_count", "mean_count", "file_count", "archive_bytes", "baseline_cer", "mean_cer")},
             }
-            if proc.returncode == 0 and raw.get("status") == "completed" and raw.get("smoke_count") == 6:
+            if proc.returncode == 0 and raw.get("status") == "completed" and raw.get("baseline_count") == 3:
                 report.update(status="completed", stage="finished")
             return
         # No GitHub credential is injected into this kernel.
