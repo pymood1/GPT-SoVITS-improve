@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from AR.models.s1_next import S1Next,NextConfig,kd_loss
-from tools.train_s1_next_ddp import batches,gradient_multiplier
+from tools.train_s1_next_ddp import batches,gradient_multiplier,teacher_gate
 
 
 def example(i):
@@ -54,6 +54,20 @@ def worker(rank,init):
 
 
 class DDPTests(unittest.TestCase):
+    def test_teacher_convergence_gate(self):
+        good={"ce":3.99,"teacher_ce":4.0,"kd":.2,"short_rate":0.,
+              "cap_rate":0.,"mean_length_ratio":1.02}
+        self.assertTrue(teacher_gate(good))
+        self.assertTrue(teacher_gate(dict(good,ce=4.19)))
+        self.assertFalse(teacher_gate(dict(good,ce=4.21)))
+        self.assertFalse(teacher_gate(dict(good,short_rate=.01)))
+        self.assertFalse(teacher_gate(dict(good,cap_rate=.01)))
+        self.assertFalse(teacher_gate(dict(good,mean_length_ratio=.89)))
+        self.assertFalse(teacher_gate(dict(good,kd=float("nan"))))
+        self.assertFalse(teacher_gate(dict(good,teacher_ce=0.)))
+        self.assertFalse(teacher_gate(dict(good,ce=4.01),ce_tolerance=0.))
+
+
     def test_shards_and_remainder(self):
         result=list(batches(list(range(13)),2,3))
         self.assertEqual([len(g[0]) for g in result],[3,3])
