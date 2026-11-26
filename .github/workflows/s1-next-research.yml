@@ -4,32 +4,54 @@ on:
     branches: [research/grokking-gpt-sovits-20261121]
     paths:
       - 'GPT_SoVITS/AR/models/s1_next.py'
-      - 'tools/train_s1_next*.py'
-      - 'tools/prepare_s1_next_fleurs.py'
-      - 'tools/evaluate_s1_next_waveforms.py'
-      - 'tools/kaggle_s1_next_scale.py'
-      - 'tools/train_s1_next_ddp.py'
       - 'GPT_SoVITS/module/s1_next_bridge.py'
+      - 'tools/*s1*.py'
+      - 'tools/check_s1_research.sh'
+      - 'tools/kaggle_live_status.py'
       - 'tests/test_s1_next*.py'
-      - '.github/workflows/s1-next-research.yml'
+      - '.github/workflows/s1-next-*.yml'
 permissions:
   contents: read
+concurrency:
+  group: s1-research-cpu-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   cpu-architecture:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/s1-next-distillation-20261126'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
+      - name: Check latest commit for actual research code changes
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request,fnmatch
+          url="https://api.github.com/repos/"+os.environ["REPO"]+"/commits/"+os.environ["HEAD"]
+          request=urllib.request.Request(url,headers={"Authorization":"Bearer "+os.environ["GH_TOKEN"],"Accept":"application/vnd.github+json"})
+          with urllib.request.urlopen(request,timeout=20) as response:
+              files={x["filename"] for x in json.load(response)["files"]}
+          patterns=("GPT_SoVITS/AR/models/s1_next.py","GPT_SoVITS/module/s1_next_bridge.py","tools/*s1*.py","tools/check_s1_research.sh","tools/kaggle_live_status.py","tests/test_s1_next*.py",".github/workflows/s1-next-*.yml")
+          run=any(fnmatch.fnmatchcase(f,p) for f in files for p in patterns)
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("run="+str(run).lower()+"\n")
+          print("Research code changed:",run)
+          PY
       - uses: actions/checkout@v4
+        if: steps.changed.outputs.run == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v5
+        if: steps.changed.outputs.run == 'true'
         with:
           python-version: '3.12'
-      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: python -m py_compile GPT_SoVITS/AR/models/s1_next.py tools/train_s1_next.py tools/prepare_s1_next_fleurs.py tools/train_s1_next_bridge_pilot.py GPT_SoVITS/module/s1_next_bridge.py tests/test_s1_next.py tests/test_s1_next_efficiency.py tools/evaluate_s1_next_waveforms.py tests/test_s1_next_waveforms.py tools/train_s1_next_ddp.py tools/kaggle_s1_next_scale.py tests/test_s1_next_ddp.py
-      - run: python tests/test_s1_next.py -v
-      - run: python tests/test_s1_next_efficiency.py -v
-      - run: python tests/test_s1_next_waveforms.py -v
-      - run: python tests/test_s1_next_ddp.py -v
+      - name: Install CPU test dependencies
+        if: steps.changed.outputs.run == 'true'
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Run shared regression suite
+        if: steps.changed.outputs.run == 'true'
+        run: bash tools/check_s1_research.sh
