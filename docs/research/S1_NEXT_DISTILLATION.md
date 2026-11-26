@@ -328,3 +328,41 @@ norm checkpoint are separately mounted. This path is required by recovery;
 actual file mounting is checked in the listening job. Never overwrite it.
 The general read-only observer can inspect numbered S1 kernels without
 allocating GPU; request-only commits skip redundant CPU tests.
+
+## Frozen listening and acoustic isolation (2026-11-27 KST)
+Listening recovery 45840975381 succeeded 32/32 (8 per arm), full-forward
+FP32, no training, 793.344s. Original/12/14/15 mean durations
+5.825/5.89/6.535/6.21s; no cap hits. User listened to four random
+files (three round14, one original), reporting ambiguous reference match
+and noise. Not a matched blind comparison; no inference about round15
+superiority. Preserve all checkpoints.
+
+Acoustic isolation 45849884407 completed 20/20 in 456.338s. Exact
+previous references, text01, original frozen S1 and V5dev.
+Reference RMS -35.055/-46.730 dBFS; true mel vocoder outputs
+-35.803/-47.509 dBFS. Target real -38.676, vocoded -39.649.
+Original synthesis RMS -35.395/-44.599; with reference gain
+(4.006x/8x) -23.946/-27.880. This is a clear gain effect, not proof of
+noise removal. The level-matched listening copies use bounded gain only.
+
+Reference1 true mel min -11.513, oracle-token S2 min -23.905,
+original GPT+S2 min -48.924, CFG0 min -13.284. Reference2 baseline
+min -12.027, CFG0 -13.426. Static cache off changes summary statistics
+only by rounding-scale differences; this does not prove waveform identity.
+Vocoder-only reconstruction preserves RMS within ~1 dB for these three
+recordings; listening and spectral analysis still required. CFM uses
+Euler flow integration and velocity CFG v+g(v-neg), normalization
+spec_min=-12, spec_max=2, no final clamp. Extreme lower values could
+be sparse and need not be audible; don't infer a causal noise source
+from extrema alone.
+
+Follow-up request bc55172ef69608707db51f2f5d64d3ff2d1233a4:
+reuse exact saved baseline mel and tokens, two reference workers, no
+new S1 generation or training. Re-vocode baseline and clamp [-12,2]
+for a controlled listening ablation; measure .1/1 percentile and
+out-of-range fraction; compare CFG .5/.8, reference gain with CFG .8,
+and gain applied only to CFM prompt mel versus only to encoder
+conditioning. Use matched seed. These are research-only controls,
+not a proposed production clamp without evidence. 14 cases, 1500s
+session cap, no automatic retry. Prior CFG0/1.3 and real recordings
+available as comparison files. No GPU precision reduction.
