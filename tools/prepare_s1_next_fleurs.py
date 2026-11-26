@@ -98,12 +98,16 @@ def main():
     p.add_argument("--teacher",type=Path,required=True)
     p.add_argument("--train-count",type=int,default=64)
     p.add_argument("--val-count",type=int,default=16)
+    p.add_argument("--test-count",type=int,default=0)
     p.add_argument("--gpu",default="0")
     args=p.parse_args()
     root=args.root.resolve()
     root.mkdir(parents=True,exist_ok=False)
     audio,text=set(),set()
-    for split,count in (("train",args.train_count),("validation",args.val_count)):
+    splits=[("train",args.train_count),("validation",args.val_count)]
+    if args.test_count:
+        splits.append(("test",args.test_count))
+    for split,count in splits:
         if count<1: p.error("Positive counts required")
         folder=root/split
         lst,rows=prepare_rows(split,count,folder,audio,text,root/"hf-cache")
