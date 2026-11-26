@@ -194,7 +194,7 @@ jobs:
           assert result["status"] == "completed", "Model experiment did not complete"
           if req.get("deploy", False):
               d = result.get("deployment", {})
-              assert d.get("status") == "completed" and d.get("smoke_count") == 6 and 0 <= d.get("baseline_cer", 1) <= .05 and d.get("archive_bytes", 0) > 0, "Private deployment export failed"
+              assert d.get("status") == "completed" and d.get("baseline_count") == 3 and 0 <= d.get("baseline_cer", 1) <= .05 and d.get("archive_bytes", 0) > 0, "Private deployment export failed"
           PY
           # Recover only the narrowly scoped diagnostic; no audio, checkpoints or raw logs.
           if python - "$RUNNER_TEMP/kaggle-result/remote-result.json" <<'PY'
