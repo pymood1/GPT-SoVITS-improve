@@ -7,9 +7,29 @@ import torch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/"GPT_SoVITS")]
 from tools.evaluate_s1_next_waveforms import read_manifest,token_stats,summarize
+from tools.kaggle_s1_next_waveforms import prior_assets,SOURCE,SOURCE_SHA
 
 
 class WaveformContractTests(unittest.TestCase):
+    def test_pinned_prior_assets(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            base=root/SOURCE.split('/')[-1]
+            base.mkdir()
+            result=base/'s1-next-result.json'
+            result.write_text(json.dumps({'code_sha':SOURCE_SHA,'status':'completed'}))
+            names=['trajectory_kd/s1-next-best.pt','bridge/aligned-best.pt','bridge/global_mean-best.pt']
+            for name in names:
+                p=base/'s1-next-pilot'/name
+                p.parent.mkdir(parents=True,exist_ok=True)
+                p.write_bytes(b'x'*10000)
+            assets=prior_assets(SOURCE,root)
+            self.assertEqual(set(assets),{'student','aligned','global_mean'})
+            result.write_text(json.dumps({'code_sha':'wrong','status':'completed'}))
+            with self.assertRaises(ValueError):
+                prior_assets(SOURCE,root)
+
+
     def test_independent_reference_manifest(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
