@@ -135,23 +135,25 @@ def sample_loss(student,teacher,sample,device,args,cache=None):
     with torch.no_grad():
         teacher_ce=F.cross_entropy(t.float().flatten(0,1),target.flatten())
         correct=(logits.argmax(-1)==target).sum()
+        teacher_correct=(t.argmax(-1)==target).sum()
     return loss,{"ce":float(ce),"kd":float(kl),"teacher_ce":float(teacher_ce),
-                 "correct":int(correct),"tokens":target.numel()}
+                 "correct":int(correct),"teacher_correct":int(teacher_correct),"tokens":target.numel()}
 
 
 @torch.no_grad()
 def evaluate(student,teacher,data,indices,device,args,cache=None):
     student.eval()
-    result={"ce":0.,"kd":0.,"teacher_ce":0.,"correct":0,"tokens":0}
+    result={"ce":0.,"kd":0.,"teacher_ce":0.,"correct":0,"teacher_correct":0,"tokens":0}
     for i in indices:
         _,m=sample_loss(student,teacher,data[i],device,args,cache)
         for key in ("ce","kd","teacher_ce"):
             result[key]+=m[key]*m["tokens"]
-        for key in ("correct","tokens"):
+        for key in ("correct","teacher_correct","tokens"):
             result[key]+=m[key]
     for key in ("ce","kd","teacher_ce"):
         result[key]/=result["tokens"]
     result["accuracy"]=result["correct"]/result["tokens"]
+    result["teacher_accuracy"]=result["teacher_correct"]/result["tokens"]
     return result
 
 
@@ -174,6 +176,7 @@ def main():
     p.add_argument("--tokens-per-update",type=int,default=2048)
     p.add_argument("--max-tokens",type=int,default=1000000)
     p.add_argument("--warmup-steps",type=int,default=50)
+    p.add_argument("--rollout-count",type=int,default=0)
     args=p.parse_args()
     if min(args.epochs,args.max_steps,args.tokens_per_update,args.max_tokens)<1 or args.warmup_steps<0 or args.lr<=0 or not 0<=args.alpha<=1 or args.temperature<=0:
         p.error("Invalid training settings")
@@ -261,6 +264,33 @@ def main():
             save(epoch,metrics)
         if step>=args.max_steps or total_tokens>=args.max_tokens:
             break
+
+    # Free-running diagnostic, not a waveform quality metric. Use best held-out CE checkpoint.
+    if args.rollout_count>0:
+        saved=torch.load(checkpoint,map_location="cpu",weights_only=False)
+        student.load_state_dict(saved["state_dict"],strict=True)
+        student.eval()
+        trials=[]
+        for i in val_indices[:args.rollout_count]:
+            x,b,y=prepare(valid[i],cfg,device,args.allow_missing_bert)
+            prefix=min(25,max(1,y.size(1)//4))
+            cap=min(512,max(64,2*(y.size(1)-prefix)))
+            ids,_=student.generate(x,b,y[:,:prefix],max_new=cap,min_new=1,top_k=1)
+            n=ids.size(1)
+            longest=run=0
+            prev=None
+            for v in ids[0].tolist():
+                run=run+1 if v==prev else 1
+                prev=v
+                longest=max(longest,run)
+            trials.append({"generated":n,"target":y.size(1)-prefix,
+                           "hit_cap":n==cap,"longest_repeat":longest})
+        path=args.output/"metrics.json"
+        report=json.loads(path.read_text())
+        report["rollout"]={"count":len(trials),"cap_rate":sum(t["hit_cap"] for t in trials)/len(trials),
+                           "mean_length_ratio":sum(t["generated"]/t["target"] for t in trials)/len(trials),
+                           "max_repeat":max(t["longest_repeat"] for t in trials)}
+        path.write_text(json.dumps(report,allow_nan=False,indent=2))
 
 
 
