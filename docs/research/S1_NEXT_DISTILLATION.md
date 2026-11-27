@@ -1014,3 +1014,47 @@ including 144 free-generation cases across two seeds; test generation
 without oracle duration, common 512 cap. No waveform quality claim,
 no production edits, no automatic adoption. Save arm deltas privately.
 Native arm is a matched fine-tuning control, not full original training.
+
+## v16 results and v17 expanded multilingual alignment (2026-11-27 KST)
+Run 45948297170: 240/240, 570.411s, setup249.185s, both workers exit0.
+EN test mean of seed median EOS probabilities, summed caps/16, mean UED:
+frozen .000779505,12,3.81002; native .01512884,7,3.04415;
+text_pad .03394829,2,1.97917; eos_mask .02070914,8,3.21528;
+combined .03390899,2,1.97917; combined_weight4 .11541768,0,1.34524.
+Top1 frozen .05290, combined_weight4 .04666; earlier EOS maximum
+median increased from .00157 to .16931/.22157. Korean guard cap0
+throughout, but NLL increased from 3.8194 to 3.85384/3.85552 and
+top1 decreased from .19809 to .17875/.18345. No adoption or waveform
+quality claims; reduced UED partly reflects corrected duration.
+Padding intervention effective in both seeds, EOS-only masking
+inconclusive. v17 keeps both correctness fixes and expands trainable
+scope to eight last Transformer blocks, text embeddings and readout.
+New VCTK native 48k mic2 from same pinned revision, 24 speakers x 5
+utterances, deterministically divided into 16 train/4 validation/4 test;
+excluded all v16 EN speakers, exact normalized texts and PCM hashes
+before selection. Korean Zeroth train split 8 speakers x4, disjoint
+from existing test guard. Korean 16k is a replay guard/training domain,
+not a wideband quality corpus. 112 original training utterances;
+additional same-speaker prompt/target concatenations share these
+utterances, prefix excluded from CE. 3 EN +1 KO sampled per batch,
+fixed order across arms for each seed. Two seeds, 240 updates/arm,
+AdamW2e-5, FP32, no DPO, dropout disabled, same initial model.
+Five arms: corrected EOS2/4/8, EOS4+CTC .2/.6. CTC reads true
+target semantic hidden frames only (no prompt or padding), phoneme
+targets, separate blank, excludes infeasible alignments with coverage
+tracked; auxiliary head not used at inference. This is inspired by
+CTC-TTS (https://arxiv.org/abs/2602.19574) and Choi et al. auxiliary
+CTC text representation alignment
+(https://mm.kaist.ac.kr/pubs/pdfs/choi25b.pdf), not their implementation.
+Hidden states can attend all input text, so auxiliary CTC may learn
+text copying rather than robust acoustic alignment; free-generation
+and downstream audio are necessary for confirmation. 432 paired
+forced evaluation rows, 240 free generation cases (16 EN test and
+4 KO guard per arm per seed, including frozen). 2,400 updates in
+total across both workers. One setup, no production edits; independent
+parameter snapshots in private output, no automatic adoption.
+Fresh EN test relative to v16, unknown pretraining overlap and
+near-duplicates; reuse KO guard, speaker split only. Acquisition
+may fail if 32 shards do not supply required qualified speakers.
+No waveform evaluation in v17; use a subsequent fixed downstream
+synthesis comparison if token/content performance warrants it.
