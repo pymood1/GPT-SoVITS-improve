@@ -925,3 +925,26 @@ if CER or SV worsens. No production edits. No training of existing
 S1 weights; only simple duration regression, small English corpus,
 and no assumption of Korean generalization. V14 runnable profile
 prepared while v13 is active; no duplicate GPU submission.
+
+## v13 measured result and v14 launch (2026-11-27 13:35 KST)
+Run 45926805757 completed all 96 waveforms, 1454.703s, setup
+232.111s, all workers exit zero, FP32 CT2 ASR and speaker model.
+Eight paired utterances, four speakers, real CER .00515 and true-Mel
+vocoder .00515; true-Mel Mel distance 2.02452. CFG1.30 CER/SV/Mel
+.16295/.84054/5.87462; CFG.90 .15266/.83676/5.66736;
+CFG.65 .14065/.75324/5.76285; middle .15266/.59910/6.07098;
+early .15266/.54778/6.80830; late .16638/.83531/5.69306;
+sway090 .15952/.83763/5.64348; noise100 .15094/.79809/5.85962.
+Room090 .14408/.74582/6.49571; room-mid .15437/.51954/7.18234.
+Late guidance preserves most speaker similarity, with 24 versus 48
+mean negative estimator calls; mean conditional 48, so total
+estimator calls 72 vs 96 (25% reduction, not measured wall-clock speed).
+Early/middle guidance harms voice identity consistently across speakers.
+No single clean arm dominates baseline on all three measures.
+Keep CFG .90 as balanced research reference; neither default changes
+nor perceptual noise claims. Oracle target semantics, English VCTK
+and synthetic room only. Next launch v14 actual text-only generation
+with duration calibration plus teacher-forced diagnosis, 48 paired
+audio examples. V13 no longer running; no active GitHub research jobs
+at inspection. V14 standalone CPU architecture job was skipped;
+mandatory pilot CPU selftests must succeed before GPU submission.
