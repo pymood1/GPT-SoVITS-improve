@@ -1,5 +1,5 @@
 {
-  "code_sha": "d3cf5d73274e4b716e8a671da674a248a5b82c21",
-  "profile": "public-vctk-en-multi-restoration-v12",
-  "source_kernel": "pymood1/gpt-sovits-s1-next-45924697066"
+  "code_sha": "ffa47925e19e40827ac66cd34ea2c3cdec2f8e18",
+  "profile": "public-vctk-en-batched-guidance-v13",
+  "source_kernel": "pymood1/gpt-sovits-s1-next-45925702174"
 }
