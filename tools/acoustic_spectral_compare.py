@@ -12,7 +12,9 @@ NFFT=1024
 HOP=240
 BINS=80
 
-def features(wave,sr,*,max_hz=10000):
+def features(wave,sr,*,max_hz=10000,analysis_sr=24000):
+    if analysis_sr not in (24000,32000):raise ValueError('Unsupported analysis rate')
+    SR=analysis_sr;NFFT=1024 if SR==24000 else 1280;HOP=SR//100
     if not 1000<=max_hz<=min(SR/2,sr/2):
         raise ValueError('Requested bandwidth exceeds source Nyquist')
     x=np.asarray(wave,dtype=np.float64)
