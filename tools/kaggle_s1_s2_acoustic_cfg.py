@@ -112,8 +112,10 @@ def latest_progress(path):
                 return {k:row[k] for k in ("event","epoch","step","tokens")}
             if "epoch" in row and "validation" in row:
                 return {"epoch":row["epoch"],"tokens":row.get("tokens",0),"validation":row["validation"],"lr":row.get("lr"),"gate_streak":row.get("gate_streak",0)}
+            if row.get("stage") in ("asr","speaker") and "completed" in row and "total" in row:
+                return {k:row[k] for k in ("stage","completed","total")}
             if "arm" in row and "status" in row:
-                return {k:row[k] for k in ("arm","reference_index","text_index","status")}
+                return {k:row[k] for k in ("arm","reference_index","text_index","status","language","completed","total")}
         except (ValueError,KeyError):
             continue
     return None
@@ -134,6 +136,7 @@ def run_workers(commands,envs,labels,report):
                 progress[label]={"exit":p.poll(),"latest":latest_progress(OUT/(label+".log"))}
             print("[scale]",json.dumps(progress),flush=True)
             time.sleep(15)
+        print("[scale]",json.dumps({label:{"exit":p.poll(),"latest":latest_progress(OUT/(label+".log"))} for label,p in zip(labels,workers)}),flush=True)
     finally:
         for p in workers:
             if p.poll() is None:
