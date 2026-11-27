@@ -1214,3 +1214,41 @@ changes. No production modification or S2 training. 144 audio cases,
 320 teacher-forced rows. Reused v20 holdouts for causal comparison,
 not independent confirmation; KO source 16k, 48k synthesis, pretraining
 overlap unknown. No quality claim before GPU scoring and listening.
+
+## v21 results and v22 masked semantic architecture (2026-11-27 KST)
+Run 45990209360: 144/144, 2322.216s, setup245.199s, six workers
+exit0, KO fixed target token parity. Exact word-to-native-phone
+parity 200/200 unique English utterances, each seed. EN CER/SV:
+base .87105/.54413, zero .875/.61127, nearest .81316/.61849,
+word .81711/.62323, pooled .85921/.61285. Position-specific
+features modestly better than pooled but no usable English.
+KO native/none/300/trim CER .03462/.03846/.03846/.03269,
+SV .81415/.81507/.81420/.81588. Small effects, no deployment.
+V22 research basis: MaskGCT (ICLR 2025, arXiv:2409.00750) uses
+masked text-to-semantic prediction; SoundStorm (arXiv:2305.09636)
+uses confidence-based parallel acoustic token decoding. Our
+prototype is distinct, not their trained models or a reproduction.
+New 4-layer 256-wide bidirectional Transformer with target phone,
+word mBERT, prompt semantic embeddings, segment/position features,
+learned log duration and 1024-way masked prediction. Randomly
+initialized; 1600 AdamW updates/seed, 3 EN:1 KO, single prompted
+pair per step, 128 EN and 24 KO training pairs from v21, 25% full
+mask and otherwise uniform .15-1 masking, CE+.5 smooth-L1 log
+duration. Reuse v21 validation and test; compare restored v21 word
+AR, one pass NAR, 8-pass confidence iterative, oracle length
+diagnostic, 30% random AR-token repair with fixed AR duration.
+Duration predicted from text and reference only, not target audio
+except oracle diagnostic. Greedy confidence decoding; AR repair
+is random mask, not uncertainty-based. Report synchronized token
+generation latency excluding common preprocessing and duration
+prediction; repair includes AR time. Not matched model size,
+pretraining or compute. Small dataset makes from-scratch quality
+unlikely to rival pretrained AR; study feasibility and failure modes.
+KO fixed eos4 target tokens, CFG1.3, same original prompt, Euler32,
+same random seed, initial noise scale .65/.875/1/1.1, matched
+research solver; no S2 weight training. Native .875 is expected
+baseline, aggregate parity check against v21 possible. Lower
+noise scale not automatically lower perceptual noise. All 144
+waveforms, 64 full-mask diagnostic rows, 3200 updates total,
+FP32 ASR/SV, raw and level files, blind listening. Reused holdout
+and 16k KO source limit conclusions. No deployment.
