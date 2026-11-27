@@ -6,6 +6,7 @@ on:
       - 'GPT_SoVITS/AR/models/s1_next.py'
       - 'GPT_SoVITS/module/s1_next_bridge.py'
       - 'tools/*s1*.py'
+      - 'tools/*acoustic*.py'
       - 'tools/check_s1_research.sh'
       - 'tools/kaggle_live_status.py'
       - 'tests/test_s1_next*.py'
@@ -33,7 +34,7 @@ jobs:
           request=urllib.request.Request(url,headers={"Authorization":"Bearer "+os.environ["GH_TOKEN"],"Accept":"application/vnd.github+json"})
           with urllib.request.urlopen(request,timeout=20) as response:
               files={x["filename"] for x in json.load(response)["files"]}
-          patterns=("GPT_SoVITS/AR/models/s1_next.py","GPT_SoVITS/module/s1_next_bridge.py","tools/*s1*.py","tools/check_s1_research.sh","tools/kaggle_live_status.py","tests/test_s1_next*.py",".github/workflows/s1-next-*.yml")
+          patterns=("GPT_SoVITS/AR/models/s1_next.py","GPT_SoVITS/module/s1_next_bridge.py","tools/*s1*.py","tools/*acoustic*.py","tools/check_s1_research.sh","tools/kaggle_live_status.py","tests/test_s1_next*.py",".github/workflows/s1-next-*.yml")
           run=any(fnmatch.fnmatchcase(f,p) for f in files for p in patterns)
           with open(os.environ["GITHUB_OUTPUT"],"a") as f:
               f.write("run="+str(run).lower()+"\n")
@@ -59,3 +60,10 @@ jobs:
         run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Run shared regression suite
         run: bash tools/check_s1_research.sh
+      - name: Acoustic diagnostic CPU self-tests
+        run: |
+          python -m pip install numpy scipy soundfile
+          PYTHONPATH=. python tools/acoustic_spectral_compare.py
+          PYTHONPATH=. python tools/acoustic_noise_probe.py --selftest
+          python tools/prepare_acoustic_zeroth_pairs.py --selftest
+          python -m py_compile tools/prepare_acoustic_zeroth_pairs.py tools/acoustic_spectral_compare.py tools/s1_s2_cross_version.py tools/kaggle_s1_s2_cross_version.py
