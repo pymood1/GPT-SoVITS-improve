@@ -1092,3 +1092,39 @@ KO real audio native 16k and synthesized 48k. Spectral proxies not
 perceptual noise metrics, no MOS. No new training or production
 change in v18. No automatic deployment; prioritize actual intelligibility,
 identity and duration before further scaling.
+
+## v18 results and v19 dual track (2026-11-27 KST)
+Run 45967266945: 144/144 waveform cases, 1876.747s, setup239.688s,
+six workers exit0, regenerated token metric parity passed. EN
+mean seed CER/SV: real 0/.86469, oracle .16018/.85064, frozen
+1.09281/.84490, eos2 .84431/.68465, eos4 .85629/.59139, CTC .2
+.85778/.48868. Short (<.5 real duration) cases eos2 4/16, eos4
+7/16, CTC 10/16. All remain unusable in EN. KO CER/SV: real
+.12403/.90676, oracle .18992/.86491, frozen .03101/.82990,
+eos2 .04651/.82934, eos4 .02713/.83840, CTC .05039/.81977.
+KO only four distinct texts; ASR error on real limits interpretation.
+KO median voiced-periodicity mean frozen .88180, eos2 .90802,
+eos4 .89633. Acoustic proxies not noise proof.
+V19: two independent tracks, two v17 seed checkpoints, one installation.
+EN eos2 unchanged vs 160 additional AdamW updates at 1e-5 using
+corrected CE vs CE+0.3 softplus ranking (margin .25). Same train
+batches and padded geometry (3 EN positives +1 KO replay +3 EN
+negatives); negative text is nearest phoneme length, distinct phones,
+same prompt and true target tokens, ranking excludes prompt/EOS/pad.
+Only positives contribute CE. Train scope same 26.1M as v17, no DPO.
+96 forced rows per seed and eight free synthesized test cases/arm.
+Length-matched contrast is an experimental objective, not proof of
+phoneme alignment: near lengths can still differ, and teacher forcing
+may mask errors. EN holdout reused, no independent confirmation.
+KO uses frozen eos4 per seed, new Zeroth test four speakers x2
+targets excluded v17 train and guard speaker/text/hash. Fixed S1
+tokens per case, compare native CFG .9, acoustic reference gain
+(target -23dBFS, max gain8), late CFG1.3, combined. Late arm changes
+guidance schedule and solver path together; no pure CFG causal claim.
+Gain affects acoustic reference only, semantic tokens and reference
+phones preserved. No S2 training. KO 16k native source not true
+wideband; all synthesized 48k. 112 waveforms, FP32 ASR/SV, duration,
+voiced periodicity/HF, raw and level audio, blinded listening.
+No production changes or deployment; no new claimed improvement
+until results. Korean corpus acquisition may fail if too few eligible
+speakers, no fallback to leakage. 
