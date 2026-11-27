@@ -54,11 +54,11 @@ def read_manifest(path):
     return m
 
 
-def features(engine,text):
+def features(engine,text,language="all_ko"):
     if text[-1] not in ".!?。！？":
         text+="."
     phones,bert,_=engine.text_preprocessor.segment_and_extract_feature_for_text(
-        text,"all_ko",engine.configs.version)
+        text,language,engine.configs.version)
     x=torch.as_tensor(phones,device=engine.configs.device,dtype=torch.long)[None]
     b=torch.as_tensor(bert,device=x.device,dtype=torch.float32)[None]
     if x.numel()==0 or b.shape!=(1,1024,x.size(1)):
