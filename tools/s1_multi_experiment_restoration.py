@@ -169,6 +169,41 @@ def main(a):
         report=dict(status="completed",seed=a.seed,thresholds=thresholds,training=history,summary=summary,rows=rows,
                     stage_seconds={"feature_cache":cache_sec,"fit":fit_sec,"total":time.monotonic()-start},
                     caveat="Shared cache; synthetic degradations, no TTS or perceptual proof. Spectral-noise arm is unconditional baseline, not deployment.")
+        # Persist restoration metrics before the independent native S1 audit.
+        (a.output/"metrics.json").write_text(json.dumps(report,allow_nan=False,indent=2))
+        from tools.evaluate_s1_next_waveforms import features as text_features
+        from tools.s1_waveform_frontend import ensure_worker_nltk
+        ensure_worker_nltk()
+        s1_start=time.monotonic();s1_rows=[]
+        teacher=e.t2s_model.model.eval()
+        with torch.no_grad():
+            for i,pair in enumerate(manifests[2]["pairs"]):
+                ref=pair["reference"];e.set_ref_audio(str(a.test/ref["path"]))
+                prompt=e.prompt_cache["prompt_semantic"].reshape(1,-1).long()
+                px,pb=text_features(e,ref["text"],"en")
+                for j,target in enumerate(pair["targets"]):
+                    tx,tb=text_features(e,target["text"],"en")
+                    x=torch.cat((px,tx),1);b=torch.cat((pb,tb),2)
+                    expected=te[i*3+j+1]["clean"][1].numpy()
+                    for arm,k,penalty in (("native",15,1.35),("topk5",5,1.35),("penalty110",15,1.10)):
+                        torch.manual_seed(a.seed+i*1009+j)
+                        y,idx=next(teacher.infer_panel_naive(x,torch.tensor([x.size(1)],device=device),prompt,b,
+                            top_k=k,top_p=1.,early_stop_num=511,temperature=1.,repetition_penalty=penalty))
+                        assert y.ndim==2 and torch.equal(y[:,:prompt.size(1)],prompt)
+                        ids=y[:,prompt.size(1):].reshape(-1).cpu().numpy()
+                        assert 0<len(ids)<=512
+                        s1_rows.append(dict(speaker=i+1,target=j+1,arm=arm,cap_hit=len(ids)>=512,
+                            native_stop_idx=int(idx),text_phones=int(tx.size(1)),prompt_tokens=int(prompt.size(1)),
+                            **token_metrics(expected,ids)))
+        s1_summary={}
+        for arm in ("native","topk5","penalty110"):
+            rr=[r for r in s1_rows if r["arm"]==arm]
+            s1_summary[arm]=dict(cases=len(rr),cap_hits=sum(r["cap_hit"] for r in rr),
+                median_length_ratio=float(np.median([r["length_ratio"] for r in rr])),
+                mean_ued=sum(r["unit_errors"] for r in rr)/sum(r["reference_tokens"] for r in rr))
+        report["s1_audit"]={"rows":s1_rows,"summary":s1_summary,"seconds":time.monotonic()-s1_start,
+            "caveat":"Token alignment with natural speech is diagnostic, not generated pronunciation. No synthesized audio."}
+        report["stage_seconds"]["total"]=time.monotonic()-start
         (a.output/"metrics.json").write_text(json.dumps(report,allow_nan=False,indent=2))
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--selftest",action="store_true")
