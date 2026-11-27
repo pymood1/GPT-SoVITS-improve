@@ -18,7 +18,7 @@ def integrate(x,field,steps,prompt_len,method):
 
 @torch.inference_mode()
 def research_v5(cfm,mu,x_lens,prompt,n_timesteps,temperature=.875,inference_cfg_rate=1.30,generator=None,
-                *,method="midpoint",guidance_interval=(0.,1.),diagnostics=None):
+                *,method="midpoint",guidance_interval=(0.,1.),diagnostics=None,velocity_adapter=None):
     lo,hi=guidance_interval
     if not 0<=lo<=hi<=1 or inference_cfg_rate<0:raise ValueError("Invalid guidance schedule")
     if cfm.use_step_embedding or cfm.cfg_drop_text:raise ValueError("V5 only")
@@ -42,6 +42,8 @@ def research_v5(cfm,mu,x_lens,prompt,n_timesteps,temperature=.875,inference_cfg_
             counts["negative_evals"]+=1
             neg,_,_=cfm.estimator(state,px,x_lens,ts,drop_audio_cond=True,text_cache=cache,dbcache_branch=1,**kwargs)
             v=v+(v-neg.transpose(2,1))*inference_cfg_rate
+        if velocity_adapter is not None:
+            v=v+velocity_adapter(state,v,mu,ts)
         return v
     result=integrate(x,field,int(n_timesteps),p,method)
     if diagnostics is not None:diagnostics.update(counts)
