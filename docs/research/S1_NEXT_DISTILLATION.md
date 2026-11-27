@@ -548,3 +548,37 @@ randomized clip names, separate answer key, artifact severity distinct
 from naturalness and speaker similarity. Not a standardized MOS test.
 Actual listening, fresh speakers/seeds, and higher-bandwidth targets
 are still required before production adoption. No new GPU request.
+
+## Native wideband evaluation policy (2026-11-27 KST)
+Paired v6 45915504105 completed 32/32, 679.803s, verified Zeroth test pairs.
+No candidate met expansion gate: raw CER .29457/SV .84857/real Mel 11.4683,
+raw-hard .27132/.84835/11.6009; gain .25581/.83916/11.5179;
+gain-hard .25581/.83889/11.5218. Actual target .12403/.90676/0;
+true-Mel vocoder .10853/.85241/2.2050; oracle S2 .32558/.88092/8.0649;
+V2ProPlus .05426/.66593/13.3620. ASR has nonzero real error.
+The 16kHz target bandwidth and 2-speaker count limit conclusions.
+Prioritize S2 conditioning/CFM but do not exonerate vocoder at wideband.
+
+Evidence: official Edinburgh VCTK v0.92 https://doi.org/10.7488/ds/2645
+records 110 English speakers at 96kHz/24bit in hemi-anechoic room,
+distributed at 48kHz/16bit with transcripts for 109 speakers.
+Candidate for acoustic mechanism validation, not Korean language performance;
+use original archive or verify redistribution fidelity and license.
+Korean KSS https://www.kaggle.com/bryanpark/korean-single-speaker-speech-dataset
+is 44.1kHz single-speaker, noncommercial research, complementary but not strict 48kHz.
+MagicHub TTS-KFSC https://magichub.com/datasets/korean-speech-corpus-for-tts/
+48kHz/24bit studio, proprietary, one speaker; no automatic use.
+AI Hub multispeaker TTS data https://www.aihub.or.kr/aihubdata/data/view.do?dataSetSn=542
+requires approval; verify raw format and cloud-use conditions first.
+No claimed freely accessible native 48kHz Korean multispeaker source verified yet.
+No upsampled 16/24kHz files accepted as native wideband ground truth.
+Native 48kHz band audit added; upper-band energy is a review flag, not
+proof of provenance or a standalone quality threshold.
+Repository TTS.py mel_fn_v4 uses 32kHz, 100 Mel bins, fmax=None, FFT1280/hop320;
+V5dev vocoder output 48kHz. Separate common <=15.5kHz Mel comparison from
+native 48kHz upper-band waveform diagnostics; 16-24kHz is not directly
+represented in that Mel frontend. V2ProPlus 32kHz output cannot be
+ranked at >16kHz as if it were full-band 48kHz. Keep original real audio
+unchanged, compare true-Mel-vocoder / oracle / generated paths, and
+retain language-specific CER and speaker verification. No additional
+GPU job submitted until corpus acquisition and provenance verified.
