@@ -140,6 +140,7 @@ def main(a):
                 trace["masked"].append(event);print(json.dumps(event),flush=True)
         nar.eval();del opt
         torch.save(nar.state_dict(),a.output/"masked-semantic.pt")
+        nar_parameters=sum(p.numel() for p in nar.parameters())
         mode="zero"
         # Preserve the original zero-feature bias; a zero-init bridge maps frozen 768D mBERT features.
         bridge=torch.nn.Linear(768,model.bert_proj.out_features,bias=False).to(device)
@@ -196,7 +197,7 @@ def main(a):
             cfm=e.vits_model.cfm;original=cfm.inference
             scales={"noise0875":.875,"noise065":.65,"noise100":1.,"noise110":1.1}
             try:
-                if r["lang"]=="ko" and acoustic!="noise0875":
+                if r["lang"]=="ko":
                     cfm.inference=lambda *args,**kw:research_v5(cfm,*args,**kw,method="euler",noise_override=scales[acoustic])
                 torch.manual_seed(seed+100000)
                 wav=e.using_vocoder_synthesis(z,r["target"]["x"],sample_steps=32,cfg_rate=1.3 if r["lang"]=="ko" else .9)
@@ -218,13 +219,18 @@ def main(a):
                         full_mask_ce=float(F.cross_entropy(lg.reshape(-1,1024),y.flatten())),
                         full_mask_top1=float((lg.argmax(-1)==y).float().mean())))
                     if split!="test" or r["ti"] not in (1,4):continue
-                    z,seed=generate(r)
-                    options={"ar":z.flatten()[None],"nar_one":decode(nar,r,n,1,seed),
-                        "nar_iter":decode(nar,r,n,8,seed),"nar_oracle_len":decode(nar,r,y.size(1),8,seed),
-                        "nar_repair":decode(nar,r,z.size(-1),8,seed,initial=z.flatten()[None],repair_ratio=.30)}
-                    for arm,q in options.items():
+                    def timed(fn):
+                        torch.cuda.synchronize();t=time.monotonic();v=fn();torch.cuda.synchronize()
+                        return v,time.monotonic()-t
+                    (z,seed),ar_seconds=timed(lambda:generate(r))
+                    options={"ar":(z.flatten()[None],ar_seconds),
+                        "nar_one":timed(lambda:decode(nar,r,n,1,seed)),
+                        "nar_iter":timed(lambda:decode(nar,r,n,8,seed)),
+                        "nar_oracle_len":timed(lambda:decode(nar,r,y.size(1),8,seed)),
+                        "nar_repair":timed(lambda:decode(nar,r,z.size(-1),8,seed,initial=z.flatten()[None],repair_ratio=.30))}
+                    for arm,(q,elapsed) in options.items():
                         w,sr=synth(r,q.reshape(1,1,-1),seed);assert sr==48000
-                        save(r,arm,w,sr,cap_hit=q.size(1)>=512,oracle_length=arm=="nar_oracle_len",
+                        save(r,arm,w,sr,cap_hit=q.size(1)>=512,oracle_length=arm=="nar_oracle_len",generation_seconds=elapsed+(ar_seconds if arm=="nar_repair" else 0.),
                             **token_metrics(y.flatten().cpu().numpy(),q.flatten().cpu().numpy()))
         handle.remove();mode="zero"
         # Separate Korean acoustic study: fixed EOS4 weights and fixed generated tokens.
@@ -237,7 +243,7 @@ def main(a):
                 save(r,arm,w,sr,token_sha256=tok,cap_hit=z.size(-1)>=512)
         assert len(rows)==72 and len(diagnostic)==32
         (a.output/"metrics.json").write_text(json.dumps(dict(status="completed",seed=a.seed,rows=rows,diagnostic=diagnostic,
-            training_trace=trace,alignment_coverage=coverage,seconds=time.monotonic()-start),allow_nan=False))
+            training_trace=trace,alignment_coverage=coverage,nar_parameters=nar_parameters,seconds=time.monotonic()-start),allow_nan=False))
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--selftest",action="store_true")
     for k in ("en-train","en-extra","en-val","en-test","ko-train","ko-test","weights","ar-weights","bert-model","output"):p.add_argument("--"+k,type=Path)
