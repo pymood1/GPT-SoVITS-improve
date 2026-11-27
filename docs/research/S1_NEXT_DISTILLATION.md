@@ -1168,3 +1168,49 @@ clips. No MOS, no deployment. KO source 16k, generated 48k.
 Acquisition may fail if insufficient new VCTK speakers. Prior v16
 and earlier EN overlap not excluded globally; pretraining overlap
 unknown. No claim of better quality until results.
+
+## v20 results and v21 exact word alignment / reference-padding study (2026-11-27 KST)
+Run 45979093677: 144/144 waveform cases, 2512.850s, setup254.614s,
+all six workers exit0, KO target token parity passed. EN held-out
+mean CER/SV/median abs log duration ratio (mean of seed medians):
+base .87105/.54413/.68565, zero .94342/.61530/.49339,
+bert .86053/.69814/.35961, reverse .85000/.67918/.27929.
+BERT improves duration and speaker similarity relative to zero, but
+reverse is competitive and content remains unusable. Held-out NLL
+base 4.88481, zero 4.85621, bert 4.83343, reverse 4.83373.
+No evidence that approximate positional alignment is responsible.
+KO controlled CFG mean CER/SV/periodicity/activeHF:
+native09 and full09 identical aggregate .04231/.79752/.91362/.00108741;
+full13 .03462/.81415/.92570/.00081264;
+late09 .04038/.72248/.90000/.00144925;
+late13 .04038/.81038/.91805/.00100424.
+Native/research full .9 identical aggregate metrics, not proven sample
+identity. Full1.3 wins both seeds on identity and periodicity versus
+late1.3. Retain original v5dev CFG1.3 as KO candidate; no new production
+default. Late CFG may save negative evaluations, but not established
+as better acoustics. No listening or perceptual noise conclusion.
+V21 EN uses same v20 corpus (160 original 48k train utterances,
+32 training speakers, 4 validation and 4 test speakers); matched
+v17 eos2 initialization; 32 KO replay utterances with zero features
+for all arms. Pinned mBERT revision 3f076fdb1ab68d5b2880cb87a0886f315b8146f8.
+Native sentence G2P returns word-separated pronunciations; recover
+groups using the existing tokenizer and exact normalized text spans.
+Require concatenated native phone IDs identical to native frontend
+before assigning BERT subword features to phones via character-span
+overlap-weighted word pooling. Unmatched samples explicitly fall
+back to nearest; exact coverage counted and >=80% aggregate required.
+Compare frozen base, zero, nearest, word, sentence pooled. Same
+240 updates and seed-specific batch schedule for four trained arms,
+zero-init bridge, 3 EN+1 KO, AdamW2e-5, FP32; 1920 total updates.
+No assertion that word pooling is ground-truth acoustic alignment.
+KO S2 uses fixed eos4 target tokens and CFG1.3, 32 steps and same
+reference audio/phones/noise seed. Native 600ms silence pad on 16k
+CNHubert input vs no pad vs exact 300ms vs native codes trimmed to
+unpadded length. Last control separates length from contextual
+representation; record reference token hashes and counts, require
+native reproduction and target token parity. S1 reference for target
+generation remains native; only S2 reference semantic condition
+changes. No production modification or S2 training. 144 audio cases,
+320 teacher-forced rows. Reused v20 holdouts for causal comparison,
+not independent confirmation; KO source 16k, 48k synthesis, pretraining
+overlap unknown. No quality claim before GPU scoring and listening.
