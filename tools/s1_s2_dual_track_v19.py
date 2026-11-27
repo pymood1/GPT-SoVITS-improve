@@ -89,8 +89,12 @@ def main(a):
             return lg,labels,starts,yl
         # For prompted positives, keep the exact reference prefix and replace only target phones.
         def wrong(r,pool,rng):
-            candidates=[p for p in pool if p["path"]!=(r["target"]["path"] if "target" in r else r["path"])]
-            near=sorted(candidates,key=lambda p:abs(p["x"].size(1)-r["phones"].size(1)))[:8]
+            candidates=[p for p in pool if p["path"]!=(r["target"]["path"] if "target" in r else r["path"])
+                        and ("ref" not in r or p["path"]!=r["ref"]["path"])
+                        and not torch.equal(p["x"],r["phones"])]
+            assert candidates
+            distance=min(abs(p["x"].size(1)-r["phones"].size(1)) for p in candidates)
+            near=[p for p in candidates if abs(p["x"].size(1)-r["phones"].size(1))==distance][:8]
             p=near[int(rng.integers(len(near)))];q=dict(r)
             q["x"]=torch.cat((r["ref"]["x"],p["x"]),1) if "ref" in r else p["x"]
             q["b"]=torch.cat((r["ref"]["b"],p["b"]),2) if "ref" in r else p["b"]
@@ -154,10 +158,12 @@ def main(a):
                 opt=torch.optim.AdamW(list(named.values()),lr=1e-5,weight_decay=.01)
                 for step,(rr,negative) in enumerate(batches,1):
                     opt.zero_grad(set_to_none=True)
-                    lg,lbl,st,yl=forward(rr);ce=loss_fn(lg,lbl,yl,True,2.,st)
+                    lg,lbl,st,yl=forward(rr+negative)
+                    # Identical padded geometry across arms and matched/wrong text examples.
+                    ce=loss_fn(lg[:4],lbl[:4],yl[:4],True,2.,st[:4])
                     if arm=="contrastive":
-                        ng,nl,ns,ny=forward(negative)
-                        pos=logprob(lg,lbl,st,yl)[:3];neg=logprob(ng,nl,ns,ny)
+                        scores=logprob(lg,lbl,st,yl)
+                        pos=scores[:3];neg=scores[4:]
                         ranking=rank_loss(pos,neg);loss=ce+.3*ranking
                     else:ranking=ce.detach()*0;loss=ce
                     assert torch.isfinite(loss)
