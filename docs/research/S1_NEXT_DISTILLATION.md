@@ -641,3 +641,33 @@ quality-score distribution and speaker/text coverage. If quality differs,
 stratify/match it before interpreting diversity causally. This is a
 design tool, not a trained result. At least ten speakers required.
 Wideband VCTK v7 remains in progress; no duplicate GPU job.
+
+## Native 48kHz solver pilot v8 (2026-11-27 KST)
+V7 run 45917728836 recovered 32/32 WAVs, all worker exits zero, FP32
+ASR/SV, but failed the spectral-stage 20-second limit. Verified VCTK
+48kHz mic2 data revision 0492fa00cf72afb16e753e95d0ec3439eebb07a6.
+Real CER 0, true-Mel vocoder CER 0, oracle S2 .27232, custom-S1
+raw .83929, gain-hard .83482, V2ProPlus .70536. Three of four custom-S1
+outputs hit 512-token cap, durations 17.64-20.48s vs real 3.02-6.87s.
+Not a valid comparison for acoustic improvement. Real vs true-Mel
+vocoder mean relative band dB: 16-20kHz -54.97/-68.26,
+20-24kHz -54.54/-89.44; no proof these differences are audible artifacts.
+Source: Matcha-TTS https://arxiv.org/abs/2309.03199 and F5-TTS
+https://aclanthology.org/2025.acl-long.313/ motivate testing integration
+and sampling strategies, not proof of midpoint superiority in this model.
+V5 CFM uses Euler and classifier-free guidance; research-only explicit
+midpoint integrator at 16 steps (32 velocity evaluations) compared to
+Euler32 and Euler64. Same initial noise seed, identical conditioning,
+fixed prompt and target tokens per comparison, original CFG1.30; oracle
+Euler32 CFG.90 additional comparison. Native S1 stopping rule replaces
+custom Generator for separate native-token comparison, capped at 512.
+Re-use the six existing 48kHz source files from v7, verify original PCM
+hashes and failed report's stage/worker status before starting.
+Eight arms x four paired targets = 32 output files. Preserve CER/SV and
+band diagnostics even if duration/cap fails; explicitly exclude invalid
+duration ratios (<.5 or >2), >20s or cap-hit from DTW only. Report
+coverage; exclusions are failures, not improvements. Oracle conditions
+diagnostic only. No training or production modifications yet.
+User authorizes autonomous development without GPU-quota constraint;
+avoid accidental duplicated jobs, but do not sacrifice justified experiments
+to quota optimization. Bounded 3600s pilot, mandatory CPU preflight.
