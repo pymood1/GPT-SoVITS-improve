@@ -902,3 +902,26 @@ Native S1 caps across seeds: 8/16 vs topk5 9/16, penalty1.10 11/16.
 Median length ratio 2.44/2.74 native; sampling alone not sufficient.
 Continue v13 acoustic guidance; v12 verified completed and source
 manifest available. All results exploratory, no deployment.
+
+## v14 S1 EOS and duration calibration (2026-11-27 KST)
+Motivation: v12 native caps 8/16, median length ratio 2.44/2.74;
+top-k and lower repetition penalty did not improve termination.
+VoiceStar (https://jasonppy.github.io/assets/pdfs/VoiceStar.pdf) studies
+duration control and text-speech alignment in AR codec TTS; not evidence
+that a simple EOS prior transfers to V5. TED-TTS (https://arxiv.org/abs/2601.03170)
+motivates inference-time global EOS modulation.
+Fit regularized log-duration regression using train-only phone counts
+and prompt tokens per phone; report calibration on independent validation
+and fresh test. No target duration or target tokens used in free generation.
+Teacher-forced logits on correct prompt+target path: final EOS probability,
+rank, early maximum EOS probability and target token NLL; native free
+generation: raw EOS probability, cap hits, duration error and UED.
+Compare native and smooth bounded EOS logit bias strengths 2 and 4,
+same random seed, no hard stop except common 512 cap.
+Two seeds x four fresh speakers x two utterances x three arms = 48
+48kHz downstream waveforms. Same V5dev CFG .90, Euler32 and matched
+noise seed, FP32 ASR and SV. A duration-only gain cannot justify adoption
+if CER or SV worsens. No production edits. No training of existing
+S1 weights; only simple duration regression, small English corpus,
+and no assumption of Korean generalization. V14 runnable profile
+prepared while v13 is active; no duplicate GPU submission.
