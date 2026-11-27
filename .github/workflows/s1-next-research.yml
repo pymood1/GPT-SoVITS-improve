@@ -67,3 +67,6 @@ jobs:
           PYTHONPATH=. python tools/acoustic_noise_probe.py --selftest
           python tools/prepare_acoustic_zeroth_pairs.py --selftest
           python -m py_compile tools/prepare_acoustic_zeroth_pairs.py tools/acoustic_spectral_compare.py tools/s1_s2_cross_version.py tools/kaggle_s1_s2_cross_version.py
+          python tools/acoustic_periodicity_probe.py
+          python tools/s1_s2_paired_assessment.py --selftest
+          python -m py_compile tools/s1_s2_blind_listening.py
