@@ -67,12 +67,12 @@ def main(a):
         assert e.precision==torch.float32
         model=e.t2s_model.model.eval();device=e.configs.device;assert model.EOS==1024
         @torch.no_grad()
-        def cache(folder,m):
+        def cache(folder,m,language="en"):
             rows=[];pairs=[]
             for si,p in enumerate(m["pairs"],1):
                 def one(r):
                     path=folder/r["path"];assert hashlib.sha256(path.read_bytes()).hexdigest()==r["pcm_sha256"]
-                    x,b=features(e,r["text"],"en")
+                    x,b=features(e,r["text"],language)
                     w,_=load_audio_gpu(str(path),16000,device,mono=True,dtype=torch.float32,match_librosa=True)
                     h=e.cnhuhbert_model.model(w.reshape(1,-1))["last_hidden_state"].transpose(1,2)
                     y=e.vits_model.extract_latent(h)[0,0].reshape(1,-1).long()
@@ -87,6 +87,8 @@ def main(a):
             return rows,pairs
         train,_=cache(folders[0],manifests[0]);_,val=cache(folders[1],manifests[1]);_,test=cache(folders[2],manifests[2])
         assert len(train)==18 and len(val)==8 and len(test)==8
+        km=json.loads((a.ko/"manifest.json").read_text());assert km["sample_rate"]==16000
+        _,ko=cache(a.ko,km,"all_ko");assert len(ko)==4
         # Train last two blocks and output head only; preserve all other parameters.
         for p in model.parameters():p.requires_grad_(False)
         for module in (model.h.layers[-2],model.h.layers[-1],model.ar_predict_layer):
@@ -127,6 +129,7 @@ def main(a):
         results=[];timings={}
         results.extend(evaluate(val,"frozen","validation"))
         results.extend(evaluate(test,"frozen","test",True))
+        results.extend(evaluate(ko,"frozen","ko_guard",True))
         for arm,(left,mask,weight) in ARMS.items():
             reset();torch.manual_seed(a.seed);t=time.monotonic()
             opt=torch.optim.AdamW(list(named.values()),lr=2e-5,weight_decay=.01)
@@ -146,23 +149,24 @@ def main(a):
             assert any(not torch.equal(p.detach().cpu(),initial[n]) for n,p in named.items())
             results.extend(evaluate(val,arm,"validation"))
             results.extend(evaluate(test,arm,"test",True))
+            results.extend(evaluate(ko,arm,"ko_guard",True))
             torch.save({n:p.detach().cpu() for n,p in named.items()},a.output/(arm+".pt"))
             timings[arm]=time.monotonic()-t
         report=dict(status="completed",seed=a.seed,updates_per_arm=a.steps,train_utterances=len(train),
             trainable=sum(p.numel() for p in named.values()),arms=list(ARMS),rows=results,timings=timings,seconds=time.monotonic()-start,summary={})
         for arm in ("frozen",*ARMS):
-            for split in ("validation","test"):
+            for split in ("validation","test","ko_guard"):
                 rr=[r for r in results if r["arm"]==arm and r["split"]==split]
                 agg=dict(cases=len(rr),median_eos_prob=st.median(r["eos_prob"] for r in rr),
                     median_eos_rank=st.median(r["eos_rank"] for r in rr),nll=st.mean(r["nll"] for r in rr),
                     top1=st.mean(r["token_top1"] for r in rr),early_eos_max_median=st.median(r["early_max"] for r in rr))
-                if split=="test":agg.update(cap_hits=sum(r["cap_hit"] for r in rr),ued=sum(r["unit_errors"] for r in rr)/sum(r["reference_tokens"] for r in rr),
+                if split in ("test","ko_guard"):agg.update(cap_hits=sum(r["cap_hit"] for r in rr),ued=sum(r["unit_errors"] for r in rr)/sum(r["reference_tokens"] for r in rr),
                     median_abs_log_length_error=st.median(abs(np.log(r["length_ratio"])) for r in rr))
                 report["summary"][arm+"-"+split]=agg
         (a.output/"metrics.json").write_text(json.dumps(report,allow_nan=False,indent=2))
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--selftest",action="store_true")
-    for k in ("train","validation","test","output"):p.add_argument("--"+k,type=Path)
+    for k in ("train","validation","test","ko","output"):p.add_argument("--"+k,type=Path)
     p.add_argument("--seed",type=int,default=20261127);p.add_argument("--steps",type=int,default=80);a=p.parse_args()
     if a.selftest:selftest()
     else:main(a)
