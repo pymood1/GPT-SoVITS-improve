@@ -1058,3 +1058,37 @@ near-duplicates; reuse KO guard, speaker split only. Acquisition
 may fail if 32 shards do not supply required qualified speakers.
 No waveform evaluation in v17; use a subsequent fixed downstream
 synthesis comparison if token/content performance warrants it.
+
+## v17 results and v18 paired waveform validation (2026-11-27 KST)
+Run 45952006429 completed 432/432 cases in 1209.130s, setup243.681s,
+both workers exit0. 112 source training utterances, 26,118,656 trained
+parameters, two seeds, fixed speaker-disjoint EN split relative to v16.
+EN test average of two seed medians for EOS probability and absolute
+log-duration ratio, mean UED, mean teacher-forced top1:
+frozen .000491617,1.52881,4.454659,.070800;
+eos2 .0508202,.334748,1.064728,.090343;
+eos4 .0685045,.427380,1.024078,.089641;
+eos8 .0904084,.594249,1.048155,.088058;
+eos4_ctc .1227982,1.115865,.969043,.082848;
+eos4_ctc_strong .1084710,1.469273,.964978,.082108.
+Caps frozen22/32, all trained0/32. CTC lower UED may reward deletion,
+and worsens absolute log-length error; not adopted. CTC coverage
+915/960 and 906/960 per seed. KO teacher-forced NLL frozen3.81940,
+eos2 3.71322, eos4 3.72097, eos8 3.73247, CTC .2 3.77310, CTC .6
+3.79313. No claim of audio improvement. EOS2 prioritized but not a
+confirmed quality winner; direct waveform comparison required.
+V18 recovers saved v17 parameter snapshots (exact expected keys,
+FP32 shape and finite checks, SHA-256) on pinned base S1; fixed first
+and fourth EN target per speaker, all four KO guard targets, both
+original training seeds. Arms real, oracle target semantics, frozen,
+eos2, eos4, eos4_ctc (.2). 144 rows, 120 synthetic waveforms, shared
+V5dev 32-step CFG .9 and common per-case seed. Verify token length,
+edit count and cap parity with v17, not exact token sequence equality.
+Language-specific Whisper large-v3 FP32 CER, ERes2Net speaker cosine,
+duration ratios/short and long counts, active HF and voiced periodicity.
+Store raw float WAV and level-matched PCM16 WAV; randomized clips
+with separate private key. Same v17 holdout, not a fresh confirmation;
+KO real audio native 16k and synthesized 48k. Spectral proxies not
+perceptual noise metrics, no MOS. No new training or production
+change in v18. No automatic deployment; prioritize actual intelligibility,
+identity and duration before further scaling.
