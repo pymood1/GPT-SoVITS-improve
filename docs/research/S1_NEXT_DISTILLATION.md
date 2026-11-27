@@ -526,3 +526,25 @@ record duration/path stretch and per-pair CER/SV and periodicity coverage.
 no production edits, no blind-listening claim. Test only, 3000s job cap.
 This bounded first real-target pilot uses two of the available ten test
 speakers; if promising, expand on distinct speakers and seeds before adoption.
+
+## Pre-result decision protocol (2026-11-27 KST)
+Evidence: Wagner et al., Speech Synthesis Evaluation — State-of-the-Art
+Assessment and Suggestion for a Novel Research Program (2019),
+https://people.kth.se/~ghe/pubs/pdf/wagner2019speech.pdf ;
+Minixhofer et al., TTSDS2, SSW 2025,
+https://www.isca-archive.org/ssw_2025/minixhofer25_ssw.pdf ;
+both motivate multidimensional evaluation rather than a single proxy.
+Stage 2: assess matched pairs and effects per speaker, not independent
+32-sample averages (only 2 speakers, 4 targets). Preregister conservative
+expansion gate for raw-hard/gain/gain-hard: aggregate CER no worse, SV
+no worse, mean DTW real-target distance reduced and reduced in both
+speakers, no target token cap. This is an engineering screen, not
+statistical significance or a required definition of perceptual superiority.
+If all fail, diagnose the oracle and true-Mel vocoder control before
+another change; no forced adoption. Periodicity and coverage should be
+interpreted against real target; do not maximize periodicity blindly.
+Add CPU-only paired assessment and informal blinded listening export:
+randomized clip names, separate answer key, artifact severity distinct
+from naturalness and speaker similarity. Not a standardized MOS test.
+Actual listening, fresh speakers/seeds, and higher-bandwidth targets
+are still required before production adoption. No new GPU request.
