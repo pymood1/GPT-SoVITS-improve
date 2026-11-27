@@ -763,3 +763,32 @@ Active v9 45921918936 submitted successfully; no concurrent GPU request.
 No production rollout until paired held-out acoustic and intelligibility
 gates pass and listening confirms improvement. Small studies are exploratory;
 base-model pretraining overlap remains unknown. 
+
+## v9 results and semantic robustness v10 (2026-11-27 KST)
+Run 45921918936 completed 32/32 in 683.772s; all workers exit zero;
+FP32, 4 train speakers, 2 held-out speakers. Both workers replicated
+identical training seed (not independent replications). Clean CER/SV/Mel:
+baseline .19196/.85814/5.16210; clean-only .22321/.85525/5.13587;
+low-then-clean .19643/.85275/5.10693; robust-then-clean
+.17857/.85528/5.33336. Unseen room:
+baseline .25893/.76283/6.47880; clean-only .26339/.76909/6.48853;
+low-then-clean .27679/.76814/6.46215; robust-then-clean
+.25446/.76593/6.63729. None dominates baseline across CER/SV/Mel.
+No severe collapse under frozen bounded residual adaptation; not proof
+of robustness during full pretraining. Active HF ratio reduced with
+robust arm (clean .00138 to .000889, room .00337 to .00220), not a
+direct artifact score. Defer production changes.
+V10: enlarge VCTK same pinned revision to 6 training and 4 held-out
+speakers, 3 utterances each; exclude speaker, normalized exact text
+and waveform hash overlap. 2 independent adapter training seeds,
+240 updates each, 12 held-out utterances x 4 corruptions x 2 arms x
+2 seeds = 192 token comparisons. Preserve native CNHuBERT, quantizer
+and 1024 codebook. Train noise10/band8 and clean replay; hold out
+synthetic room. Compare unit edit distance to clean tokens, length,
+perplexity, repetition, frame agreement. Predeclared exploratory gate
+per seed: clean drift <=2%, both seen corruptions improve, unseen room
+nonregression, per-utterance perplexity >=80% baseline and repeat
+growth <=4. Both seeds required. No waveform generation in this pilot,
+no acoustic quality claim; clean reference tokens are not phonetic
+ground truth. Next stage downstream paired synthesis and real noisy
+recordings only if evidence supports. Existing 48kHz originals retained.
