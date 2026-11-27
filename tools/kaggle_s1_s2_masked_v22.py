@@ -20,8 +20,7 @@ def main():
         kernel="gpt-sovits-s1-next-45952006429"
         assert REQUEST["source_kernel"]=="pymood1/"+kernel
         prior=source(kernel,"8edca921ad16e76c9786bcc1c43ad140a06534a2",432,"actual_cases")
-        en=prior/"expanded-alignment/test";ko=listen/"ko"
-        train=prior/"expanded-alignment/train";val=prior/"expanded-alignment/validation";kt=prior/"expanded-alignment/ko_train";guard=prior/"expanded-alignment/ko_guard"
+        train=prior/"expanded-alignment/train";kt=prior/"expanded-alignment/ko_train"
         weights=prior/"expanded-alignment-workers"
         report["stage"]="clone"
         ROOT.mkdir(parents=True,exist_ok=False)
@@ -73,9 +72,9 @@ def main():
         from tools.s1_s2_masked_v22 import ARMS_EN,ARMS_KO
         old21=source("gpt-sovits-s1-next-45990209360","5dcabc1fecb748457022f93c1a9a80da6dcbaf92",144,"actual_cases")
         ar_weights=old21/"word-alignment-v21-workers"
-        old20=old21/"word-alignment-v21"
+        corpus=old21/"word-alignment-v21"
         for name in ("en","en_val","en_extra","ko"):
-            shutil.copytree(old20/name,listen/name)
+            shutil.copytree(corpus/name,listen/name)
         en=listen/"en";val=listen/"en_val";extra=listen/"en_extra";ko=listen/"ko"
         assert len(json.loads((ko/"manifest.json").read_text())["pairs"])==4
         from huggingface_hub import snapshot_download
