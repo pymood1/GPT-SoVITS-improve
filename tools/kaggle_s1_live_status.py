@@ -12,7 +12,7 @@ from tools.kaggle_live_status import cli, kernel_status, publish, TERMINAL
 KERNEL = re.compile(r"pymood1/gpt-sovits-s1-next-[0-9]{1,18}")
 WORKER = re.compile(r"(ddp|cache[01]|eval[01]|pseudo[01]|worker[01]|asr-fp32|speaker|(?:en|ko)-(?:asr|speaker)|parent)")
 EVENTS = {"pseudo_pair","asr_progress","cache_trial","layer_epoch","layer_result","train_step","worker_progress","phase"}
-ARMS = {"teacher","round12","round14","student","prior_student","frozen","native","text_pad","eos_mask","combined","combined_weight4","eos2","eos4","eos8","eos4_ctc","eos4_ctc_strong","real","oracle","base","continued","contrastive","gain","late_cfg","gain_late"}
+ARMS = {"teacher","round12","round14","student","prior_student","frozen","native","text_pad","eos_mask","combined","combined_weight4","eos2","eos4","eos8","eos4_ctc","eos4_ctc_strong","real","oracle","base","continued","contrastive","gain","late_cfg","gain_late","zero","bert","bert_reverse","native09","full09","full13","late09","late13"}
 METRICS = {"ce","teacher_ce","ce_ratio","kl","top1_agreement","target_accuracy","teacher_accuracy","tokens"}
 COUNTS = {"epoch","tokens","step","index","accepted_count","gate_streak","attempts","completed","total","reference_index","text_index","elapsed_seconds"}
 CACHE = {"full_seconds","cached_seconds","max_abs","mean_abs","parity","top1_matches","cache_bytes","sampled_equal","sampled_full_seconds","sampled_cached_seconds","sampled_full_tokens","sampled_cached_tokens"}
