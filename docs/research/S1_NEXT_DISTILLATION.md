@@ -822,3 +822,35 @@ repetition <= baseline+4, both seeds. These are exploratory gates,
 not proof of downstream TTS quality. No production edits. Gating can
 fail under new authentic noise or bypass all corrections; report activation
 rates explicitly. No real noisy recordings or waveform evaluation yet.
+
+## v11 results and batched v12 (2026-11-27 KST)
+V11 run 45924697066 completed 288/288 in 391.317s. Gated UED,
+seed1/2: clean .02893/.02830 vs 0; noise10 .84654/.84528 vs .89119;
+band8 .74214/.72579 vs .52327; room .65723/.66792 vs .58302.
+Both fail. Ungated clean drift .63333/.61887, both gated clean
+false activation 1/12. The universal binary gate and CE specialist
+do not preserve mild corruption. Reject deployment.
+User requested amortize setup across experiments. V12 runs one
+Kaggle setup, one model load per GPU/seed, shared SSL extraction cache,
+with setup/feature/fit/native S1 timings. Two independently seeded
+workers; original 6 train speakers, v11 test becomes validation,
+new 4 test speakers exclude all previous train/validation/test speakers,
+exact normalized text and waveform hash. 576 comparisons across
+baseline, unconditional spectral subtraction, specialist restoration,
+margin-protected specialist, routed specialist, routed+margin.
+Separate noise10 and band8 experts; smaller bounded residual (.15),
+margin objective rather than overconfident CE, clean replay and identity
+penalty. Multiclass quality router threshold per expert calibrated on
+validation only; disable expert if no beneficial safe threshold.
+Unseen room remains untrained. Assess clean drift <=.02, improvements
+on both seen corruptions, unseen room nonregression and no large
+mean perplexity drop. No production edits.
+In same loaded engine: 48 native S1 generation audit cases (4 test
+speakers x 2 targets x 3 sampling settings x 2 seeds). Compare native
+top-k15/pen1.35, top-k5/pen1.35, top-k15/pen1.10; cap 512, token length
+ratio, cap hits, UED to real tokens. No oracle access for generation,
+no waveform synthesis. Token alignment is not pronunciation quality.
+Avoid combining experiments that depend on an unverified result;
+shared inputs and controls only. Current batch no trained S2/vocoder
+changes; follow-up gated on results. Native 48kHz synthetic corruption,
+small data and unknown base-model pretraining overlap.
