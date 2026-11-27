@@ -74,3 +74,5 @@ jobs:
           python tools/acoustic_native_bandwidth.py --selftest
           python tools/s1_s2_cfm_midpoint.py
           PYTHONPATH=. python tools/s1_semantic_robustness.py --selftest
+          PYTHONPATH=. python tools/s1_eos_duration_audit.py --selftest
+          python -m py_compile tools/s1_eos_duration_audit.py
