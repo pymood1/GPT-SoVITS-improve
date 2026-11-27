@@ -792,3 +792,33 @@ growth <=4. Both seeds required. No waveform generation in this pilot,
 no acoustic quality claim; clean reference tokens are not phonetic
 ground truth. Next stage downstream paired synthesis and real noisy
 recordings only if evidence supports. Existing 48kHz originals retained.
+
+## v10 result and v11 token-aware gate (2026-11-27 KST)
+Run 45923560566 completed 192/192 in 319.793s, independent seeds
+20261127/20261128. UED by condition: clean baseline 0, adapters
+.15768/.10379; noise10 .88024 -> .87758/.87891; band8 .52428 ->
+.51630/.51830; room .64205 -> .63473/.64271. Both fail clean drift
+<=.02; seed 1 repeat increase 5, seed 2 unseen room regression.
+Reject ungated continuous feature MSE adapter.
+StableToken (ICLR 2026, https://proceedings.iclr.cc/paper_files/paper/2026/hash/5186171eebc16ab214e4058ec9fcf63a-Abstract-Conference.html)
+motivates discrete-token stability under perturbation; WavLM
+(https://arxiv.org/abs/2110.13900) motivates denoising supervision.
+Our method is different: maintain frozen CNHuBERT, ssl_proj, codebook
+and 1024 IDs; train bounded residual at projected codebook input using
+native negative squared Euclidean distances as differentiable logits,
+clean-teacher token CE, feature loss, clean replay and identity penalty.
+Verify argmax exactly equals native quantizer on every extracted input.
+Train learned binary utterance quality detector from feature moments
+with paired clean/noisy samples; calibrate threshold=max validation
+clean score + .02, clipped to 1; no test labels used to route samples.
+Compare baseline, ungated token-aware, and gated restoration. Prior
+v10 test becomes validation; new four speakers disjoint from prior six
+train and four validation, exact text and hash disjoint. Same source
+revision, original native 48kHz. Two seeds, 720 updates each, 288
+comparisons (12 fresh test utterances x 4 conditions x 3 arms x 2).
+Predeclare gated UED <=.02 on clean, improve both seen corruptions,
+no unseen room regression, mean perplexity >=80% baseline and max
+repetition <= baseline+4, both seeds. These are exploratory gates,
+not proof of downstream TTS quality. No production edits. Gating can
+fail under new authentic noise or bypass all corrections; report activation
+rates explicitly. No real noisy recordings or waveform evaluation yet.
