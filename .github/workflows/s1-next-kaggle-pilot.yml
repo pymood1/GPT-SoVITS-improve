@@ -119,7 +119,7 @@ jobs:
             "dataset_sources":[],"competition_sources":[],"kernel_sources":sources,"model_sources":[]}))
           with open(os.environ["GITHUB_OUTPUT"],"a") as f:
               f.write("kernel="+kernel+"\n")
-              f.write("timeout="+({"public-fleurs-ko-progressive-ffn-v9":"1500","public-fleurs-ko-progressive-stack-v10":"2700","public-fleurs-ko-joint-ffn-v11":"2400","public-fleurs-ko-fullwidth-ffn-v12":"2700","public-fleurs-ko-stack-kv-v13":"2100","public-fleurs-ko-affine-rms-v14":"2700","public-fleurs-ko-rms-polish-v15":"2700","public-fleurs-ko-rms-listen-v15":"1800","public-fleurs-ko-acoustic-isolation-v1":"1800","public-fleurs-ko-acoustic-cfg-v2":"1500","public-fleurs-ko-acoustic-score-v3":"1500","public-fleurs-ko-acoustic-tail-v4":"1800","public-fleurs-ko-cross-version-v5":"3000"}.get(req["profile"],"9000"))+"\n")
+              f.write("timeout="+({"public-fleurs-ko-progressive-ffn-v9":"1500","public-fleurs-ko-progressive-stack-v10":"2700","public-fleurs-ko-joint-ffn-v11":"2400","public-fleurs-ko-fullwidth-ffn-v12":"2700","public-fleurs-ko-stack-kv-v13":"2100","public-fleurs-ko-affine-rms-v14":"2700","public-fleurs-ko-rms-polish-v15":"2700","public-fleurs-ko-rms-listen-v15":"1800","public-fleurs-ko-acoustic-isolation-v1":"1800","public-fleurs-ko-acoustic-cfg-v2":"1500","public-fleurs-ko-acoustic-score-v3":"1500","public-fleurs-ko-acoustic-tail-v4":"1800","public-fleurs-ko-cross-version-v5":"2700","public-zeroth-ko-paired-s2-v6":"3000"}.get(req["profile"],"9000"))+"\n")
           PY
       - name: Install and verify Kaggle CLI dependencies
         if: needs.request.outputs.submit == 'true'
