@@ -693,3 +693,38 @@ and exact constant-vector-field expectation. No acoustic claim.
 V8 run 45919753036 remains pinned to prior commit; no parallel GPU
 request. Adopt only after same-token native 48kHz results, valid duration
 and CER/SV and held-out speakers, plus listening.
+
+## Quality curriculum v9 (2026-11-27 KST)
+Evidence: Qwen3-TTS (https://arxiv.org/abs/2601.15621) describes broad
+pretraining followed by high-quality continual pretraining; its general
+stage is not exclusively low quality. Flow-matching noise robustness
+(https://arxiv.org/abs/2406.05699) motivates denoising and noisy prompt
+augmentation; Stable-TTS (https://arxiv.org/abs/2412.20155) motivates
+preserving existing capabilities during adaptation. TITW
+(https://arxiv.org/abs/2409.08711) motivates future real-world corpus testing.
+V8: oracle Euler32 CFG .9 reduced CER 27.23% to 19.20% and increased SV
+.8485 to .8581, but increased Mel distance 4.9241 to 5.1621. Use CFG .9
+as common controlled baseline here, not a universal production default.
+Research hypothesis: separate informative variation from nuisance corruption,
+and compare broad-to-clean continuation against clean-only and restoration
+objectives. Frozen V5 backbone and 100-channel bounded residual flow-velocity
+adapter, initially zero, trained with 120 AdamW updates, delta penalty and
+gradient clipping. Four training speakers, two independent held-out
+speakers, pinned VCTK revision, exclude held-out exact normalized text
+and waveform hashes. 8 target utterances train, 4 target utterances test.
+Synthetic degradation: 10dB white noise, 8kHz bandwidth simulation,
+held-out reverberation-like echoes. Native 48kHz clean originals preserved.
+Arms: frozen baseline; clean-only 120 updates; degraded targets 60 then
+clean 60; degraded inputs/clean targets 60 then clean 60 with 25% robust
+replay. Replay differs from direct curriculum and needs separate ablation
+if positive. Same initialization/optimizer budget for trained arms.
+Evaluate both clean and held-out room corruption; each condition keeps
+oracle semantic tokens identical across arms. 32 waveforms, CER/SV,
+common Mel distance and native band statistics. Oracle target access
+makes this diagnostic, not deployable text-only synthesis. This is a
+small adaptation feasibility experiment, not large-scale pretraining
+or a guarantee of no collapse. Synthetic noise not naturally noisy
+recordings; external corpus and larger speaker-disjoint test later.
+S1 must separately verify semantic-token corruption and language
+generalization before training on real low-quality data. Production
+unchanged. No empirical claims until GPU completion.
