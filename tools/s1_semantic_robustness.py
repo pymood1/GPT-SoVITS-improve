@@ -120,7 +120,7 @@ def main(args):
                 noisy=extract(path,kind,10000+j*13+k)
                 assert noisy.shape==clean.shape
                 pairs.append((clean.cpu().clone(),noisy.cpu().clone()))
-        model,history=fit(pairs,device)
+        model,history=fit(pairs,device,seed=args.seed)
         torch.save(model.state_dict(),args.output/"ssl-adapter.pth")
         rows=[]
         for j,i in enumerate(items(test)):
@@ -140,13 +140,14 @@ def main(args):
                 summary[kind+"-"+arm]=dict(ued=sum(r["unit_errors"] for r in rr)/sum(r["reference_tokens"] for r in rr),
                     mean_perplexity=float(np.mean([r["candidate"]["perplexity"] for r in rr])),
                     mean_longest_repeat=float(np.mean([r["candidate"]["longest_repeat"] for r in rr])))
-        report=dict(status="completed",training=history,train_speakers=len(train["pairs"]),test_speakers=len(test["pairs"]),
+        report=dict(status="completed",seed=args.seed,training=history,train_speakers=len(train["pairs"]),test_speakers=len(test["pairs"]),
             train_pairs=len(pairs),test_utterances=len(items(test)),rows=rows,summary=summary,
             caveat="Clean-token agreement is not ground truth phonetic accuracy or perceptual quality. Preserve original codebook. Synthetic corruption and small held-out set.")
         (args.output/"metrics.json").write_text(json.dumps(report,allow_nan=False,indent=2))
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--selftest",action="store_true")
     for k in ("train","test","output"):p.add_argument("--"+k,type=Path)
+    p.add_argument("--seed",type=int,default=20261127)
     a=p.parse_args()
     if a.selftest:selftest()
     else:main(a)
