@@ -582,3 +582,34 @@ ranked at >16kHz as if it were full-band 48kHz. Keep original real audio
 unchanged, compare true-Mel-vocoder / oracle / generated paths, and
 retain language-specific CER and speaker verification. No additional
 GPU job submitted until corpus acquisition and provenance verified.
+
+## Native 48 kHz VCTK paired pilot v7 (2026-11-27 KST)
+Source: https://huggingface.co/datasets/thelarryproject/vctk documents
+unfiltered VCTK 0.92 original 48kHz mono FLAC, CC BY 4.0,
+utterance ID, speaker ID, microphone, normalized and original text,
+duration and CTC mismatch. Prefer mic2 (MKH 800); mic1 has known
+low-frequency noise; exclude p280/p315 technical/transcript gaps.
+Select at most four pinned parquet shards, two distinct speakers,
+one 3-10s reference and two real distinct targets each, CTC mismatch
+<=0.3, RMS >=-45 dBFS and clipping <=0.1%; metadata and decoded
+waveform checks, PCM16 WAV lossless roundtrip verified against decoded
+FLAC, source and WAV hashes saved privately. Band energy is descriptive
+only; no arbitrary high-band energy cutoff. No resampling of originals.
+Selection not based on model performance; VCTK distributed train
+partition used only for frozen evaluation, pretraining overlap unknown.
+
+CoreaSpeech+ https://huggingface.co/datasets/Gong1212/CoreaSpeech-plus
+requires approval and released sample rate is not verified; not used.
+English VCTK is a controlled acoustic experiment, not proof of Korean
+language generalization. Keep Korean validation separate.
+
+Same v6 eight arms and fixed target/prompt tokens, FP32, 32 files;
+English frontend and English ASR only for this run. Common spectral
+comparison at 32kHz with fmax 15.5kHz, independently report native
+48kHz six-band relative energies including 16-20 and 20-24kHz;
+32kHz V2ProPlus has no full-band score. Compare real vs true Mel-vocoder
+to identify bandwidth reconstruction limitations and real vs oracle S2
+to characterize the additional acoustic modeling gap. No direct
+noise-removal or perceptual claims. Retain per-speaker expansion gate
+and blinded listening requirement. No training, no production changes,
+one bounded 3600s GPU job after mandatory CPU selftests.
