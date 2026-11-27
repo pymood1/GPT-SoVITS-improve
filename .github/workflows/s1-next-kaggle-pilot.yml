@@ -220,7 +220,11 @@ jobs:
               wait "$observer" 2>/dev/null || true
               for delay in 0 30 60 120 120 120; do
                 sleep "$delay"
-                if timeout 90 kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/s1-next-result" --file-pattern '^s1-next-result[.]json
+                if timeout 90 kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/s1-next-result" --file-pattern '^s1-next-result[.]json$' && test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json"; then
+                  break
+                fi
+              done
+              test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json" || { echo "Result download unavailable; use recovery-only request"; exit 1; }
               break
             fi
             if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
@@ -275,106 +279,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/observe"
           PROFILE=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["profile"])')
           if [ "$PROFILE" = public-fleurs-ko-recover ]; then
-            for delay in 30 60 120 120 120 120; do
+            for delay in 0 30 60 120 120 120; do
               sleep "$delay"
-              if timeout 90 kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '^s1-next-result[.]json
-          kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '(s1-next-result[.]json|private-errors?[.]log)$' >/dev/null 2>&1 || true
-          python - "$RUNNER_TEMP/observe" <<'PY'
-          import json,re,sys
-          from pathlib import Path
-          root=Path(sys.argv[1])
-          for p in root.rglob("s1-next-result.json"):
-              r=json.loads(p.read_text())
-              print("S1_NEXT_RESULT_BEGIN")
-              print(json.dumps(r,indent=2))
-              print("S1_NEXT_RESULT_END")
-          for p in sorted(root.rglob("private-error*.log")):
-              raw=re.sub(r"\x1b\[[0-9;]*m","",p.read_text(errors="replace"))
-              traces=[]
-              for part in raw.split("Traceback (most recent call last):")[1:]:
-                  frames=re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',part)
-                  classes=re.findall(r"^([A-Za-z_][\w.]*Error):",part,re.M)
-                  traces.append({"frames":[[Path(f).name,int(n),fn if re.fullmatch(r"[\w<>.]+",fn) else "unknown"] for f,n,fn in frames[-8:]],"exceptions":classes[:3]})
-              print(json.dumps({"file":p.name,"trace_count":len(traces),"traces":traces[-4:]}))
-          PY
- && test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json"; then
-                  break
-                fi
-              done
-              test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json" || { echo "Result download unavailable; use recovery-only request"; exit 1; }
-              break
-            fi
-            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
-              exit 1
-            fi
-            sleep 30
-          done
-          python - "$RUNNER_TEMP/s1-next-result/s1-next-result.json" <<'PY'
-          import json,sys
-          from pathlib import Path
-          r=json.loads(Path(sys.argv[1]).read_text())
-          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
-          assert r["code_sha"]==req["code_sha"]
-          print("S1_NEXT_RESULT_BEGIN")
-          print(json.dumps(r,indent=2))
-          print("S1_NEXT_RESULT_END")
-          assert r["status"]=="completed"
-          PY
-
-      - name: Preserve aggregate result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: s1-next-result
-          path: ${{ runner.temp }}/s1-next-result/s1-next-result.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-  observe:
-    needs: request
-    if: needs.request.outputs.submit == 'true' && needs.request.outputs.observe == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Read existing kernel only (no GPU submission)
-        env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          KAGGLE_USERNAME: pymood1
-        run: |
-          set -euo pipefail
-          python -m pip install --disable-pip-version-check kaggle==2.2.5 kagglesdk==0.1.38 six==1.17.0
-          PYTHONPATH=. python tools/kaggle_s1_live_status.py --selftest
-          KERNEL=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["source_kernel"])')
-          PYTHONPATH=. python tools/kaggle_s1_live_status.py "$KERNEL"
-          mkdir -p "$RUNNER_TEMP/observe"
-          kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '(s1-next-result[.]json|private-errors?[.]log)$' >/dev/null 2>&1 || true
-          python - "$RUNNER_TEMP/observe" <<'PY'
-          import json,re,sys
-          from pathlib import Path
-          root=Path(sys.argv[1])
-          for p in root.rglob("s1-next-result.json"):
-              r=json.loads(p.read_text())
-              print("S1_NEXT_RESULT_BEGIN")
-              print(json.dumps(r,indent=2))
-              print("S1_NEXT_RESULT_END")
-          for p in sorted(root.rglob("private-error*.log")):
-              raw=re.sub(r"\x1b\[[0-9;]*m","",p.read_text(errors="replace"))
-              traces=[]
-              for part in raw.split("Traceback (most recent call last):")[1:]:
-                  frames=re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',part)
-                  classes=re.findall(r"^([A-Za-z_][\w.]*Error):",part,re.M)
-                  traces.append({"frames":[[Path(f).name,int(n),fn if re.fullmatch(r"[\w<>.]+",fn) else "unknown"] for f,n,fn in frames[-8:]],"exceptions":classes[:3]})
-              print(json.dumps({"file":p.name,"trace_count":len(traces),"traces":traces[-4:]}))
-          PY
- && test -s "$RUNNER_TEMP/observe/s1-next-result.json"; then
+              if timeout 90 kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '^s1-next-result[.]json$' && test -s "$RUNNER_TEMP/observe/s1-next-result.json"; then
                 break
               fi
             done
@@ -393,83 +300,6 @@ jobs:
             exit 0
           fi
           PYTHONPATH=. python tools/kaggle_s1_live_status.py "$KERNEL"
-          kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '(s1-next-result[.]json|private-errors?[.]log)$' >/dev/null 2>&1 || true
-          python - "$RUNNER_TEMP/observe" <<'PY'
-          import json,re,sys
-          from pathlib import Path
-          root=Path(sys.argv[1])
-          for p in root.rglob("s1-next-result.json"):
-              r=json.loads(p.read_text())
-              print("S1_NEXT_RESULT_BEGIN")
-              print(json.dumps(r,indent=2))
-              print("S1_NEXT_RESULT_END")
-          for p in sorted(root.rglob("private-error*.log")):
-              raw=re.sub(r"\x1b\[[0-9;]*m","",p.read_text(errors="replace"))
-              traces=[]
-              for part in raw.split("Traceback (most recent call last):")[1:]:
-                  frames=re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',part)
-                  classes=re.findall(r"^([A-Za-z_][\w.]*Error):",part,re.M)
-                  traces.append({"frames":[[Path(f).name,int(n),fn if re.fullmatch(r"[\w<>.]+",fn) else "unknown"] for f,n,fn in frames[-8:]],"exceptions":classes[:3]})
-              print(json.dumps({"file":p.name,"trace_count":len(traces),"traces":traces[-4:]}))
-          PY
- && test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json"; then
-                  break
-                fi
-              done
-              test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json" || { echo "Result download unavailable; use recovery-only request"; exit 1; }
-              break
-            fi
-            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
-              exit 1
-            fi
-            sleep 30
-          done
-          python - "$RUNNER_TEMP/s1-next-result/s1-next-result.json" <<'PY'
-          import json,sys
-          from pathlib import Path
-          r=json.loads(Path(sys.argv[1]).read_text())
-          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
-          assert r["code_sha"]==req["code_sha"]
-          print("S1_NEXT_RESULT_BEGIN")
-          print(json.dumps(r,indent=2))
-          print("S1_NEXT_RESULT_END")
-          assert r["status"]=="completed"
-          PY
-
-      - name: Preserve aggregate result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: s1-next-result
-          path: ${{ runner.temp }}/s1-next-result/s1-next-result.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-  observe:
-    needs: request
-    if: needs.request.outputs.submit == 'true' && needs.request.outputs.observe == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Read existing kernel only (no GPU submission)
-        env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          KAGGLE_USERNAME: pymood1
-        run: |
-          set -euo pipefail
-          python -m pip install --disable-pip-version-check kaggle==2.2.5 kagglesdk==0.1.38 six==1.17.0
-          PYTHONPATH=. python tools/kaggle_s1_live_status.py --selftest
-          KERNEL=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["source_kernel"])')
-          PYTHONPATH=. python tools/kaggle_s1_live_status.py "$KERNEL"
-          mkdir -p "$RUNNER_TEMP/observe"
           kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '(s1-next-result[.]json|private-errors?[.]log)$' >/dev/null 2>&1 || true
           python - "$RUNNER_TEMP/observe" <<'PY'
           import json,re,sys
