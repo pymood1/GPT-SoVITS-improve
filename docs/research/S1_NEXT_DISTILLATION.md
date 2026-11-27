@@ -613,3 +613,31 @@ to characterize the additional acoustic modeling gap. No direct
 noise-removal or perceptual claims. Retain per-speaker expansion gate
 and blinded listening requirement. No training, no production changes,
 one bounded 3600s GPU job after mandatory CPU selftests.
+
+## Generalization-first corpus strategy (2026-11-27 KST)
+User prioritizes high-quality diverse data, including generalization to
+cases not explicitly represented during training.
+Evidence: Voicebox (NeurIPS 2023), https://arxiv.org/abs/2306.15687,
+demonstrates zero-shot speech synthesis at large diverse data scale;
+NaturalSpeech 2 (ICLR 2024), https://arxiv.org/abs/2304.09116, uses
+44k hours and unseen-speaker evaluation; NaturalSpeech 3 (ICML 2024),
+https://proceedings.mlr.press/v235/ju24b.html, reports benefits from
+scaling both model and data. These are not controlled proof that 48kHz
+alone or unlimited data yields out-of-distribution generalization.
+SPEAR-TTS (TACL 2024), https://doi.org/10.1162/TACL_A_00618, motivates
+separating audio modeling from parallel text/audio supervision.
+Stage 2: optimize quality AND distribution coverage, not memorization
+of individual artifacts. Preserve native recording quality, accurate
+transcripts, independent quality checks and speaker/style diversity.
+Train/validation/test must be speaker disjoint, with exact normalized
+text and decoded audio deduplication across partitions; near-duplicate
+and pretraining overlap still require independent checks. Evaluate
+unseen speaker, text, and held-out style/recording conditions separately;
+same-speaker new text is not unseen-speaker generalization.
+Add deterministic metadata-only split and equal-duration quality-ranked
+vs speaker-balanced subsets at a common quality floor. Compare using
+same initialization, optimizer steps, seeds and held-out data, report
+quality-score distribution and speaker/text coverage. If quality differs,
+stratify/match it before interpreting diversity causally. This is a
+design tool, not a trained result. At least ten speakers required.
+Wideband VCTK v7 remains in progress; no duplicate GPU job.
