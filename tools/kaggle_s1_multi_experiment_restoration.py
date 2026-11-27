@@ -30,6 +30,7 @@ def main():
                  PYTHONPATH=os.pathsep.join([str(ROOT),str(ROOT/"GPT_SoVITS")]),
                  OMP_NUM_THREADS="2",MKL_NUM_THREADS="2",NCCL_IB_DISABLE="1")
         report["stage"]="runtime_setup"
+        setup_start=time.monotonic()
         setup=ROOT/"tools/colab_fast_setup.py"
         original=setup.read_bytes()
         try:
@@ -38,6 +39,7 @@ def main():
         finally:
             setup.write_bytes(original)
         shutil.rmtree("/kaggle/tmp/gpt_sovits_downloads",ignore_errors=True)
+        report["setup_seconds"]=time.monotonic()-setup_start
         gpus=subprocess.check_output(["nvidia-smi","--query-gpu=name","--format=csv,noheader"],text=True).splitlines()
         assert len(gpus)==2 and all("T4" in x for x in gpus)
         report["gpu_count"]=2
@@ -64,6 +66,7 @@ def main():
         runner.OUT=OUT
         run_workers=runner.run_workers
         error_signature=runner.error_signature
+        runner.ensure_frontend_resources(env)
         from tools.prepare_acoustic_vctk_pairs import prepare
         train=prior/"train";validation=prior/"test"
         tr=json.loads((train/"manifest.json").read_text())
@@ -89,6 +92,8 @@ def main():
         reps=[json.loads((OUT/f"gpu{i}"/"metrics.json").read_text()) for i in range(2)]
         report["replications"]=reps
         report["actual_cases"]=sum(len(r["rows"]) for r in reps)
+        report["s1_audit_cases"]=sum(len(r["s1_audit"]["rows"]) for r in reps)
+        assert report["s1_audit_cases"]==48
         report["expected_cases"]=576
         assert report["actual_cases"]==576
         assessment=[]
