@@ -11,9 +11,10 @@ from tools.s1_semantic_robustness import token_metrics
 from tools.acoustic_controlled_degradation import degrade
 
 def logits(x,emb):
-    # Exact frozen Euclidean codebook geometry; omit common x norm for CE.
-    z=x.transpose(1,2)
-    return 2*z@emb.T-emb.square().sum(-1)
+    # Match native EuclideanCodebook.quantize arithmetic, including common norm.
+    z=x.transpose(1,2).reshape(-1,emb.shape[1]);e=emb.T
+    out=-(z.pow(2).sum(1,keepdim=True)-2*z@e+e.pow(2).sum(0,keepdim=True))
+    return out.reshape(x.shape[0],x.shape[-1],emb.shape[0])
 class Model(nn.Module):
     def __init__(self,d):
         super().__init__()
