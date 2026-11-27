@@ -21,6 +21,8 @@ def digest(t):return hashlib.sha256(t.detach().cpu().contiguous().numpy().tobyte
 
 @torch.inference_mode()
 def main(a):
+    import librosa
+    from tools.my_utils import load_audio
     from TTS_infer_pack.TTS import TTS,TTS_Config,load_audio_gpu
     from tools.evaluate_s1_next_waveforms import features
     from tools.s1_waveform_frontend import ensure_worker_nltk
@@ -42,6 +44,10 @@ def main(a):
         def audio(path):
             w,_=load_audio_gpu(str(path),16000,device,mono=True,dtype=torch.float32,match_librosa=True)
             return w.reshape(1,-1)
+        def train_audio(path):
+            w=load_audio(str(path),32000);peak=np.abs(w).max();assert peak>0
+            w=librosa.resample(w*(1145.14*(.475/peak+.5)),orig_sr=32000,target_sr=16000)
+            return torch.as_tensor(w,device=device,dtype=torch.float32).reshape(1,-1)
         def encode(w):
             h=e.cnhuhbert_model.model(w)["last_hidden_state"].transpose(1,2)
             return v.extract_latent(h)[0,0].reshape(1,-1).long()
@@ -72,28 +78,31 @@ def main(a):
                 ref=pair["reference"];rp=folder/ref["path"]
                 assert hashlib.sha256(rp.read_bytes()).hexdigest()==ref["pcm_sha256"]
                 px,pb=features(e,ref["text"],lang)
-                rw=audio(rp);plain=encode(rw);pad03=encode(F.pad(rw,(0,4800)))
+                rw=audio(rp);plain=encode(rw);pad03=encode(F.pad(rw,(0,4800)));train_ref=encode(train_audio(rp))
                 e.set_ref_audio(str(rp))
                 native=e.prompt_cache["prompt_semantic"].reshape(1,-1).long().clone()
                 reconstructed=encode(F.pad(rw,(0,int(e.configs.sampling_rate*.3))))
                 assert torch.equal(native,reconstructed)
+                print(json.dumps(dict(arm="reference_cached",status="ok",reference_index=ri,language=lang)),flush=True)
                 for ti,t in enumerate(pair["targets"],1):
                     path=folder/t["path"]
                     assert hashlib.sha256(path.read_bytes()).hexdigest()==t["pcm_sha256"]
-                    tx,tb=features(e,t["text"],lang);tw=audio(path);ids=encode(tw)
+                    tx,tb=features(e,t["text"],lang);tw=audio(path);ids=encode(tw);train_ids=encode(train_audio(path))
                     key=f"{lang}-{ri}-{ti}"
                     report["tokens"][key]={"target":ids.flatten().cpu().tolist(),"plain":plain.flatten().cpu().tolist(),
-                        "native":native.flatten().cpu().tolist(),"pad03":pad03.flatten().cpu().tolist()}
+                        "native":native.flatten().cpu().tolist(),"pad03":pad03.flatten().cpu().tolist(),
+                        "train_target":train_ids.flatten().cpu().tolist(),"train_ref":train_ref.flatten().cpu().tolist()}
                     # Actual production target preprocessor versus prior research helper.
                     prod=e.text_preprocessor.preprocess(t["text"],lang,"cut0",e.configs.version)
                     prod_equal=len(prod)==1 and list(prod[0]["phones"])==tx[0].tolist()
                     x=torch.cat((px,tx),1);b=torch.cat((pb,tb),2)
-                    for arm,xx,bb,p in (("standalone",tx,tb,ids[:,:0]),("native_prompt",x,b,native),
-                            ("no_padding",x,b,plain),("exact_300ms",x,b,pad03)):
+                    for arm,xx,bb,p,yy in (("standalone",tx,tb,ids[:,:0],ids),("native_prompt",x,b,native,ids),
+                            ("no_padding",x,b,plain,ids),("exact_300ms",x,b,pad03,ids),
+                            ("train_standalone",tx,tb,ids[:,:0],train_ids),("train_concat",x,b,train_ref,train_ids)):
                         row=dict(language=lang,reference_index=ri,text_index=ti,arm=arm,status="ok",
-                            target_tokens=ids.size(1),prompt_tokens=p.size(1),target_phones=tx.size(1),
+                            target_tokens=yy.size(1),prompt_tokens=p.size(1),target_phones=tx.size(1),
                             production_phones_equal=prod_equal,bert_nonzero=int(torch.count_nonzero(tb)),
-                            **forced(xx,bb,p,ids))
+                            **forced(xx,bb,p,yy))
                         report["rows"].append(row)
                         print(json.dumps(row),flush=True)
                     # Free generation on first target of each speaker, two prompt variants.
