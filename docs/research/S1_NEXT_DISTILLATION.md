@@ -854,3 +854,32 @@ Avoid combining experiments that depend on an unverified result;
 shared inputs and controls only. Current batch no trained S2/vocoder
 changes; follow-up gated on results. Native 48kHz synthetic corruption,
 small data and unknown base-model pretraining overlap.
+
+## Batched acoustic guidance v13 (2026-11-27 KST)
+V12 run 45925702174 in progress, no duplicate GPU job. Prepare v13
+without submitting until v12 completed and its mounted data is verified.
+Primary prior evidence: Kynkäänniemi et al. NeurIPS 2024
+https://arxiv.org/abs/2404.07724 restricted guidance in image diffusion;
+speech applicability not proven. F5-TTS ACL 2025
+https://aclanthology.org/2025.acl-long.313/ introduces Sway Sampling in
+flow-matching TTS; its time grid is tested here without claiming transfer.
+Fixed 48kHz VCTK four speakers x two target sentences from v12 holdout.
+12 arms (96 waveforms), shared loaded V5dev on each worker:
+real, true-Mel vocoder, constant CFG1.30/.90/.65, CFG1.30 middle
+[.25,.75), early [0,.5), late [.5,1), sway=-1 with CFG .90, initial
+noise 1.0 instead of .875 with CFG .90, and room-corrupted reference
+with constant CFG .90 or middle interval. Same clean reference semantic
+tokens and real target oracle tokens across arms; room changes acoustic
+reference and conditioning, not prompt IDs. No training. Uniform Euler32
+for all except sway time grid, same RNG seed per pair. Count actual
+conditional/negative estimator calls. Constant .65 provides matched
+nominal integrated guidance to 1.30 half interval; not equal computation.
+Compare CER, SV, paired <=15.5kHz Mel distances, native band statistics,
+duration, paired per-speaker results, and listening separately. Reject
+candidates that worsen baseline clean CER/SV/Mel simultaneously; report
+tradeoffs rather than select based on spectral proxy alone. Room subset
+only compares room090 vs room-mid. Oracle targets not deployable TTS;
+no downstream S1 quality claim, no actual noise MOS. Small sample,
+synthetic room effect and unknown pretraining overlap. No production edits.
+Time grid, initial noise override, worker, runner and explicit workflow
+profile implemented. CPU selftests and GPU result pending.
