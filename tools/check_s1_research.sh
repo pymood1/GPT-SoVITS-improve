@@ -33,3 +33,6 @@ PYTHONPATH=.:GPT_SoVITS python tools/s1_rank_adaptive_ffn.py
 # Paired multi-arm screening analysis: stdlib-only, no GPU or data access.
 python -m py_compile tools/analyze_s1_s2_screening.py
 python tools/analyze_s1_s2_screening.py --selftest
+
+python -m py_compile tools/s1_masked_refinement.py
+PYTHONPATH=. python tools/s1_masked_refinement.py
