@@ -728,3 +728,38 @@ recordings; external corpus and larger speaker-disjoint test later.
 S1 must separately verify semantic-token corruption and language
 generalization before training on real low-quality data. Production
 unchanged. No empirical claims until GPU completion.
+
+## Generalization and quality roadmap (2026-11-27 KST)
+Active v9 45921918936 submitted successfully; no concurrent GPU request.
+1. Finish quality curriculum: clean-only vs low-to-clean vs restoration-to-clean
+   with fixed update budget and held-out speakers. Require complete cases,
+   compare both clean and room; reject clean regression or severe artifacts.
+2. Test semantic robustness upstream of S1/S2. WavLM (https://arxiv.org/abs/2110.13900)
+   uses denoising and masked prediction. StableToken (https://arxiv.org/abs/2509.22220)
+   explicitly addresses noise-robust discrete speech tokenization. These support
+   paired clean/noisy consistency, not transplanting another vocabulary.
+   Implemented tools/s1_semantic_robustness.py: frozen CNHuBERT and V5 codebook,
+   zero-initialized bounded 768-channel feature adapter, train paired noise10
+   and band8 plus 25% clean replay, 240 AdamW updates; test clean, seen noise
+   and band8, unseen room, disjoint speaker/text/hash. Measure UED to clean
+   reference, length, frame agreement, vocabulary perplexity, repeated runs.
+   Clean baseline UED is zero; require low clean drift and no diversity collapse,
+   report all conditions and per utterance. Agreement alone is not proof of
+   phonetic correctness or TTS quality; later validate S1/S2 downstream.
+   Initial synthetic test and CPU CI added; no GPU submission yet.
+3. Audit native S1 English and Korean frontend, EOS probability, token
+   distribution, prompt length and duration calibration before fine-tuning.
+4. Separate semantic content and prosody/identity pathway in S1-S2; preserve
+   native codebook and checkpoint compatibility. Compare frozen teacher and
+   bounded trainable residual before expanding architecture.
+5. Test interval guidance vs constant .65/.9/1.3 with identical tokens,
+   report estimator evaluations. Midpoint rejected on current pilot.
+6. Vocoder: true-Mel matched reconstruction, inspect bands separately;
+   do not equate 16-24kHz loss with audible noise. Consider fullband Mel only
+   with compatible training, no silent substitution into existing checkpoints.
+7. Scale with diverse authentic noisy and clean corpora, speaker-disjoint
+   train/validation/test and near-duplicate checks. Evaluate language,
+   speaker, emotion, recording domain and listening separately.
+No production rollout until paired held-out acoustic and intelligibility
+gates pass and listening confirms improvement. Small studies are exploratory;
+base-model pretraining overlap remains unknown. 
