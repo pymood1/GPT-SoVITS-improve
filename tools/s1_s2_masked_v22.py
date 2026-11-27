@@ -4,31 +4,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from tools.s1_expanded_alignment_pilot import pack,loss_fn
-from tools.s1_eos_root_cause import summary_logits
 from tools.s1_semantic_robustness import token_metrics
 ARMS_EN=("ar","nar_one","nar_iter","nar_oracle_len","nar_repair")
 ARMS_KO=("noise0875","noise065","noise100","noise110")
-def rank_loss(pos,neg,margin=.25):
-    return F.softplus(neg-pos+margin).mean()
-def logprob(lg,labels,starts,lengths):
-    p=torch.arange(labels.size(1),device=lg.device)[None]
-    m=(p>=starts[:,None])&(p<lengths[:,None])
-    v=lg.log_softmax(-1).gather(-1,labels.unsqueeze(-1)).squeeze(-1)
-    return (v*m).sum(1)/m.sum(1).clamp_min(1)
-def bert_features(b,mode):
-    if mode=="zero":return torch.zeros_like(b)
-    if mode=="bert":return b
-    if mode=="bert_reverse":return b.flip(-1)
-    raise ValueError(mode)
 def selftest():
-    b=torch.arange(12).reshape(1,3,4).float()
-    assert torch.equal(bert_features(b,"bert_reverse"),b.flip(-1)) and not torch.count_nonzero(bert_features(b,"zero"))
-    x=torch.tensor([-2.,-3.],requires_grad=True);y=torch.tensor([-3.,-2.],requires_grad=True)
-    rank_loss(x,y).backward();assert (x.grad<0).all() and (y.grad>0).all()
-    logits=torch.zeros(1,5,3,requires_grad=True);labels=torch.zeros(1,5,dtype=torch.long)
-    logprob(logits,labels,torch.tensor([1]),torch.tensor([3])).sum().backward()
-    assert logits.grad[0,[0,3,4]].abs().sum()==0 and logits.grad[0,1:3].abs().sum()>0
     orig=torch.nn.Linear(1024,8)
     bridge=torch.nn.Linear(768,8,bias=False)
     torch.nn.init.zeros_(bridge.weight)
@@ -42,11 +21,10 @@ def selftest():
     test_alignment()
     from tools.s1_masked_semantic import selftest as test_masked
     test_masked()
-    print("Multilingual bridge identity, gradient and feature ordering selftests passed")
+    print("Masked semantic and multilingual bridge selftests passed")
 def main(a):
     import soundfile as sf
     from TTS_infer_pack.TTS import TTS,TTS_Config,load_audio_gpu
-    from tools.evaluate_s1_next_waveforms import features
     from tools.s1_waveform_frontend import ensure_worker_nltk
     from tools.s1_s2_acoustic_isolation import level_match
     from tools.acoustic_periodicity_probe import probe as periodicity
@@ -93,10 +71,10 @@ def main(a):
                 assert b.shape==(1,1024,x.size(1)) and not torch.count_nonzero(b)
                 if lang=="en":
                     bb,exact=variants(extractor,norm,phones,e.configs.version)
-                    bb={k:v[None].to(device) for k,v in bb.items()}
+                    bb={"word":bb["word"][None].to(device)}
                     coverage.setdefault(str(folder.name),[0,0]);coverage[str(folder.name)][0]+=int(exact);coverage[str(folder.name)][1]+=1
                     assert all(v.shape==b.shape and torch.isfinite(v).all() for v in bb.values())
-                else:bb={k:b for k in ("nearest","word","pooled")}
+                else:bb={"word":b}
                 w,_=load_audio_gpu(str(p),16000,device,mono=True,dtype=torch.float32,match_librosa=True)
                 h=e.cnhuhbert_model.model(w.reshape(1,-1))["last_hidden_state"].transpose(1,2)
                 y=e.vits_model.extract_latent(h)[0,0].reshape(1,-1).long()
@@ -157,13 +135,6 @@ def main(a):
                 q["b"]=torch.cat(tuple(p["b"] if mode=="zero" else p["bb"][mode] for p in (r["ref"],r["target"])),2)
             else:q["b"]=r["b"] if mode=="zero" else r["bb"][mode]
             return q
-        def forward(rows):
-            x,xl,y,yl,b=pack([conditioned(r) for r in rows],device,True)
-            xy,mask,labels=model.make_input_data(x,xl,y,yl,b)
-            h,_=model.h((xy,None),mask=mask)
-            lg=model.ar_predict_layer(h[:,x.size(1)-1:])
-            starts=torch.tensor([r["start"] for r in rows],device=device)
-            return lg,labels,starts,yl
         rows=[];diagnostic=[]
         def save(r,arm,wave,sr,**extra):
             wave=np.asarray(wave,dtype=np.float32).reshape(-1)
@@ -189,10 +160,10 @@ def main(a):
             assert 0<z.size(-1)<=512 and z.max()<1024
             return z,seed
         @torch.no_grad()
-        def synth(r,z,seed,acoustic="noise0875",reference_prompt=None):
+        def synth(r,z,seed,acoustic="noise0875"):
             e.set_ref_audio(str(r["ref"]["path"]))
-            # Keep semantic conditioning identical even when acoustic reference gain changes.
-            e.prompt_cache["prompt_semantic"]=(r["prompt"] if reference_prompt is None else reference_prompt).flatten().clone()
+            # Keep semantic conditioning fixed across the CFM noise sweep.
+            e.prompt_cache["prompt_semantic"]=r["prompt"].flatten().clone()
             e.prompt_cache["phones"]=r["ref"]["x"][0].tolist()
             cfm=e.vits_model.cfm;original=cfm.inference
             scales={"noise0875":.875,"noise065":.65,"noise100":1.,"noise110":1.1}
