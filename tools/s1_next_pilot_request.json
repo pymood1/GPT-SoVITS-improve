@@ -1,5 +1,5 @@
 {
-  "code_sha": "5dcabc1fecb748457022f93c1a9a80da6dcbaf92",
-  "profile": "public-en-ko-word-alignment-v21",
+  "code_sha": "e3ba6695d2cbbe2ad31e5279646a6af8dfb88a46",
+  "profile": "public-en-ko-masked-v22",
   "source_kernel": "pymood1/gpt-sovits-s1-next-45952006429"
 }
