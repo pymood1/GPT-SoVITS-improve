@@ -883,3 +883,22 @@ no downstream S1 quality claim, no actual noise MOS. Small sample,
 synthetic room effect and unknown pretraining overlap. No production edits.
 Time grid, initial noise override, worker, runner and explicit workflow
 profile implemented. CPU selftests and GPU result pending.
+
+## v12 actual result (2026-11-27 11:10 KST)
+Run 45925702174 completed 576 token and 48 native S1 comparisons,
+492.701s total, environment setup 257.048s (52.2%); per worker
+model load/cache 36.55/36.68s and fit 5.67/5.69s. No passing arm.
+Seed1 baseline/specialist/margin UED: clean 0/.20488/.00053,
+noise10 .91030/.85881/.90977, band8 .52229/.47558/.52229,
+room .60456/.61677/.60510. Seed2 similar: clean 0/.21285/.00053,
+noise10 .91030/.85775/.90924, band8 .52229/.47983/.52229,
+room .60456/.61996/.60456. Margin almost eliminates clean drift
+but also almost all useful corrections. Routed margin seed2 clean
+zero; no improvement on band8. The router calibration candidate list
+allowed thresholds below .5 (e.g. .0000555), activating on most clean
+samples; not a valid reliable quality gate. Future require class
+posterior floor and validation risk constraint on actual routed arm.
+Native S1 caps across seeds: 8/16 vs topk5 9/16, penalty1.10 11/16.
+Median length ratio 2.44/2.74 native; sampling alone not sufficient.
+Continue v13 acoustic guidance; v12 verified completed and source
+manifest available. All results exploratory, no deployment.
