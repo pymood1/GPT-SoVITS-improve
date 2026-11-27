@@ -15,6 +15,8 @@ def main():
     p.add_argument("--expected-count",type=int,default=12)
     a=p.parse_args()
     request=json.loads(a.source.read_text())
+    language=request.get("language","ko")
+    assert language in ("ko","en")
     assert len(request["samples"])==a.expected_count and a.expected_count>0
     torch.backends.cuda.matmul.allow_tf32=False
     torch.backends.cudnn.allow_tf32=False
@@ -33,7 +35,7 @@ def main():
                            cpu_threads=2,num_workers=1)
         assert model.model.compute_type=="float32",model.model.compute_type
         def transcribe(path):
-            segments,_=model.transcribe(path,language="ko",beam_size=5,
+            segments,_=model.transcribe(path,language=language,beam_size=5,
                                       condition_on_previous_text=False,vad_filter=False)
             return "".join(s.text for s in segments)
         backend="ct2_cuda_float32"
@@ -61,7 +63,7 @@ def main():
             features=inputs.input_features.to("cuda",torch.float32)
             mask=inputs.attention_mask.to("cuda")
             ids=model.generate(input_features=features,attention_mask=mask,
-                language="ko",task="transcribe",num_beams=5,do_sample=False,
+                language=language,task="transcribe",num_beams=5,do_sample=False,
                 return_timestamps=False)
             return proc.batch_decode(ids,skip_special_tokens=True)[0]
         backend="transformers_cuda_float32"
