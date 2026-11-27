@@ -456,3 +456,31 @@ A candidate must preserve CER and speaker identity and pass blind listening;
 similarity to V2ProPlus alone cannot establish superiority. Fresh
 same-speaker paired corpus and further validation are prerequisites for
 training decisions. 
+
+## Real-target paired evaluation preparation (2026-11-27 KST)
+Evidence: NaturalSpeech 2 (ICLR 2024), https://arxiv.org/abs/2304.09116,
+uses a different utterance from the same speaker as a synthesis prompt in
+its evaluation. The design motivates verified speaker pairing, not a
+claim that nearest-Mel synthesis is always most natural.
+Data: Zeroth Project, Lucas Jo and Wonkyum Lee, https://www.openslr.org/40/
+(CC BY 4.0); https://huggingface.co/datasets/kresnik/zeroth_korean
+exposes speaker_id, utterance id, text and 16 kHz audio, test split
+457 utterances / 10 speakers. This is ASR read speech, not a studio
+high-bandwidth TTS corpus. Pretraining overlap of public checkpoints
+is unknown; never describe speakers as certainly unseen.
+
+Implement deterministic private manifest preparation: four distinct
+test speakers, one reference and two different real target utterances
+each (8 paired targets), strict text and decoded-audio deduplication,
+3-10s duration, 16 kHz mono, finite non-silent audio, clipping gate,
+pinned Hugging Face dataset revision, PCM hash and attribution.
+Targets must not enter the prompt or training. Use common <=7.6 kHz
+bandwidth for real vs synthetic Mel analysis; no claim above the 8 kHz
+Nyquist limit. Record per-pair CER, speaker similarity to reference AND
+real target, duration, constrained DTW, real-target spectral distance,
+and blinded listening. Compare inter-model distances separately.
+Selection is based on metadata and waveform validity before model scores.
+Code and CPU self-tests added; no real dataset download or GPU job in
+this change. Await existing native cross-version pilot before requesting
+additional GPU use. If successful, validate candidates on real-target
+pairs; if not, diagnose its failure first.
