@@ -12,7 +12,9 @@ NFFT=1024
 HOP=240
 BINS=80
 
-def features(wave,sr):
+def features(wave,sr,*,max_hz=10000):
+    if not 1000<=max_hz<=min(SR/2,sr/2):
+        raise ValueError('Requested bandwidth exceeds source Nyquist')
     x=np.asarray(wave,dtype=np.float64)
     if x.ndim==2:x=x.mean(axis=1)
     if x.ndim!=1 or len(x)<sr/10 or not np.isfinite(x).all():
@@ -36,7 +38,7 @@ def features(wave,sr):
     power=np.abs(np.fft.rfft(frames*np.hanning(NFFT),axis=1))**2
     hz=np.fft.rfftfreq(NFFT,1/SR)
     mel=lambda z:2595*np.log10(1+z/700)
-    edges=700*(10**(np.linspace(mel(80),mel(10000),BINS+2)/2595)-1)
+    edges=700*(10**(np.linspace(mel(80),mel(max_hz),BINS+2)/2595)-1)
     bank=np.maximum(0,np.minimum((hz[None,:]-edges[:-2,None])/(edges[1:-1,None]-edges[:-2,None]),
         (edges[2:,None]-hz[None,:])/(edges[2:,None]-edges[1:-1,None])))
     bank/=bank.sum(axis=1,keepdims=True).clip(1e-12)
@@ -71,6 +73,7 @@ def selftest():
     assert compare(a,a)["dtw_logmel_l1_db"]==0
     assert compare(a,b)["dtw_logmel_l1_db"]<1e-8
     assert compare(a,features(y,SR))["dtw_logmel_l1_db"]>1
+    assert compare(features(x,SR,max_hz=7600),features(x*.3,SR,max_hz=7600))["dtw_logmel_l1_db"]<1e-8
     print("Spectral compare selftest passed")
 
 if __name__=="__main__":selftest()
