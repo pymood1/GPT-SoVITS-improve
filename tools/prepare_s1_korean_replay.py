@@ -35,7 +35,8 @@ def select(rows,speakers=4,targets=2):
     if len(pairs)!=speakers:raise ValueError("Insufficient eligible distinct speakers and utterances")
     return pairs
 
-def prepare(output,speakers,targets,*,revision,excluded_speakers=(),excluded_texts=(),excluded_hashes=()):
+def prepare(output,speakers,targets,*,revision,excluded_speakers=(),excluded_texts=(),excluded_hashes=(),split="train"):
+    if split not in ("train","test"):raise ValueError("Invalid split")
     import numpy as np
     import soundfile as sf
     import pyarrow.parquet as pq
@@ -45,8 +46,8 @@ def prepare(output,speakers,targets,*,revision,excluded_speakers=(),excluded_tex
     blocked_texts={normalize(t) for t in excluded_texts}
     blocked_speakers={str(s) for s in excluded_speakers}
     paths=[p for p in api.list_repo_files(repo,repo_type="dataset",revision=revision)
-           if p.endswith(".parquet") and "train" in p.rsplit("/",1)[-1]]
-    if not paths:raise FileNotFoundError("Pinned train parquet unavailable")
+           if p.endswith(".parquet") and split in p.rsplit("/",1)[-1]]
+    if not paths:raise FileNotFoundError("Pinned split parquet unavailable")
     rows=[];counts={};pairs=None
     for path in sorted(paths):
         local=hf_hub_download(repo,path,repo_type="dataset",revision=revision)
@@ -78,10 +79,10 @@ def prepare(output,speakers,targets,*,revision,excluded_speakers=(),excluded_tex
             r["path"]=wav.name
             r["pcm_sha256"]=hashlib.sha256(wav.read_bytes()).hexdigest()
             assert str(r["speaker_id"])==pair["speaker_id"]
-    manifest=dict(dataset=repo,revision=revision,split="train",license="CC-BY-4.0",
+    manifest=dict(dataset=repo,revision=revision,split=split,license="CC-BY-4.0",
         attribution="Zeroth Project, Lucas Jo and Wonkyum Lee, OpenSLR SLR40",
         sample_rate=16000,verified_same_speaker=True,pairs=pairs)
     (output/"manifest.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
     print(json.dumps(dict(speakers=len(pairs),targets=sum(len(p["targets"]) for p in pairs),
-                          revision=revision,sample_rate=16000,split="train")))
+                          revision=revision,sample_rate=16000,split=split)))
 
