@@ -19,6 +19,7 @@ def main(a):
     m=json.loads((a.source/"manifest.json").read_text())
     assert m["verified_same_speaker"] and len(m["pairs"])==2
     pair=m["pairs"][a.worker];ri=a.worker+1
+    lang={"ko":"all_ko","en":"en"}[m.get("language","ko")]
     ref=pair["reference"];rp=a.source/ref["path"]
     assert all(str(t["speaker_id"])==pair["speaker_id"] for t in [ref,*pair["targets"]])
     a.output.mkdir(parents=True,exist_ok=False)
@@ -46,6 +47,9 @@ def main(a):
             sf.write(a.output/(name+"-level.wav"),leveled,sr,subtype="PCM_16")
             row=dict(arm=arm,reference_index=ri,text_index=ti,status="ok",native_rate=sr,
                      noise_proxies=probe(leveled,sr),periodicity=periodicity(leveled,sr),listening_gain=lg,**extra)
+            if sr==48000:
+                from tools.acoustic_native_bandwidth import audit
+                row["wideband"]=audit(wave,sr)
             if mel is not None:
                 arr=mel.detach().float().cpu().numpy()
                 row.update(mel_stats(arr));np.savez_compressed(a.output/(name+"-mel.npz"),mel=arr)
@@ -55,7 +59,7 @@ def main(a):
         for local,t in enumerate(pair["targets"],1):
             ti=(ri-1)*2+local
             target=a.source/t["path"]
-            px,pb=features(e,ref["text"]);tx,tb=features(e,t["text"])
+            px,pb=features(e,ref["text"],lang);tx,tb=features(e,t["text"],lang)
             e.set_ref_audio(str(rp));e.prompt_cache["phones"]=px[0].tolist()
             prompt=e.prompt_cache["prompt_semantic"].reshape(1,-1).long().clone()
             x=torch.cat((px,tx),1);b=torch.cat((pb,tb),2)
@@ -97,8 +101,8 @@ def main(a):
         e=engine_for("v2ProPlus")
         for local,t in enumerate(pair["targets"],1):
             ti=(ri-1)*2+local;seed=2035+(ri-1)*1009+local
-            result=list(e.run(dict(text=t["text"],text_lang="all_ko",ref_audio_path=str(rp),
-                prompt_text=ref["text"],prompt_lang="all_ko",top_k=15,top_p=1.,temperature=1.,
+            result=list(e.run(dict(text=t["text"],text_lang=lang,ref_audio_path=str(rp),
+                prompt_text=ref["text"],prompt_lang=lang,top_k=15,top_p=1.,temperature=1.,
                 repetition_penalty=1.35,seed=seed,batch_size=1,parallel_infer=False,split_bucket=False,
                 use_cuda_graph=False,use_flash_attention=False,text_split_method="cut0",fragment_interval=.1,
                 return_fragment=False,streaming_mode=False)))
