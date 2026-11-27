@@ -1128,3 +1128,43 @@ voiced periodicity/HF, raw and level audio, blinded listening.
 No production changes or deployment; no new claimed improvement
 until results. Korean corpus acquisition may fail if too few eligible
 speakers, no fallback to leakage. 
+
+## v19 results and v20 controlled multilingual conditioning (2026-11-27 KST)
+Run 45973236470: 112/112 waveform cases, 1582.894s, setup230.470s,
+all six workers exit0, identical generated token hashes across KO
+acoustic arms. EN mean CER/SV base .84431/.68465, continued
+.86228/.55215, contrastive .86826/.53308; held-out NLL worsened
+from ~4.897 to ~4.945 despite training CE decrease. Do not adopt
+extra small-corpus CE or ranking as configured. KO eight texts, two
+seeds: base CER .04231, SV .79752, periodicity .91362, activeHF
+.00108741; gain .04808/.79283/.91426/.00089648; late
+.04038/.81038/.91805/.00100424; gain+late
+.04423/.80848/.92211/.00083084. No subjective quality confirmation.
+V20: EN doubled original utterances 80->160 from 32 speakers;
+32 KO replay utterances. Additional native 48k VCTK 24 speakers
+x5, exclude all v17 speakers/text/audio hashes, split 16/4/4,
+new EN validation/test relative to v17 only. Frozen pinned
+bert-base-multilingual-cased using existing offset-nearest alignment.
+Native projection bias preserved, zero-initialized 768D bridge
+overrides original weight on this experimental en/ko path; verify
+zero input exact parity and gradients. Separate from production,
+no claim about Chinese compatibility. Frozen v17 eos2 vs 240
+updates corrected CE with zero features, aligned mBERT, and
+within-reference/target reversed feature order control. All three
+trained arms reset same v17 seed weights and bridge, 3 EN+1 KO
+same sampled batch schedule, AdamW2e-5, FP32. Reverse features still
+contain contextual information, not a null lexical control. Existing
+alignment uses approximate phone position, not verified word/phone
+timings. 128 forced rows per seed, eight EN waveforms per arm.
+KO: exact v19 four speaker/eight utterance holdout reused to isolate
+native vs research Euler implementation, full .9 vs full 1.3, late
+.9 vs late 1.3; same generated token sequence, original reference,
+32 steps and matched random seed. No gain variation; no S2 training.
+Native .9 vs research full .9 is a solver-path control; late/full
+within same research solver isolates time schedule at fixed strength.
+144 total waveform cases, 256 forced rows, 1440 additional updates
+across both workers. FP32 ASR/SV, duration, acoustic proxies, blinded
+clips. No MOS, no deployment. KO source 16k, generated 48k.
+Acquisition may fail if insufficient new VCTK speakers. Prior v16
+and earlier EN overlap not excluded globally; pretraining overlap
+unknown. No claim of better quality until results.
