@@ -981,3 +981,36 @@ or training in this diagnostic. Korean source is 16kHz only; language
 and corpus/sample-rate differences are confounded, not language
 causal evidence. Measure quantizer agreement rather than infer it
 from codebook dimensions. Per-arm JSON progress restored.
+
+## v15 measured results and v16 training repair (2026-11-27 14:50 KST)
+Run 45946132571 completed 168/168 cases, 388.909s, setup 249.305s,
+both GPU workers exit zero. Source audit reproduced right-pad/left-mask
+mismatch, two extra EOS labels for length3 in length5 batch, and rejected
+sequence EOS contamination 64/64 seeded trials on that specific fixture.
+V5dev and V2ProPlus have different parameter hashes but identical S1
+checksum and exact token equality in all 72 comparisons; EOS metrics
+and seeded generation identical. Both native prompt pads 9600 samples
+at 16kHz (0.6s), both English/Korean BERT tensors zero.
+Native prompt EN median EOS .000779505, rank107.5, token top1 .05290,
+4/4 cap; KO .411280, rank2.5, top1 .19809, 0/2 cap. Both prefill and
+training last logits agree within 2.01e-5 across forced cases. Production
+phones match all tested research targets. Raw/train English target UED
+.25664–.40972, Korean .05263–.39462. Training preprocessing, no padding
+and 300ms variants did not rescue EN EOS. Language, sample rate and
+corpus confounded; no claim of a language-only cause. Quantizer
+incompatibility rejected for the tested samples, not globally.
+V16: frozen control plus five matched fine-tune arms, native right-pad
+and all-EOS CE, left-pad phones/BERT only, true-EOS masked CE only,
+combined, combined with real EOS weight4. DPO off throughout;
+80 AdamW updates/arm at 2e-5, batch4, same seed-specific batch order,
+reset identical initial weights, train only last two S1 blocks and
+readout, dropout disabled for controlled pilot, normalized CE per
+included weighted tokens (not exact stock summed-CE optimization).
+Raw semantic extraction shared across arms to isolate objective;
+18 EN train utterances from 6 speakers, 8 validation and 8 test pairs,
+4 KO guard pairs (no KO training). All reused v14/v6 diagnostic
+holdouts, not a fresh confirmation. 240 forced evaluation rows
+including 144 free-generation cases across two seeds; test generation
+without oracle duration, common 512 cap. No waveform quality claim,
+no production edits, no automatic adoption. Save arm deltas privately.
+Native arm is a matched fine-tuning control, not full original training.
