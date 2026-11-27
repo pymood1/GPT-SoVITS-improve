@@ -3,16 +3,17 @@ Original corpus CC BY 4.0, Yamagishi et al., doi:10.7488/ds/2645.
 """
 import hashlib,io,json
 from pathlib import Path
-from tools.prepare_acoustic_zeroth_pairs import select
+from tools.prepare_acoustic_zeroth_pairs import select,normalize
 from tools.acoustic_native_bandwidth import audit
 
-def prepare(output,speakers=2,targets=2):
+def prepare(output,speakers=2,targets=2,*,revision=None,excluded_speakers=(),excluded_texts=(),excluded_hashes=()):
     import numpy as np
     import soundfile as sf
     import pyarrow.parquet as pq
     from huggingface_hub import HfApi,hf_hub_download
     repo="thelarryproject/vctk";api=HfApi()
-    revision=api.dataset_info(repo).sha
+    revision=revision or api.dataset_info(repo).sha
+    blocked_texts={normalize(t) for t in excluded_texts}
     files=sorted(p for p in api.list_repo_files(repo,repo_type="dataset",revision=revision)
                  if p.startswith("train/") and p.endswith(".parquet"))
     if not files:raise FileNotFoundError("VCTK shards unavailable")
@@ -22,7 +23,7 @@ def prepare(output,speakers=2,targets=2):
         used.append(file)
         for batch in pq.ParquetFile(local).iter_batches(batch_size=16,columns=["id","speaker_id","mic_id","audio","text_original","text_normalized","duration_s","ctc_mismatch"]):
             for r in batch.to_pylist():
-                if r["mic_id"]!="mic2" or r["speaker_id"] in ("p280","p315") or not 3<=r["duration_s"]<=10 or r["ctc_mismatch"] is None or r["ctc_mismatch"]>.3:continue
+                if r["speaker_id"] in excluded_speakers or r["mic_id"]!="mic2" or r["speaker_id"] in ("p280","p315") or not 3<=r["duration_s"]<=10 or r["ctc_mismatch"] is None or r["ctc_mismatch"]>.3:continue
                 raw=r["audio"]["bytes"]
                 if not raw:continue
                 info=sf.info(io.BytesIO(raw))
@@ -32,7 +33,7 @@ def prepare(output,speakers=2,targets=2):
                 quality=audit(x,sr)
                 if quality["rms_dbfs"]< -45 or quality["clipped_fraction"]>.001:continue
                 text=r["text_normalized"].strip()
-                if not text:continue
+                if not text or normalize(text) in blocked_texts or hashlib.sha256(x.tobytes()).hexdigest() in excluded_hashes:continue
                 rows.append(dict(id=r["id"],speaker_id=r["speaker_id"],text=text,
                     seconds=len(x)/sr,sha256=hashlib.sha256(x.tobytes()).hexdigest(),wave=x,
                     source_sha256=hashlib.sha256(raw).hexdigest(),quality=quality,
