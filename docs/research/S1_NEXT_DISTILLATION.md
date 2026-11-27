@@ -671,3 +671,25 @@ diagnostic only. No training or production modifications yet.
 User authorizes autonomous development without GPU-quota constraint;
 avoid accidental duplicated jobs, but do not sacrifice justified experiments
 to quota optimization. Bounded 3600s pilot, mandatory CPU preflight.
+
+## Guidance interval research candidate (2026-11-27 KST)
+Kynkäänniemi et al., NeurIPS 2024,
+https://arxiv.org/abs/2404.07724, found a restricted guidance interval
+can improve image diffusion distribution quality. This does not establish
+the same result for speech CFM or its audio-only conditioning branch.
+Hypothesis: late guidance may exaggerate spectral detail, while early
+or middle guidance can affect identity and global structure. Test instead
+of assuming. Research-only solver supports Euler/midpoint and explicit
+guidance interval in normalized flow time (0 = noise, 1 = output).
+Constant guidance is (0,1); candidate middle interval (.25,.75)
+keeps strength 1.30 when active, with no added guidance outside.
+A 32-step Euler interval run uses 32 conditional +16 negative
+estimator evaluations versus 32+32 for constant guidance. This is
+not equal total computation or equal integrated guidance; include
+a constant-strength .65 comparison (same integrated nominal guidance),
+and optionally late/early interval controls in future paired evaluation.
+Synthetic tests check masked prompt preservation, velocity evaluations
+and exact constant-vector-field expectation. No acoustic claim.
+V8 run 45919753036 remains pinned to prior commit; no parallel GPU
+request. Adopt only after same-token native 48kHz results, valid duration
+and CER/SV and held-out speakers, plus listening.
