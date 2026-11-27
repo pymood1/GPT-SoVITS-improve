@@ -30,6 +30,8 @@ def selftest():
 
 @torch.no_grad()
 def main(a):
+    import soundfile as sf
+    from tools.s1_s2_acoustic_isolation import level_match
     from TTS_infer_pack.TTS import TTS,TTS_Config,load_audio_gpu
     from tools.evaluate_s1_next_waveforms import features
     from tools.s1_waveform_frontend import ensure_worker_nltk
@@ -68,7 +70,8 @@ def main(a):
                     tx,tb=features(e,t["text"],"en")
                     ids=target_ids(check(folder,t))
                     rows.append(dict(speaker=si+1,target=j+1,design=design(px.size(1),prompt.size(1),tx.size(1)),
-                        prompt=prompt,x=torch.cat((px,tx),1),b=torch.cat((pb,tb),2),ids=ids))
+                        prompt=prompt,x=torch.cat((px,tx),1),b=torch.cat((pb,tb),2),ids=ids,
+                        ref_path=check(folder,ref),px=px,tx=tx))
             return rows
         tr=cache(a.train,manifests[0]);va=cache(a.validation,manifests[1]);te=cache(a.test,manifests[2])
         w=fit_duration([(r["design"],r["ids"].size(1)) for r in tr])
@@ -109,6 +112,15 @@ def main(a):
             assert torch.equal(y[:,:prompt.size(1)],prompt)
             seq=y[:,prompt.size(1):].reshape(-1).cpu().numpy()
             assert 0<len(seq)<=512
+            if a.synthesize:
+                e.set_ref_audio(str(r["ref_path"]));e.prompt_cache["phones"]=r["px"][0].tolist()
+                assert torch.equal(e.prompt_cache["prompt_semantic"].reshape(1,-1).long(),prompt)
+                torch.manual_seed(seed+100000)
+                wav=e.using_vocoder_synthesis(torch.as_tensor(seq,device=device,dtype=torch.long).reshape(1,1,-1),r["tx"],sample_steps=32,cfg_rate=.90)
+                wav=wav.detach().float().cpu().numpy().reshape(-1)
+                assert np.isfinite(wav).all() and len(wav)>=24000 and int(e.vocoder_configs["sr"])==48000
+                wav,_=level_match(wav,max_gain=32.)
+                sf.write(a.output/f"speaker-{r['speaker']:02}-target-{r['target']:02}-bias-{int(strength)}.wav",wav,48000,subtype="PCM_16")
             return dict(expected_tokens=expected,generated_tokens=len(seq),cap_hit=len(seq)>=512,
                 final_raw_eos_prob=trace[-1],max_raw_eos_prob=max(trace),native_stop_idx=int(idx),
                 **token_metrics(ids.flatten().cpu().numpy(),seq))
@@ -127,11 +139,11 @@ def main(a):
                 median_abs_log_length_error=float(np.median([abs(np.log(r["length_ratio"])) for r in rr])),
                 ued=sum(r["unit_errors"] for r in rr)/sum(r["reference_tokens"] for r in rr))
         result["seconds"]=time.monotonic()-start
-        result["caveat"]="Teacher-forcing diagnosis and token length are not speech quality. No real target length used in generation; synthetic/English corpus small."
+        result["caveat"]="Teacher-forcing diagnosis and token length are not speech quality. No real target length used in generation; English corpus small. Waveform evaluation optional and requires downstream scoring."
         (a.output/"metrics.json").write_text(json.dumps(result,allow_nan=False,indent=2))
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--selftest",action="store_true")
     for k in ("train","validation","test","output"):p.add_argument("--"+k,type=Path)
-    p.add_argument("--seed",type=int,default=20261127);a=p.parse_args()
+    p.add_argument("--seed",type=int,default=20261127);p.add_argument("--synthesize",action="store_true");a=p.parse_args()
     if a.selftest:selftest()
     else:main(a)
