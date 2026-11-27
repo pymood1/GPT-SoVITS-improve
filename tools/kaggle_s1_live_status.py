@@ -10,11 +10,11 @@ from pathlib import Path
 from tools.kaggle_live_status import cli, kernel_status, publish, TERMINAL
 
 KERNEL = re.compile(r"pymood1/gpt-sovits-s1-next-[0-9]{1,18}")
-WORKER = re.compile(r"(ddp|cache[01]|eval[01]|pseudo[01]|worker[01]|asr-fp32|speaker)")
-EVENTS = {"pseudo_pair","asr_progress","cache_trial","layer_epoch","layer_result","train_step"}
-ARMS = {"teacher","round12","round14","student","prior_student"}
+WORKER = re.compile(r"(ddp|cache[01]|eval[01]|pseudo[01]|worker[01]|asr-fp32|speaker|(?:en|ko)-(?:asr|speaker)|parent)")
+EVENTS = {"pseudo_pair","asr_progress","cache_trial","layer_epoch","layer_result","train_step","worker_progress","phase"}
+ARMS = {"teacher","round12","round14","student","prior_student","frozen","native","text_pad","eos_mask","combined","combined_weight4","eos2","eos4","eos8","eos4_ctc","eos4_ctc_strong","real","oracle","base","continued","contrastive","gain","late_cfg","gain_late"}
 METRICS = {"ce","teacher_ce","ce_ratio","kl","top1_agreement","target_accuracy","teacher_accuracy","tokens"}
-COUNTS = {"epoch","tokens","step","index","accepted_count","gate_streak","attempts","completed","total","reference_index","text_index"}
+COUNTS = {"epoch","tokens","step","index","accepted_count","gate_streak","attempts","completed","total","reference_index","text_index","elapsed_seconds"}
 CACHE = {"full_seconds","cached_seconds","max_abs","mean_abs","parity","top1_matches","cache_bytes","sampled_equal","sampled_full_seconds","sampled_cached_seconds","sampled_full_tokens","sampled_cached_tokens"}
 
 def scalar(v):
@@ -27,7 +27,7 @@ def safe_latest(row):
     if not isinstance(row,dict):
         return None
     out=numbers(row,COUNTS|{"accepted","scale"})
-    for key,allowed in (("event",EVENTS),("arm",ARMS),("status",{"ok","failed"}),("split",{"train","validation"}),("backend",{"ct2_cuda_float32","torch_cuda_float32"})):
+    for key,allowed in (("event",EVENTS),("arm",ARMS),("status",{"ok","failed","training","synthesized","test","validation","ko_guard","running","completed"}),("split",{"train","validation","test","ko_guard"}),("language",{"en","ko","all_ko"}),("stage",{"setup","corpus","model_load","training","synthesis","asr","speaker","finished","failed"}),("backend",{"ct2_cuda_float32","torch_cuda_float32"})):
         if isinstance(row.get(key),str) and row[key] in allowed:
             out[key]=row[key]
     if "validation" in row:
@@ -36,22 +36,41 @@ def safe_latest(row):
         out["models"]={k:numbers(v,CACHE) for k,v in row["models"].items() if k in ARMS and isinstance(v,dict)}
     return out or None
 
+# Accept only structural log prefixes and allowlisted JSON fields. No raw text is published.
+LINE = re.compile(r"^\s*(?:(?:\d+(?:\.\d+)?s?|\d{4}-\d\d-\d\d[T ][0-9:.+-]+Z?)\s*(?:\|\s*)?)?(?:\d+\s*\|\s*)?\[scale\]\s+(\{.*\})\s*$")
+def log_lines(raw):
+    # SDK versions may return an array/object of structured log messages.
+    def visit(value,depth=0):
+        if depth>6:return
+        if isinstance(value,str):
+            yield from value.splitlines()
+        elif isinstance(value,list):
+            for item in value:yield from visit(item,depth+1)
+        elif isinstance(value,dict):
+            for k in ("logs","log","messages","message","text","data","entries","content"):
+                if k in value:yield from visit(value[k],depth+1)
+    try:value=json.loads(raw)
+    except (ValueError,RecursionError):value=None
+    if isinstance(value,(list,dict,str)):
+        yield from visit(value)
+    else:
+        for line in raw.splitlines():
+            try:obj=json.loads(line)
+            except (ValueError,RecursionError):obj=None
+            if isinstance(obj,(dict,list,str)):
+                yield from visit(obj)
+            else:yield line
+
 def parse(raw):
     workers={}
-    for line in raw.splitlines():
-        # Kaggle may prefix each line with timestamps and a line number.
-        m=re.match(r"^\s*(?:(?:\d+(?:\.\d+)?s?\s*(?:\|\s*)?)(?:\d+\s*\|\s*)?)?\[scale\]\s+(\{.*\})\s*$",line)
-        if not m:
-            continue
-        try:
-            row=json.loads(m[1])
-        except ValueError:
-            continue
-        if not isinstance(row,dict):
-            continue
+    for line in log_lines(raw):
+        m=LINE.fullmatch(line)
+        if not m:continue
+        try:row=json.loads(m[1])
+        except ValueError:continue
+        if not isinstance(row,dict):continue
         for key,v in row.items():
-            if not WORKER.fullmatch(key) or not isinstance(v,dict):
-                continue
+            if not WORKER.fullmatch(key) or not isinstance(v,dict):continue
             code=v.get("exit")
             workers[key]={"exit":code if type(code) is int and -255<=code<=255 else None,
                           "latest":safe_latest(v.get("latest"))}
@@ -73,6 +92,10 @@ def selftest():
     assert safe_latest({"arm":"secret","status":"secret","tokens":"secret"}) is None
     assert safe_latest({"models":{"student":{"parity":True,"private":"secret"}}})=={"models":{"student":{"parity":True}}}
     assert parse('[scale] {"eval0":{"exit":1,"latest":{"arm":"teacher","status":"failed"}}}')["eval0"]["exit"]==1
+    structured=json.dumps({"logs":[{"message":'2026-11-27T09:23:00Z | 12 | [scale] {"en-asr":{"exit":null,"latest":{"event":"asr_progress","completed":7,"total":48,"private":"secret"}}}'}]})
+    assert parse(structured)=={"en-asr":{"exit":None,"latest":{"event":"asr_progress","completed":7,"total":48}}}
+    assert parse('[scale] {"eval0":{"exit":null,"latest":{"arm":"contrastive","status":"training","reference_index":20,"text_index":160,"language":"en","loss":1.2}}}')["eval0"]["latest"]=={"arm":"contrastive","status":"training","reference_index":20,"text_index":160,"language":"en"}
+    assert parse('untrusted prefix [scale] {"ko-asr":{"exit":0}}')=={}
     print("S1 safe observer tests passed")
 
 def main():
