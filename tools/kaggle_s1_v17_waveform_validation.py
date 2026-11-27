@@ -136,7 +136,9 @@ def main():
             assert aa["backend"]=="ct2_cuda_float32" and bb["backend"]=="cuda_fp32"
             assert len(aa["scores"])==len(bb["scores"])==count
             for q,x,ar,sr in zip(req["samples"],rows,aa["scores"],bb["scores"]):
-                for key in ("label","reference_index","text_index"):assert q[key]==ar[key]==sr[key]
+                for key in ("label","reference_index","text_index"):assert q[key]==ar[key]
+                # Existing speaker scorer emits positional scores only, in request order.
+                assert "speaker_cosine" in sr
                 x.update(char_errors=ar["char_errors"],char_count=ar["char_count"],speaker_cosine=sr["speaker_cosine"])
             for i in range(2):
                 for arm in ARMS:
