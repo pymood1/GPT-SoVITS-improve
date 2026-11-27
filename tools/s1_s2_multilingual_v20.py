@@ -29,7 +29,16 @@ def selftest():
     logits=torch.zeros(1,5,3,requires_grad=True);labels=torch.zeros(1,5,dtype=torch.long)
     logprob(logits,labels,torch.tensor([1]),torch.tensor([3])).sum().backward()
     assert logits.grad[0,[0,3,4]].abs().sum()==0 and logits.grad[0,1:3].abs().sum()>0
-    print("Text contrastive sign and true-target masking selftests passed")
+    orig=torch.nn.Linear(1024,8)
+    bridge=torch.nn.Linear(768,8,bias=False)
+    torch.nn.init.zeros_(bridge.weight)
+    z=torch.zeros(1,4,1024);expected=orig(z).detach()
+    h=orig.register_forward_hook(lambda m,args,out:m.bias+bridge(args[0][...,:768]))
+    assert torch.equal(orig(z),expected)
+    orig(torch.ones_like(z)).sum().backward()
+    assert torch.count_nonzero(bridge.weight.grad)>0
+    h.remove()
+    print("Multilingual bridge identity, gradient and feature ordering selftests passed")
 def main(a):
     import soundfile as sf
     from TTS_infer_pack.TTS import TTS,TTS_Config,load_audio_gpu
@@ -100,7 +109,10 @@ def main(a):
         torch.nn.init.zeros_(bridge.weight)
         def hook(module,inp,out):
             return module.bias+bridge(inp[0][...,:768])
+        with torch.no_grad():
+            z=torch.zeros(1,2,1024,device=device);expected_zero=model.bert_proj(z).clone()
         handle=model.bert_proj.register_forward_hook(hook)
+        with torch.no_grad():torch.testing.assert_close(model.bert_proj(z),expected_zero,atol=0.,rtol=0.)
         def conditioned(r):
             q=dict(r)
             if "ref" in r:
