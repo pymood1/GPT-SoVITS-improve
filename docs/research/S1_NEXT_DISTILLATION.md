@@ -948,3 +948,36 @@ with duration calibration plus teacher-forced diagnosis, 48 paired
 audio examples. V13 no longer running; no active GitHub research jobs
 at inspection. V14 standalone CPU architecture job was skipped;
 mandatory pilot CPU selftests must succeed before GPU submission.
+
+## v14 result and v15 causal audit (2026-11-27 KST)
+Run 45940943141 completed 48/48 waveforms, 1766.289s, setup 241.175s.
+Across seeds: native cap 12/16, bias2 6/16, bias4 1/16. CER
+.82863/.82460/.80141, SV .84596/.84485/.83749. Still unacceptable.
+Final EOS on teacher-forced concatenated prompt and target rank 79–173,
+probability .0001352–.0021824. Eight distinct utterances (same forced
+values repeated in both seeds), not sixteen independent measurements.
+Teacher-forced labels verified EOS at end. Cannot attribute to
+training class imbalance: padding EOS are included in CE.
+Audit findings in current branch: dataset.batch_sequences right pads
+phones/BERT while forward and forward_old use make_pad_mask_left;
+valid EOS and post-end padding both contribute to summed CE;
+reported token accuracy ignores EOS; DPO make_reject_y operates on
+padded y rather than valid length, and DPO logps include padding.
+Training audio pipeline uses 32k decode, gain 1145.14*(.475/peak+.5),
+16k resample; inference uses direct 16k + silence based on S2 sample
+rate, not 16k. English/Korean BERT may be zero by checkpoint config.
+These are source facts, not proof of historical s1v3 training defects.
+No production changes. Source-derived CPU diagnostic demonstrates
+mask and extra EOS labels and tests rejected EOS contamination.
+V15 reuses fixed v14 English and v6 Korean controls (not fresh holdout);
+both versions V5dev/V2ProPlus use same s1v3 checksum, compare projection
+and codebook hashes; 12 targets x 6 forced arms x 2 versions =144
+EOS/NLL/top1 comparisons; 6 speakers x 2 prompt arms x 2 versions=24
+native generation comparisons; exact training preprocessing vs raw
+and prompt padding; standalone vs concatenation; native cached prefill
+vs training Transformer last logits; production vs research phones
+and BERT nonzero counts; 168 comparisons one install. No synthesis
+or training in this diagnostic. Korean source is 16kHz only; language
+and corpus/sample-rate differences are confounded, not language
+causal evidence. Measure quantizer agreement rather than infer it
+from codebook dimensions. Per-arm JSON progress restored.
