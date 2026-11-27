@@ -484,3 +484,45 @@ Code and CPU self-tests added; no real dataset download or GPU job in
 this change. Await existing native cross-version pilot before requesting
 additional GPU use. If successful, validate candidates on real-target
 pairs; if not, diagnose its failure first.
+
+## Native cross-version result and paired S2 factor isolation (2026-11-27 KST)
+Run 45913817545 completed 16/16 in 625.109s; CT2 CUDA float32 and
+CUDA FP32 SV. V2ProPlus CER .06618/SV .77267, native V5dev
+.07353/.67239, gain-hard .09559/.69282, V5turbo .14706/.67438.
+V5dev gain-hard reduced active 4-8kHz ratio in all four pairs
+(mean .010738 -> .003382); this is not a noise removal measurement.
+Mean DTW distance to V2ProPlus increased from 9.4799 to 9.6695 dB.
+Reject production gain-hard adoption: CER worsened, inter-model
+distance did not improve, and S1 prompt normalization confounded it.
+Native versions have differing synthesis paths; V2ProPlus is a strong
+control, not a proven upper bound.
+
+Stage 1: Lee et al., BigVGAN (ICLR 2023), https://arxiv.org/abs/2206.04658,
+supports periodic inductive bias and anti-aliased vocoding as plausible
+ways to improve waveform synthesis. CPP clinical study,
+https://doi.org/10.1044/2020_AJSLP-20-00001, supports periodicity-related
+voice quality measures; clinical thresholds must not transfer to TTS.
+Stage 2: user reports subtle noise/artifacts during speech, so high-frequency
+energy alone is insufficient. Measure active-frame lagged autocorrelation
+periodicity and residual proxy after common 16kHz resampling, with confidence
+gate and coverage. Not clinical HNR/CPP, SNR, MOS, or a direct perceptual
+noise score. Breathy phonation and unvoiced consonants may be normal.
+Use real target, true-Mel vocoder and oracle-semantic S2 to diagnose where
+quality is lost, without introducing a post-filter or training prematurely.
+
+Pilot v6: verified Zeroth test metadata, two speakers x two different
+real target utterances; eight arms per pair (32 files):
+raw V5dev; raw+hard; S2 reference gain; S2 gain+hard; real recording;
+real-Mel through V5 vocoder; oracle semantic tokens through V5 S2; native V2ProPlus.
+First four share the original raw prompt semantic tokens, identical generated
+target tokens and CFM seed, and CFG 1.30, 32 steps, FP32. Gain affects
+reference spectrogram and CFM reference Mel only, not S1. Hard clamp
+[-12,2] applied after generation; no additional CFM draw for clamp variants.
+Oracle and real-Mel controls use real target access and must never be
+reported as deployable inference. V2 control native, not shared-token.
+Real-target DTW log-Mel comparison restricted to <=7600Hz and 24kHz frontend;
+record duration/path stretch and per-pair CER/SV and periodicity coverage.
+16kHz recordings cannot establish full-band artifact reduction. No training,
+no production edits, no blind-listening claim. Test only, 3000s job cap.
+This bounded first real-target pilot uses two of the available ten test
+speakers; if promising, expand on distinct speakers and seeds before adoption.
