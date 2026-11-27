@@ -1252,3 +1252,45 @@ noise scale not automatically lower perceptual noise. All 144
 waveforms, 64 full-mask diagnostic rows, 3200 updates total,
 FP32 ASR/SV, raw and level files, blind listening. Reused holdout
 and 16k KO source limit conclusions. No deployment.
+
+## v22 results and v23 multi-hypothesis screening (2026-11-27 KST)
+Run 46001023562, 144/144 waveforms, 1844.91s, setup228.75s,
+all workers exit0. 4,463,617 parameter NAR. Mean EN CER/SV/median
+abs log duration ratio: AR .81711/.62323/.49244; NAR one
+.95526/.81022/.06115; NAR iter 1.05395/.78852/.06115; oracle length
+1.02237/.78362/.00562; random repair .89342/.71552/.49244.
+NAR full-mask test CE 6.494, top1 .02555, predicted length mean
+abs log error .08728. NAR duration promising; content inadequate
+even with oracle length. S1-only latency AR .71364s, one .00360s,
+iter .02186s, repair .73470s; no matched quality, no end-to-end
+speed claim. KO noise .65/.875/1/1.1 CER .03846/.03462/.04423/.04231;
+SV .81608/.81415/.81356/.80904. Keep .875. No deployment.
+V23: 23 arms, 368 scored waveforms, two seeds, one setup, no
+duplicate active job. Fresh EN VCTK native48k 4 speakers x4 targets,
+exclude v17 and v20 train/val/test speaker/text/raw hashes; evaluate
+targets 1 and 4 per speaker; fresh KO Zeroth 16k 4 speakers x2
+targets, public train split but speaker/text/hash disjoint from
+adaptation and v17/v19 holdouts. Earlier corpus/pretraining overlap
+unknown. New test set not used for training. Reuse old validation,
+v21 word AR, v22 NAR/length model, v17 eos4. No new NAR-from-scratch
+training. EN 13 arms: native AR, soft duration EOS bias, .75-1.25
+length band, exact predicted duration EOS constraint, greedy top1,
+temperature .7, repetition penalty1, original NAR one/iter,
+pretrained masked one/iter/local/low-confidence repair. Pretrained
+masked uses native embeddings and transformer, EOS embedding as
+mask input, excludes EOS from prediction, prefix mask retained and
+target bidirectional. Train last 8 layers/text embedding/output
+and existing BERT bridge, 400 updates/seed, AdamW2e-5, alternating
+local text attention restriction vs unrestricted; mixed KO replay,
+same train corpus. Local restriction is approximate, not forced
+alignment. Repair masks 30% lowest sampled-token probabilities
+from native AR probability trace; same duration as native. No
+oracle target length in generation. KO 10 arms: CFG1.0/1.3/1.6/1.9,
+sway -.5/-1, Euler64, midpoint16, gain-to -23dB, native prompt
+trim to unpadded token count; matched .875 noise and fixed target
+tokens, original reference except gain/trim arms. S2 steps32
+unless noted, CFG1.3 unless varied. No S2 weight training.
+208 EN +160 KO waveforms; 64 frozen NAR diagnostics; 800 additional
+pretrained masked updates. All FP32. Exploratory screening,
+multiple comparisons and only 4 speakers/language; no production
+adoption without heldout confirmation and blind listening.
