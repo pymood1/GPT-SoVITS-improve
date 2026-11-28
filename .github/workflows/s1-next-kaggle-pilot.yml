@@ -1,0 +1,364 @@
+name: S1 Next public corpus Kaggle pilot
+on:
+  pull_request:
+    branches: [research/grokking-gpt-sovits-20261121]
+    paths: ['tools/s1_next_pilot_request.json']
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  request:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'research/s1-next-distillation-20261126'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      submit: ${{ steps.request.outputs.submit }}
+      observe: ${{ steps.request.outputs.observe }}
+      recover: ${{ steps.request.outputs.recover }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Check explicit request and pin source
+        id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json, os, re, urllib.request, subprocess
+          from pathlib import Path
+          head=os.environ["HEAD"]
+          request=urllib.request.Request("https://api.github.com/repos/"+os.environ["REPO"]+"/commits/"+head,
+              headers={"Authorization":"Bearer "+os.environ["GH_TOKEN"],"Accept":"application/vnd.github+json"})
+          with urllib.request.urlopen(request,timeout=20) as r:
+              commit=json.load(r)
+          submit=any(f["filename"]=="tools/s1_next_pilot_request.json" for f in commit["files"])
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("submit="+str(submit).lower()+"\n")
+          if submit:
+              cfg=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+              assert cfg["code_sha"]==commit["parents"][0]["sha"]
+              assert re.fullmatch("[0-9a-f]{40}",cfg["code_sha"])
+              observe=(set(cfg)=={"code_sha","profile","source_kernel"} and cfg["profile"]=="public-fleurs-ko-observe" and re.fullmatch(r"pymood1/gpt-sovits-s1-next-[0-9]{1,18}",cfg["source_kernel"]) is not None)
+              recover=(set(cfg)=={"code_sha","profile","source_kernel","expected_result_sha"} and cfg["profile"]=="public-fleurs-ko-recover" and re.fullmatch(r"pymood1/gpt-sovits-s1-next-[0-9]{1,18}",cfg["source_kernel"]) is not None and re.fullmatch(r"[0-9a-f]{40}",cfg["expected_result_sha"]) is not None)
+              observe=observe or recover
+              assert observe or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-convergence-v7","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-transfer-audit-v8","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-progressive-ffn-v9","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-progressive-stack-v10","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-joint-ffn-v11","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-fullwidth-ffn-v12","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-stack-kv-v13","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-affine-rms-v14","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-rms-polish-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45760100606"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-rms-listen-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45834021558"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-acoustic-isolation-v1","source_kernel":"pymood1/gpt-sovits-s1-next-45840975381"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-acoustic-cfg-v2","source_kernel":"pymood1/gpt-sovits-s1-next-45849884407"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-acoustic-score-v3","source_kernel":"pymood1/gpt-sovits-s1-next-45858321277"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-acoustic-tail-v4","source_kernel":"pymood1/gpt-sovits-s1-next-45849884407"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-fleurs-ko-cross-version-v5","source_kernel":"pymood1/gpt-sovits-s1-next-45840975381"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-zeroth-ko-paired-s2-v6","source_kernel":"pymood1/gpt-sovits-s1-next-45913817545"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-wideband-v7","source_kernel":"pymood1/gpt-sovits-s1-next-45915504105"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-solver-v8","source_kernel":"pymood1/gpt-sovits-s1-next-45917728836"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-quality-curriculum-v9","source_kernel":"pymood1/gpt-sovits-s1-next-45919753036"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-semantic-robustness-v10","source_kernel":"pymood1/gpt-sovits-s1-next-45921918936"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-token-aware-v11","source_kernel":"pymood1/gpt-sovits-s1-next-45923560566"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-multi-restoration-v12","source_kernel":"pymood1/gpt-sovits-s1-next-45924697066"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-batched-guidance-v13","source_kernel":"pymood1/gpt-sovits-s1-next-45925702174"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-vctk-en-eos-duration-v14","source_kernel":"pymood1/gpt-sovits-s1-next-45925702174"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-eos-root-cause-v15","source_kernel":"pymood1/gpt-sovits-s1-next-45940943141"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-s1-training-repair-v16","source_kernel":"pymood1/gpt-sovits-s1-next-45940943141"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-expanded-alignment-v17","source_kernel":"pymood1/gpt-sovits-s1-next-45948297170"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-v17-waveform-v18","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-dual-track-v19","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-multilingual-v20","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-word-alignment-v21","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-masked-v22","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-en-ko-multi-v23","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"} or cfg=={"code_sha":cfg["code_sha"],"profile":"public-ko-factorial-v24","source_kernel":"pymood1/gpt-sovits-s1-next-45952006429"}
+              with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+                  f.write("observe="+str(observe).lower()+"\n")
+                  f.write("recover="+str(recover).lower()+"\n")
+          PY
+      - name: Recover existing result directly
+        if: steps.request.outputs.recover == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+        run: |
+          set -euo pipefail
+          KERNEL=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["source_kernel"])')
+          mkdir -p "$RUNNER_TEMP/observe"
+          # Request exactly one known file via official KaggleHub DownloadKernelOutput,
+          # not the rate-limited ListKernelSessionOutput route.
+          python -m pip install --disable-pip-version-check kagglehub
+          timeout 180 python - "$KERNEL" "$RUNNER_TEMP/observe/s1-next-result.json" <<'PY'
+          import json, shutil, sys
+          from pathlib import Path
+          import kagglehub
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          path=Path(kagglehub.notebook_output_download(sys.argv[1]+"/versions/1",path="s1-next-result.json"))
+          assert path.is_file() and 0<path.stat().st_size<20_000_000
+          r=json.loads(path.read_text())
+          assert r["code_sha"]==req["expected_result_sha"] and r["status"]=="completed"
+          shutil.copyfile(path,sys.argv[2])
+          PY
+          python - "$RUNNER_TEMP/observe/s1-next-result.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          r=json.loads(Path(sys.argv[1]).read_text())
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          assert r["code_sha"]==req["expected_result_sha"] and r["status"]=="completed"
+          print("S1_NEXT_RESULT_BEGIN")
+          print(json.dumps(r,indent=2))
+          print("S1_NEXT_RESULT_END")
+          PY
+          python tools/analyze_s1_s2_screening.py --source "$RUNNER_TEMP/observe/s1-next-result.json" --output "$RUNNER_TEMP/observe/screening.json"
+      - name: Preserve direct recovery
+        if: always() && steps.request.outputs.recover == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-s1-result
+          path: |
+            ${{ runner.temp }}/observe/s1-next-result.json
+            ${{ runner.temp }}/observe/screening.json
+          if-no-files-found: ignore
+          retention-days: 14
+  pilot:
+    needs: request
+    if: needs.request.outputs.submit == 'true' && needs.request.outputs.observe != 'true'
+    concurrency:
+      group: kaggle-real-model-research-v2
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 190
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: needs.request.outputs.submit == 'true'
+        with:
+          python-version: '3.12'
+      - name: Mandatory pre-submit regression tests
+        if: needs.request.outputs.submit == 'true'
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          bash tools/check_s1_research.sh
+          python -m pip install numpy soundfile
+          python -m py_compile tools/s1_s2_acoustic_isolation.py tools/kaggle_s1_s2_acoustic_isolation.py
+          python tools/s1_s2_acoustic_isolation.py --selftest
+          python -m py_compile tools/s1_s2_acoustic_cfg.py tools/kaggle_s1_s2_acoustic_cfg.py
+          PYTHONPATH=.:GPT_SoVITS python tools/s1_s2_acoustic_cfg.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_acoustic_score.py
+          python -m py_compile tools/s1_s2_acoustic_tail.py tools/kaggle_s1_s2_acoustic_tail.py tools/acoustic_noise_probe.py
+          PYTHONPATH=.:GPT_SoVITS python tools/s1_s2_acoustic_tail.py --selftest
+          python -m pip install scipy
+          python -m py_compile tools/acoustic_spectral_compare.py tools/s1_s2_cross_version.py tools/kaggle_s1_s2_cross_version.py
+          PYTHONPATH=. python tools/acoustic_spectral_compare.py
+          python tools/acoustic_periodicity_probe.py
+          python tools/acoustic_native_bandwidth.py --selftest
+          python tools/s1_s2_cfm_midpoint.py
+          python -m py_compile tools/s1_s2_batched_guidance.py tools/kaggle_s1_s2_batched_guidance.py
+          PYTHONPATH=. python tools/s1_eos_duration_audit.py --selftest
+          python -m py_compile tools/kaggle_s1_eos_duration_audit.py
+          PYTHONPATH=. python tools/audit_s1_training_contracts.py
+          PYTHONPATH=. python tools/s1_eos_root_cause.py --selftest
+          python -m py_compile tools/kaggle_s1_eos_root_cause.py
+          PYTHONPATH=. python tools/s1_training_repair_pilot.py --selftest
+          python -m py_compile tools/kaggle_s1_training_repair_pilot.py
+          PYTHONPATH=. python tools/s1_expanded_alignment_pilot.py --selftest
+          python -m py_compile tools/kaggle_s1_expanded_alignment_pilot.py tools/prepare_s1_expanded_vctk.py tools/prepare_s1_korean_replay.py
+          PYTHONPATH=. python tools/s1_v17_waveform_validation.py --selftest
+          python -m py_compile tools/kaggle_s1_v17_waveform_validation.py
+          PYTHONPATH=. python tools/s1_s2_dual_track_v19.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_dual_track_v19.py tools/prepare_s1_korean_replay.py
+          PYTHONPATH=. python tools/s1_s2_multilingual_v20.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_multilingual_v20.py
+          PYTHONPATH=. python tools/s1_s2_word_alignment_v21.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_word_alignment_v21.py tools/s1_english_word_alignment.py
+          PYTHONPATH=. python tools/s1_s2_masked_v22.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_masked_v22.py tools/s1_masked_semantic.py
+          PYTHONPATH=. python tools/s1_s2_multi_v23.py --selftest
+          PYTHONPATH=. python tools/s1_s2_ko_factorial_v24.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_ko_factorial_v24.py
+          python -m py_compile tools/kaggle_s1_s2_multi_v23.py tools/s1_pretrained_masked.py
+          python tools/acoustic_controlled_degradation.py
+          PYTHONPATH=. python tools/s1_semantic_robustness.py --selftest
+          PYTHONPATH=. python tools/s1_token_aware_restoration.py --selftest
+          PYTHONPATH=. python tools/s1_multi_experiment_restoration.py --selftest
+          python -m py_compile tools/kaggle_s1_multi_experiment_restoration.py
+          python -m py_compile tools/kaggle_s1_token_aware_restoration.py
+          python -m py_compile tools/s1_semantic_robustness_gate.py tools/kaggle_s1_semantic_robustness.py
+          PYTHONPATH=. python tools/s1_s2_quality_curriculum.py --selftest
+          python -m py_compile tools/kaggle_s1_s2_quality_curriculum.py
+          python -m py_compile tools/s1_s2_wideband_solver.py tools/kaggle_s1_s2_wideband_solver.py
+          python tools/s1_s2_paired_assessment.py --selftest
+          python -m py_compile tools/prepare_acoustic_vctk_pairs.py tools/kaggle_s1_s2_wideband.py tools/score_s1_fp32_asr.py
+          python tools/prepare_acoustic_zeroth_pairs.py --selftest
+          python -m py_compile tools/s1_s2_paired_real.py tools/kaggle_s1_s2_paired_real.py
+      - name: Prepare private Kaggle job
+        if: needs.request.outputs.submit == 'true'
+        id: prepare
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          kernel="pymood1/gpt-sovits-s1-next-"+os.environ["GITHUB_RUN_ID"]
+          folder=Path(os.environ["RUNNER_TEMP"])/"s1-next-pilot"
+          folder.mkdir()
+          launcher={"public-fleurs-ko-transfer-audit-v8":"tools/kaggle_s1_next_transfer_audit.py","public-fleurs-ko-progressive-ffn-v9":"tools/kaggle_s1_progressive_ffn.py","public-fleurs-ko-progressive-stack-v10":"tools/kaggle_s1_progressive_stack.py","public-fleurs-ko-joint-ffn-v11":"tools/kaggle_s1_joint_ffn.py","public-fleurs-ko-fullwidth-ffn-v12":"tools/kaggle_s1_fullwidth_ffn.py","public-fleurs-ko-stack-kv-v13":"tools/kaggle_s1_stack_kv.py","public-fleurs-ko-affine-rms-v14":"tools/kaggle_s1_affine_rms.py","public-fleurs-ko-rms-polish-v15":"tools/kaggle_s1_rms_polish.py","public-fleurs-ko-rms-listen-v15":"tools/kaggle_s1_rms_listen.py","public-fleurs-ko-acoustic-isolation-v1":"tools/kaggle_s1_s2_acoustic_isolation.py","public-fleurs-ko-acoustic-cfg-v2":"tools/kaggle_s1_s2_acoustic_cfg.py","public-fleurs-ko-acoustic-score-v3":"tools/kaggle_s1_s2_acoustic_score.py","public-fleurs-ko-acoustic-tail-v4":"tools/kaggle_s1_s2_acoustic_tail.py","public-fleurs-ko-cross-version-v5":"tools/kaggle_s1_s2_cross_version.py","public-zeroth-ko-paired-s2-v6":"tools/kaggle_s1_s2_paired_real.py","public-vctk-en-wideband-v7":"tools/kaggle_s1_s2_wideband.py","public-vctk-en-solver-v8":"tools/kaggle_s1_s2_wideband_solver.py","public-vctk-en-quality-curriculum-v9":"tools/kaggle_s1_s2_quality_curriculum.py","public-vctk-en-semantic-robustness-v10":"tools/kaggle_s1_semantic_robustness.py","public-vctk-en-token-aware-v11":"tools/kaggle_s1_token_aware_restoration.py","public-vctk-en-multi-restoration-v12":"tools/kaggle_s1_multi_experiment_restoration.py","public-vctk-en-batched-guidance-v13":"tools/kaggle_s1_s2_batched_guidance.py","public-vctk-en-eos-duration-v14":"tools/kaggle_s1_eos_duration_audit.py","public-en-ko-eos-root-cause-v15":"tools/kaggle_s1_eos_root_cause.py","public-en-s1-training-repair-v16":"tools/kaggle_s1_training_repair_pilot.py","public-en-ko-expanded-alignment-v17":"tools/kaggle_s1_expanded_alignment_pilot.py","public-en-ko-v17-waveform-v18":"tools/kaggle_s1_v17_waveform_validation.py","public-en-ko-dual-track-v19":"tools/kaggle_s1_s2_dual_track_v19.py","public-en-ko-multilingual-v20":"tools/kaggle_s1_s2_multilingual_v20.py","public-en-ko-word-alignment-v21":"tools/kaggle_s1_s2_word_alignment_v21.py","public-en-ko-masked-v22":"tools/kaggle_s1_s2_masked_v22.py","public-en-ko-multi-v23":"tools/kaggle_s1_s2_multi_v23.py","public-ko-factorial-v24":"tools/kaggle_s1_s2_ko_factorial_v24.py"}.get(req["profile"],"tools/kaggle_s1_next_convergence.py")
+          script="REQUEST = "+repr(req)+"\n"+Path(launcher).read_text()
+          compile(script,"pilot.py","exec")
+          (folder/"pilot.py").write_text(script)
+          sources=[req["source_kernel"]]
+          if req["profile"]=="public-ko-factorial-v24":
+              sources.extend(["pymood1/gpt-sovits-s1-next-45990209360","pymood1/gpt-sovits-s1-next-46006831134"])
+          if req["profile"]=="public-en-ko-multi-v23":
+              sources.extend(["pymood1/gpt-sovits-s1-next-45990209360","pymood1/gpt-sovits-s1-next-46001023562"])
+          if req["profile"]=="public-en-ko-masked-v22":
+              sources.append("pymood1/gpt-sovits-s1-next-45990209360")
+          if req["profile"]=="public-en-ko-word-alignment-v21":
+              sources.append("pymood1/gpt-sovits-s1-next-45979093677")
+          if req["profile"]=="public-en-ko-multilingual-v20":
+              sources.append("pymood1/gpt-sovits-s1-next-45973236470")
+          if req["profile"] in ("public-en-ko-eos-root-cause-v15","public-en-s1-training-repair-v16"):
+              sources.append("pymood1/gpt-sovits-s1-next-45915504105")
+          if req["profile"]=="public-fleurs-ko-progressive-stack-v10":
+              sources.append("pymood1/gpt-sovits-s1-next-45794687129")
+          if req["profile"]=="public-fleurs-ko-joint-ffn-v11":
+              sources.append("pymood1/gpt-sovits-s1-next-45806410140")
+          if req["profile"]=="public-fleurs-ko-fullwidth-ffn-v12":
+              sources.append("pymood1/gpt-sovits-s1-next-45812067222")
+          if req["profile"] in ("public-fleurs-ko-stack-kv-v13","public-fleurs-ko-affine-rms-v14","public-fleurs-ko-rms-polish-v15"):
+              sources.append("pymood1/gpt-sovits-s1-next-45815400064")
+          if req["profile"]=="public-fleurs-ko-rms-polish-v15":
+              sources.append("pymood1/gpt-sovits-s1-next-45828829274")
+          if req["profile"]=="public-fleurs-ko-rms-listen-v15":
+              sources.extend(["pymood1/gpt-sovits-s1-next-45815400064","pymood1/gpt-sovits-s1-next-45828829274"])
+          if req["profile"] in ("public-fleurs-ko-acoustic-cfg-v2","public-fleurs-ko-acoustic-score-v3","public-fleurs-ko-acoustic-tail-v4"):
+              sources.append("pymood1/gpt-sovits-s1-next-45840975381")
+          (folder/"kernel-metadata.json").write_text(json.dumps({
+            "id":kernel,"title":kernel.split("/")[-1],"code_file":"pilot.py",
+            "language":"python","kernel_type":"script","is_private":True,
+            "enable_gpu":True,"enable_internet":True,"machine_shape":"NvidiaTeslaT4",
+            "dataset_sources":[],"competition_sources":[],"kernel_sources":sources,"model_sources":[]}))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("kernel="+kernel+"\n")
+              f.write("timeout="+({"public-fleurs-ko-progressive-ffn-v9":"1500","public-fleurs-ko-progressive-stack-v10":"2700","public-fleurs-ko-joint-ffn-v11":"2400","public-fleurs-ko-fullwidth-ffn-v12":"2700","public-fleurs-ko-stack-kv-v13":"2100","public-fleurs-ko-affine-rms-v14":"2700","public-fleurs-ko-rms-polish-v15":"2700","public-fleurs-ko-rms-listen-v15":"1800","public-fleurs-ko-acoustic-isolation-v1":"1800","public-fleurs-ko-acoustic-cfg-v2":"1500","public-fleurs-ko-acoustic-score-v3":"1500","public-fleurs-ko-acoustic-tail-v4":"1800","public-fleurs-ko-cross-version-v5":"2700","public-zeroth-ko-paired-s2-v6":"3000","public-vctk-en-wideband-v7":"3600","public-vctk-en-solver-v8":"3600","public-vctk-en-quality-curriculum-v9":"5400","public-vctk-en-semantic-robustness-v10":"3600","public-vctk-en-token-aware-v11":"3600","public-vctk-en-multi-restoration-v12":"5400","public-vctk-en-batched-guidance-v13":"7200","public-vctk-en-eos-duration-v14":"5400","public-en-ko-eos-root-cause-v15":"5400","public-en-s1-training-repair-v16":"7200","public-en-ko-expanded-alignment-v17":"9000","public-en-ko-v17-waveform-v18":"9000","public-en-ko-dual-track-v19":"9000","public-en-ko-multilingual-v20":"9000","public-en-ko-word-alignment-v21":"9000","public-en-ko-masked-v22":"9000","public-en-ko-multi-v23":"10000","public-ko-factorial-v24":"10000"}.get(req["profile"],"9000"))+"\n")
+          PY
+      - name: Install and verify Kaggle CLI dependencies
+        if: needs.request.outputs.submit == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check kaggle==2.2.5 kagglesdk==0.1.38 six==1.17.0
+          python -m pip check
+          python -c "import six; from kaggle.cli import main"
+          kaggle --version
+          kaggle kernels push --help >/dev/null
+          kaggle kernels status --help >/dev/null
+          kaggle kernels output --help >/dev/null
+      - name: Submit bounded public-corpus pilot
+        if: needs.request.outputs.submit == 'true' && github.run_attempt == 1
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+        run: |
+          set -euo pipefail
+          test -n "${KAGGLE_API_TOKEN:-}${KAGGLE_KEY:-}"
+          kaggle kernels push -p "$RUNNER_TEMP/s1-next-pilot" --accelerator NvidiaTeslaT4 --timeout "${{ steps.prepare.outputs.timeout }}"
+      - name: Recover aggregate pilot metrics
+        if: needs.request.outputs.submit == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+          KERNEL: ${{ steps.prepare.outputs.kernel }}
+          GH_TOKEN: ${{ github.token }}
+          RESEARCH_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/s1-next-result"
+          python -m pip install --disable-pip-version-check kagglehub
+          PYTHONPATH=. python -u tools/kaggle_s1_live_status.py "$KERNEL" --publish "$RUNNER_TEMP/s1-status-comment" --duration 11400 &
+          observer=$!
+          trap 'kill "$observer" 2>/dev/null || true; wait "$observer" 2>/dev/null || true; PYTHONPATH=. python -u tools/kaggle_s1_live_status.py "$KERNEL" --publish "$RUNNER_TEMP/s1-status-comment" || true' EXIT
+          for i in $(seq 1 320); do
+            if ! status=$(kaggle kernels status "$KERNEL" 2>&1); then
+              sleep 30
+              continue
+            fi
+            echo "$status"
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])complete(d)?(["[:space:]]|$)'; then
+              kill "$observer" 2>/dev/null || true
+              wait "$observer" 2>/dev/null || true
+              for delay in 0 30 60; do
+                sleep "$delay"
+                if timeout 180 python - "$KERNEL" "$RUNNER_TEMP/s1-next-result/s1-next-result.json" <<'PY'
+          import json,shutil,sys
+          from pathlib import Path
+          import kagglehub
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          p=Path(kagglehub.notebook_output_download(sys.argv[1]+"/versions/1",path="s1-next-result.json",force_download=True))
+          r=json.loads(p.read_text())
+          assert r["code_sha"]==req["code_sha"]
+          shutil.copyfile(p,sys.argv[2])
+          PY
+                then break; fi
+              done
+              test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json" || { echo "Direct result recovery failed; inspect numeric log backup"; exit 1; }
+              break
+            fi
+            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
+              exit 1
+            fi
+            sleep 30
+          done
+          python - "$RUNNER_TEMP/s1-next-result/s1-next-result.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          r=json.loads(Path(sys.argv[1]).read_text())
+          req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
+          assert r["code_sha"]==req["code_sha"]
+          print("S1_NEXT_RESULT_BEGIN")
+          print(json.dumps(r,indent=2))
+          print("S1_NEXT_RESULT_END")
+          assert r["status"]=="completed"
+          PY
+          if python -c 'import json; assert json.load(open("tools/s1_next_pilot_request.json"))["profile"]=="public-ko-factorial-v24"'; then
+            python tools/analyze_s1_s2_screening.py --source "$RUNNER_TEMP/s1-next-result/s1-next-result.json" --output "$RUNNER_TEMP/s1-next-result/screening.json"
+          fi
+
+      - name: Preserve aggregate result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-next-result
+          path: |
+            ${{ runner.temp }}/s1-next-result/s1-next-result.json
+            ${{ runner.temp }}/s1-next-result/screening.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  observe:
+    needs: request
+    if: needs.request.outputs.submit == 'true' && needs.request.outputs.observe == 'true' && needs.request.outputs.recover != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read existing kernel only (no GPU submission)
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          KAGGLE_USERNAME: pymood1
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check kaggle==2.2.5 kagglesdk==0.1.38 six==1.17.0
+          PYTHONPATH=. python tools/kaggle_s1_live_status.py --selftest
+          KERNEL=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["source_kernel"])')
+          PYTHONPATH=. python tools/kaggle_s1_live_status.py "$KERNEL"
+          mkdir -p "$RUNNER_TEMP/observe"
+          kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '(s1-next-result[.]json|private-errors?[.]log)$' >/dev/null 2>&1 || true
+          python - "$RUNNER_TEMP/observe" <<'PY'
+          import json,re,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          for p in root.rglob("s1-next-result.json"):
+              r=json.loads(p.read_text())
+              print("S1_NEXT_RESULT_BEGIN")
+              print(json.dumps(r,indent=2))
+              print("S1_NEXT_RESULT_END")
+          for p in sorted(root.rglob("private-error*.log")):
+              raw=re.sub(r"\x1b\[[0-9;]*m","",p.read_text(errors="replace"))
+              traces=[]
+              for part in raw.split("Traceback (most recent call last):")[1:]:
+                  frames=re.findall(r'File "([^"]+)", line (\d+), in ([^\n]+)',part)
+                  classes=re.findall(r"^([A-Za-z_][\w.]*Error):",part,re.M)
+                  traces.append({"frames":[[Path(f).name,int(n),fn if re.fullmatch(r"[\w<>.]+",fn) else "unknown"] for f,n,fn in frames[-8:]],"exceptions":classes[:3]})
+              print(json.dumps({"file":p.name,"trace_count":len(traces),"traces":traces[-4:]}))
+          PY
