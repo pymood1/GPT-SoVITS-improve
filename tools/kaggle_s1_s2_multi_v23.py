@@ -203,6 +203,9 @@ def main():
         report["seconds"]=round(time.monotonic()-start,3)
         Path("/kaggle/working/s1-next-result.json").write_text(json.dumps(report,allow_nan=False,indent=2))
         print("Multi-hypothesis v23 status",report["status"],report.get("actual_cases",0),flush=True)
+        if report["status"]=="completed":
+            from tools.kaggle_s1_live_status import emit_summary
+            emit_summary(report)
 
 if __name__=="__main__":
     main()
