@@ -76,11 +76,49 @@ def parse(raw):
                           "latest":safe_latest(v.get("latest"))}
     return workers
 
+
+# Backup numeric-only terminal metrics, independent of output file listing.
+RESULT_LINE = re.compile(r"^\s*(?:(?:\d+(?:\.\d+)?s?|\d{4}-\d\d-\d\d[T ][0-9:.+-]+Z?)\s*(?:\|\s*)?)?(?:\d+\s*\|\s*)?\[s1-result\]\s+(\{.*\})\s*$")
+SUMMARY_FIELDS = {"cases","cer","speaker_cosine","median_duration_ratio","median_abs_log_duration_error","short","long","cap_hits","median_periodicity","mean_active_hf"}
+def safe_summary(row):
+    if not isinstance(row,dict):return None
+    sha=row.get("code_sha");lang=row.get("language");arm=row.get("arm");seed=row.get("seed")
+    if not isinstance(sha,str) or not re.fullmatch(r"[0-9a-f]{40}",sha):return None
+    if lang not in ("en","ko") or not isinstance(arm,str) or arm not in ARMS or type(seed) is not int or not 0<=seed<=15:return None
+    values=numbers(row.get("metrics"),SUMMARY_FIELDS)
+    if type(values.get("cases")) is not int or not 0<values["cases"]<=100000:return None
+    if not {"cer","speaker_cosine"}<=values.keys():return None
+    return dict(code_sha=sha,language=lang,seed=seed,arm=arm,metrics=values)
+
+def parse_results(raw):
+    rows={}
+    for line in log_lines(raw):
+        m=RESULT_LINE.fullmatch(line)
+        if not m:continue
+        try: row=safe_summary(json.loads(m[1]))
+        except (ValueError,TypeError):continue
+        if row:
+            key=(row["code_sha"],row["language"],row["seed"],row["arm"])
+            rows[key]=row
+    return [rows[k] for k in sorted(rows)][:120]
+
+def emit_summary(report):
+    if report.get("status")!="completed":return
+    for key,metrics in report.get("waveform_summary",{}).items():
+        m=re.fullmatch(r"(en|ko)-seed(\d+)-([a-z0-9_]+)",key)
+        if not m:continue
+        row=safe_summary(dict(code_sha=report.get("code_sha"),language=m[1],seed=int(m[2]),arm=m[3],metrics=metrics))
+        if row:print("[s1-result]",json.dumps(row,allow_nan=False,separators=(",",":")),flush=True)
+
 def snapshot(kernel):
     ok,raw=cli(["status",kernel])
     state=kernel_status(raw) if ok else "unknown"
     ok,raw=cli(["logs",kernel])
-    return state,{"log_read":"ok" if ok else "unavailable","workers":parse(raw) if ok else {}}
+    data={"log_read":"ok" if ok else "unavailable","workers":parse(raw) if ok else {}}
+    if ok and state in TERMINAL:
+        results=parse_results(raw)
+        if results:data["aggregate_backup"]=results
+    return state,data
 
 def selftest():
     raw='387.8s | 161 | [scale] {"ddp":{"exit":null,"latest":{"event":"layer_epoch","epoch":1,"validation":{"ce":2.84,"private":"secret"}}},"private":{"latest":{"epoch":99}}}'
@@ -96,7 +134,11 @@ def selftest():
     assert parse(structured)=={"en-asr":{"exit":None,"latest":{"event":"asr_progress","completed":7,"total":48}}}
     assert parse('[scale] {"eval0":{"exit":null,"latest":{"arm":"contrastive","status":"training","reference_index":20,"text_index":160,"language":"en","loss":1.2}}}')["eval0"]["latest"]=={"arm":"contrastive","status":"training","reference_index":20,"text_index":160,"language":"en"}
     assert parse('untrusted prefix [scale] {"ko-asr":{"exit":0}}')=={}
-    print("S1 safe observer tests passed")
+    row={"code_sha":"a"*40,"language":"en","seed":0,"arm":"ar","metrics":{"cases":8,"cer":.2,"speaker_cosine":.8,"secret":"never"},"private":"never"}
+    saved=parse_results("123.4s | 1 | [s1-result] "+json.dumps(row))
+    assert len(saved)==1 and "private" not in saved[0] and "secret" not in saved[0]["metrics"]
+    assert parse_results("untrusted [s1-result] "+json.dumps(row))==[]
+    print("S1 safe observer and numeric backup tests passed")
 
 def main():
     p=argparse.ArgumentParser()
