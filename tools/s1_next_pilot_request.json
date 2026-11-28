@@ -1,6 +1,5 @@
 {
-  "code_sha": "b4beced6b80ba71c8719a9b2d958a6cea140e323",
-  "profile": "public-fleurs-ko-recover",
-  "source_kernel": "pymood1/gpt-sovits-s1-next-46006831134",
-  "expected_result_sha": "fd87872f858a8e26a2da85244ef1f1cdbb4df783"
+  "code_sha": "27fc4a289f8a437665c9657e8d1743a0a4cf5979",
+  "profile": "public-ko-factorial-v24",
+  "source_kernel": "pymood1/gpt-sovits-s1-next-45952006429"
 }
