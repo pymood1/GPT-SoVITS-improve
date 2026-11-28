@@ -218,74 +218,20 @@ jobs:
             if echo "$status" | grep -Eiq '(^|[."[:space:]])complete(d)?(["[:space:]]|$)'; then
               kill "$observer" 2>/dev/null || true
               wait "$observer" 2>/dev/null || true
-              for delay in 0 30 60 120 120 120; do
-                sleep "$delay"
-                if timeout 90 kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/s1-next-result" --file-pattern '^s1-next-result[.]json$' && test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json"; then
-                  break
-                fi
-              done
-              test -s "$RUNNER_TEMP/s1-next-result/s1-next-result.json" || { echo "Result download unavailable; use recovery-only request"; exit 1; }
-              break
-            fi
-            if echo "$status" | grep -Eiq '(^|[."[:space:]])(error|failed|cancelled|canceled)(["[:space:]]|$)'; then
-              exit 1
-            fi
-            sleep 30
-          done
-          python - "$RUNNER_TEMP/s1-next-result/s1-next-result.json" <<'PY'
-          import json,sys
+              # Request exactly one known file via official KaggleHub DownloadKernelOutput,
+            # not the rate-limited ListKernelSessionOutput route.
+            python -m pip install --disable-pip-version-check kagglehub
+            timeout 180 python - "$KERNEL" "$RUNNER_TEMP/observe/s1-next-result.json" <<'PY'
+          import json, shutil, sys
           from pathlib import Path
-          r=json.loads(Path(sys.argv[1]).read_text())
+          import kagglehub
           req=json.loads(Path("tools/s1_next_pilot_request.json").read_text())
-          assert r["code_sha"]==req["code_sha"]
-          print("S1_NEXT_RESULT_BEGIN")
-          print(json.dumps(r,indent=2))
-          print("S1_NEXT_RESULT_END")
-          assert r["status"]=="completed"
+          path=Path(kagglehub.notebook_output_download(sys.argv[1]+"/versions/1",path="s1-next-result.json"))
+          assert path.is_file() and 0<path.stat().st_size<20_000_000
+          r=json.loads(path.read_text())
+          assert r["code_sha"]==req["expected_result_sha"] and r["status"]=="completed"
+          shutil.copyfile(path,sys.argv[2])
           PY
-
-      - name: Preserve aggregate result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: s1-next-result
-          path: ${{ runner.temp }}/s1-next-result/s1-next-result.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-  observe:
-    needs: request
-    if: needs.request.outputs.submit == 'true' && needs.request.outputs.observe == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 22
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Read existing kernel only (no GPU submission)
-        env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          KAGGLE_USERNAME: pymood1
-        run: |
-          set -euo pipefail
-          python -m pip install --disable-pip-version-check kaggle==2.2.5 kagglesdk==0.1.38 six==1.17.0
-          PYTHONPATH=. python tools/kaggle_s1_live_status.py --selftest
-          KERNEL=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["source_kernel"])')
-          mkdir -p "$RUNNER_TEMP/observe"
-          PROFILE=$(python -c 'import json; print(json.load(open("tools/s1_next_pilot_request.json"))["profile"])')
-          if [ "$PROFILE" = public-fleurs-ko-recover ]; then
-            for delay in 0 30 60 120 120 120; do
-              sleep "$delay"
-              if timeout 90 kaggle kernels output "$KERNEL" -p "$RUNNER_TEMP/observe" --file-pattern '^s1-next-result[.]json$' && test -s "$RUNNER_TEMP/observe/s1-next-result.json"; then
-                break
-              fi
-            done
-            test -s "$RUNNER_TEMP/observe/s1-next-result.json" || { echo "Recovery-only download unavailable"; exit 1; }
             python - "$RUNNER_TEMP/observe/s1-next-result.json" <<'PY'
           import json,sys
           from pathlib import Path
